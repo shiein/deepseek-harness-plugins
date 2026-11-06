@@ -569,6 +569,15 @@ export async function scan(ctx) {
  * @param {any} session
  * @returns {Promise<{messages: any[]}>}
  */
+/**
+ * One composer's bubbles. Opening a session runs on the Host thread and state.vscdb is often
+ * several GB: `LIKE 'bubbleId:<id>:%'` is case-insensitive, so it cannot use the BINARY unique
+ * index on `key` and scans the whole table, while this half-open key range (':' + 1 = ';') is an
+ * index SEARCH. `ORDER BY rowid` keeps the insertion order the LIKE scan returned, which breaks
+ * timestamp ties when bubbles are sorted.
+ */
+const BUBBLE_RANGE_SQL = 'SELECT key, value FROM cursorDiskKV WHERE key >= ? AND key < ? ORDER BY rowid LIMIT 100000';
+
 export async function readMessages(ctx, session) {
   const rawFiles = Array.isArray(session?.ref?.files)
     ? session.ref.files
@@ -586,7 +595,7 @@ export async function readMessages(ctx, session) {
     let db = null;
     try {
       db = await utils.openSqliteDatabase(dbPath, { readOnly: true });
-      const rows = utils.querySqlite(db, "SELECT key, value FROM cursorDiskKV WHERE key LIKE ? LIMIT 100000", [`bubbleId:${composerId}:%`]);
+      const rows = utils.querySqlite(db, BUBBLE_RANGE_SQL, [`bubbleId:${composerId}:`, `bubbleId:${composerId};`]);
       for (const row of rows) {
         if (bubbles.length >= MAX_TRANSCRIPT_MESSAGES) break;
         const bubble = parseJsonValue(row?.value);
@@ -640,3 +649,6 @@ export async function readMessages(ctx, session) {
   }
   return { messages };
 }
+
+/** Internals exposed for host/tools/cursor-transcript.mjs; not part of the provider contract. */
+export const __test = { BUBBLE_RANGE_SQL };

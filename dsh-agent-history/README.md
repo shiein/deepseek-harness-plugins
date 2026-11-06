@@ -161,7 +161,9 @@ dsh-agent-history/
     ├── fs-extra.js          Atomic write helpers
     ├── providers/index.js   Provider registry (drops in new provider files)
     ├── providers/*.js       One adapter per agent tool
-    └── tools/devin-incremental.mjs  Devin incremental == full-scan checks (15 checks, temp DB)
+    └── tools/
+        ├── devin-incremental.mjs  Devin incremental == full-scan checks (15 checks, temp DB)
+        └── cursor-transcript.mjs  Cursor transcript lookup is an index SEARCH, same rows/order (3 checks)
 ```
 
 ## Development
