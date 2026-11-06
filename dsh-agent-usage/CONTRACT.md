@@ -64,7 +64,8 @@ ctx.env = {
 ctx.utils                   // see below
 ctx.cache = {
   get(filePath, fingerprint),          // -> Cell[] | undefined
-  set(filePath, fingerprint, cells),   // store parsed result for this provider
+  set(filePath, fingerprint, cells, state?), // store parsed result (+ optional JSON resume state)
+  peek(filePath),                      // -> {fp, cells, state?} | undefined, ignores the fingerprint
 }
 ctx.warn(message)           // collect a warning (string) for this provider
 ```
@@ -146,6 +147,12 @@ parent directory is readable. Wrap in try/catch and degrade to a warning.
 Use `ctx.cache` for every file whose parse is expensive. Fingerprint = `size + mtimeMs` of the
 underlying file(s) (for SQLite include `-wal` too, see example). When a fingerprint matches, the
 cached `Cell[]` is reused without reading the file — this is what makes Refresh cheap.
+
+Append-only stores too large to re-read on every change may resume instead: `peek` returns the
+previous entry whatever its fingerprint, and the `state` saved with `set` carries what is needed
+to read only the new part (see `providers/devin.js`: a `row_id` watermark plus per-message
+state, with an exact removed-rows check that falls back to a full rebuild). `peek` is optional
+in test harnesses, so guard it with `typeof cache.peek === 'function'`.
 
 ```js
 const st = await utils.statSafe(file.path);

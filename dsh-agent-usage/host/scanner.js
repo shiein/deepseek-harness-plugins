@@ -122,7 +122,8 @@ export async function runScan(options) {
           warnings: warned,
           cache: {
             get: (filePath, fingerprint) => cache.get(providerId, filePath, fingerprint),
-            set: (filePath, fingerprint, cells) => cache.set(providerId, filePath, fingerprint, cells),
+            set: (filePath, fingerprint, cells, state) => cache.set(providerId, filePath, fingerprint, cells, state),
+            peek: (filePath) => cache.peek(providerId, filePath),
           },
         });
         const result = await provider.scan(context);

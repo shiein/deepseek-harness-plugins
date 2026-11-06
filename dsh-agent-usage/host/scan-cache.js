@@ -13,6 +13,8 @@ import { mkdirSafe } from './fs-extra.js';
 const CACHE_FORMAT = 1;
 const MAX_FILES_PER_PROVIDER = 50000;
 
+/** @typedef {{fp: string, cells: any[], state?: unknown}} CacheEntry */
+
 export class ScanCache {
   /**
    * @param {{filePath: string, providerVersions: Record<string, number>}} options
@@ -20,7 +22,7 @@ export class ScanCache {
   constructor(options) {
     this.filePath = options.filePath;
     this.providerVersions = options.providerVersions || {};
-    /** @type {Map<string, {cacheVersion: number, files: Map<string, {fp: string, cells: any[]}>}>} */
+    /** @type {Map<string, {cacheVersion: number, files: Map<string, CacheEntry>}>} */
     this.providers = new Map();
     /** @type {Map<string, Set<string>>} */
     this.touched = new Map();
@@ -50,7 +52,9 @@ export class ScanCache {
       const files = new Map();
       for (const [file, value] of Object.entries(entry.files || {})) {
         if (value && typeof value.fp === 'string' && Array.isArray(value.cells)) {
-          files.set(file, { fp: value.fp, cells: value.cells });
+          files.set(file, value.state === undefined
+            ? { fp: value.fp, cells: value.cells }
+            : { fp: value.fp, cells: value.cells, state: value.state });
         }
         if (files.size >= MAX_FILES_PER_PROVIDER) break;
       }
@@ -74,12 +78,26 @@ export class ScanCache {
   }
 
   /**
+   * Previous entry for a file regardless of its fingerprint, so a provider can resume incremental
+   * work (e.g. an append-only database) from the state it stored last time.
+   * @param {string} providerId
+   * @param {string} filePath
+   * @returns {CacheEntry|undefined}
+   */
+  peek(providerId, filePath) {
+    const entry = this.providers.get(providerId)?.files.get(filePath);
+    if (entry) this.touch(providerId, filePath);
+    return entry;
+  }
+
+  /**
    * @param {string} providerId
    * @param {string} filePath
    * @param {string} fingerprint
    * @param {any[]} cells
+   * @param {unknown} [state] provider-defined JSON-serialisable resume state
    */
-  set(providerId, filePath, fingerprint, cells) {
+  set(providerId, filePath, fingerprint, cells, state) {
     let provider = this.providers.get(providerId);
     const cacheVersion = this.providerVersions[providerId] ?? 1;
     if (!provider || provider.cacheVersion !== cacheVersion) {
@@ -91,7 +109,7 @@ export class ScanCache {
       const oldest = provider.files.keys().next();
       if (!oldest.done) provider.files.delete(oldest.value);
     }
-    provider.files.set(filePath, { fp: fingerprint, cells });
+    provider.files.set(filePath, state === undefined ? { fp: fingerprint, cells } : { fp: fingerprint, cells, state });
     this.touch(providerId, filePath);
   }
 
@@ -135,7 +153,11 @@ export class ScanCache {
     const payload = { format: CACHE_FORMAT, savedAt: Date.now(), providers: {} };
     for (const [id, provider] of this.providers) {
       const files = {};
-      for (const [file, entry] of provider.files) files[file] = { fp: entry.fp, cells: entry.cells };
+      for (const [file, entry] of provider.files) {
+        files[file] = entry.state === undefined
+          ? { fp: entry.fp, cells: entry.cells }
+          : { fp: entry.fp, cells: entry.cells, state: entry.state };
+      }
       payload.providers[id] = { cacheVersion: provider.cacheVersion, files };
     }
     try {

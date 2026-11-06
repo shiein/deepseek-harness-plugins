@@ -38,7 +38,10 @@ background polling, and opening the panel only re-displays the last saved scan.
   test still pending.
 - **Cheap refresh** — a per-file `size+mtime` fingerprint cache (SQLite fingerprints include
   `-wal`/`-shm`) means a refresh after the first one only re-parses changed files; the last
-  snapshot is persisted, so a restart does not rescan.
+  snapshot is persisted, so a restart does not rescan. The Devin CLI database is read
+  incrementally (only rows above the last processed `row_id`).
+- **Off the Host thread** — every scan runs on a `worker_threads` worker, so synchronous SQLite
+  reads of multi-GB stores never stall the DSH Host process (other plugins, agent sessions).
 
 ## Supported agents
 
@@ -82,10 +85,13 @@ POST /api/dsh-agent-usage/scan      → walks local session files once, updates 
 dashboard re-renders (agent / model / date views)
 ```
 
-On this machine the **first** scan takes ~5 s; if the Devin CLI database changed, its in-SQLite
-aggregation adds ~18 s once (3.5 GB + 1.1 GB WAL). A refresh where nothing changed takes
-**~50–300 ms**, because the fingerprint cache reuses every parsed file and every SQL result. A
-changed session file is the only thing re-parsed.
+On this machine the **first** scan takes ~24 s, almost all of it one full pass over the Devin CLI
+database (3.8 GB). After that, a changed Devin database only costs reading its new rows (≈4 s for
+~50k new rows, milliseconds for a normal day); a full pass happens again only when old rows were
+removed (a deleted Devin session), and the Devin source note in the dashboard says which path
+ran. A refresh where nothing changed takes **~50–300 ms**, because the fingerprint cache reuses
+every parsed file and every SQL result. A changed session file is the only thing re-parsed. The
+Devin resume state adds ~5 MB to `scan-cache.json`.
 
 ## Install
 
@@ -124,13 +130,16 @@ dsh-agent-usage/
 ├── docs/                    t3code reference, coverage matrix, Windows notes, provider research
 └── host/
     ├── scanner.js           Orchestration, cost estimation, snapshot persistence
+    ├── scan-worker.js       worker_threads entry: one scan off the Host thread
     ├── scan-utils.js        fs/JSONL/zstd/SQLite helpers
     ├── scan-cache.js        size+mtime fingerprint cache
     ├── cells.js             usage-bucket merge helpers
     ├── pricing.js           model price table (USD / 1M tokens)
     ├── context.js           ScanContext factory
     ├── providers/*.js       one adapter per agent tool
-    └── tools/windows-sim.mjs  Windows code-path simulation (45 checks, no real data touched)
+    └── tools/
+        ├── windows-sim.mjs      Windows code-path simulation (45 checks, no real data touched)
+        └── devin-incremental.mjs  Devin incremental == full-scan checks (11 checks, temp DB)
 ```
 
 ## Development

@@ -29,8 +29,9 @@
  * Node; only the ~50k de-duplicated `{model, observed_at, metrics}` rows cross the boundary, and
  * local-day bucketing happens in JS (`utils.localDay`). No SQLite `localtime` modifier is used
  * (it is unavailable when SQLite is built with SQLITE_OMIT_LOCALTIME, and Windows time zones must
- * not silently mis-bucket days). The result is cached per database fingerprint and only
- * re-computed when sessions.db (or its WAL) changed.
+ * not silently mis-bucket days). When sessions.db (or its WAL) changed, only rows above the last
+ * processed row_id are read and folded into the cached per-message state (see updateState); a
+ * full pass over the multi-GB table happens only on the first scan or after old rows were removed.
  *
  * Fallbacks: if the CLI database is absent, `cli/transcripts/*.json` (ATIF exports) carry one
  * `final_metrics` block per session and are parsed instead. The desktop app stores ACP messages
@@ -47,7 +48,8 @@ export const meta = {
   name: 'Devin',
   color: '#7c6bf5',
   homepage: 'https://devin.ai',
-  cacheVersion: 3,
+  // v4: per-message resume state for incremental scans (see updateState).
+  cacheVersion: 4,
 };
 
 /**
@@ -105,68 +107,176 @@ async function sqliteFingerprint(utils, path) {
   return parts.join('|');
 }
 
+const STATE_FORMAT = 1;
+
 /**
- * Aggregate every recorded generation, de-duplicated by message id, into (model, local day) cells.
- * Runs entirely inside SQLite.
+ * Batch extraction: every metrics-bearing row in (fromRow, toRow], already folded per message id
+ * inside SQLite. Folding with MAX is associative, so merging batch results into the persisted
+ * per-message state gives exactly what one GROUP BY over the whole table would.
+ */
+const BATCH_SQL = `
+  SELECT message_id,
+         MAX(model) AS model,
+         MAX(input_tokens) AS input_tokens,
+         MAX(output_tokens) AS output_tokens,
+         MAX(cache_read_tokens) AS cache_read_tokens,
+         MAX(cache_creation_tokens) AS cache_creation_tokens,
+         MAX(observed_at) AS observed_at
+  FROM (
+    SELECT
+      json_extract(chat_message, '$.message_id') AS message_id,
+      COALESCE(
+        NULLIF(json_extract(chat_message, '$.metadata.generation_model'), ''),
+        NULLIF(json_extract(chat_message, '$.metadata.model'), ''),
+        'unknown'
+      ) AS model,
+      CAST(json_extract(chat_message, '$.metadata.metrics.input_tokens') AS INTEGER) AS input_tokens,
+      CAST(json_extract(chat_message, '$.metadata.metrics.output_tokens') AS INTEGER) AS output_tokens,
+      CAST(json_extract(chat_message, '$.metadata.metrics.cache_read_tokens') AS INTEGER) AS cache_read_tokens,
+      CAST(json_extract(chat_message, '$.metadata.metrics.cache_creation_tokens') AS INTEGER) AS cache_creation_tokens,
+      COALESCE(
+        NULLIF(json_extract(chat_message, '$.metadata.started_generation_at'), ''),
+        NULLIF(json_extract(chat_message, '$.metadata.created_at'), '')
+      ) AS observed_at
+    FROM message_nodes
+    WHERE row_id > ? AND row_id <= ?
+      AND json_extract(chat_message, '$.metadata.metrics') IS NOT NULL
+  )
+  GROUP BY message_id
+`;
+
+/**
+ * @typedef {[string|null, string, string|null, number|null, number|null, number|null, number|null]} MessageTuple
+ *   [messageId, model, observedAt, input, output, cacheRead, cacheWrite] — MAX-folded per message id
+ */
+
+/**
+ * @typedef {Object} DevinState
+ * @property {number} format
+ * @property {number} watermark        highest row_id folded into `messages`
+ * @property {number} rowsAtWatermark  COUNT(*) of all message_nodes rows with row_id <= watermark
+ * @property {MessageTuple[]} messages
+ */
+
+/** @param {unknown} state @returns {state is DevinState} */
+function isUsableState(state) {
+  return Boolean(state && typeof state === 'object'
+    && /** @type {any} */ (state).format === STATE_FORMAT
+    && Number.isInteger(/** @type {any} */ (state).watermark)
+    && Number.isInteger(/** @type {any} */ (state).rowsAtWatermark)
+    && Array.isArray(/** @type {any} */ (state).messages));
+}
+
+/** SQL MAX semantics: NULL loses to any value. @param {any} a @param {any} b */
+function maxOf(a, b) {
+  if (a === null || a === undefined) return b ?? null;
+  if (b === null || b === undefined) return a;
+  return b > a ? b : a;
+}
+
+/**
+ * Bring the per-message state up to date with sessions.db.
+ *
+ * `message_nodes.row_id` is AUTOINCREMENT and Devin appends rows (a re-stored response is a new,
+ * later row with the same message id), so only rows above the stored watermark need reading. Old
+ * rows disappearing (a deleted session) is detected exactly — total row count minus the new rows
+ * must still equal the count recorded at the watermark — and forces a full rebuild, because the
+ * removed rows' contributions cannot be subtracted from MAX-folded state. Every statement runs in
+ * one read transaction so the counts and the batch see the same snapshot while Devin keeps writing.
+ *
  * @param {any} utils
  * @param {string} databasePath
- * @returns {Promise<any[]>}
+ * @param {unknown} previous
+ * @returns {Promise<{state: DevinState, mode: 'full'|'incremental', reason: string, rows: number}>}
  */
-async function aggregateSessionsDatabase(utils, databasePath) {
-  /** @type {any} */
-  let db = null;
+async function updateState(utils, databasePath, previous) {
+  const db = await utils.openSqliteDatabase(databasePath, { readOnly: true });
   try {
-    db = await utils.openSqliteDatabase(databasePath, { readOnly: true });
-    return utils.querySqlite(
-      db,
-      `
-      WITH extracted AS (
-        SELECT
-          json_extract(chat_message, '$.message_id') AS message_id,
-          COALESCE(
-            NULLIF(json_extract(chat_message, '$.metadata.generation_model'), ''),
-            NULLIF(json_extract(chat_message, '$.metadata.model'), ''),
-            'unknown'
-          ) AS model,
-          CAST(json_extract(chat_message, '$.metadata.metrics.input_tokens') AS INTEGER) AS input_tokens,
-          CAST(json_extract(chat_message, '$.metadata.metrics.output_tokens') AS INTEGER) AS output_tokens,
-          CAST(json_extract(chat_message, '$.metadata.metrics.cache_read_tokens') AS INTEGER) AS cache_read_tokens,
-          CAST(json_extract(chat_message, '$.metadata.metrics.cache_creation_tokens') AS INTEGER) AS cache_creation_tokens,
-          COALESCE(
-            NULLIF(json_extract(chat_message, '$.metadata.started_generation_at'), ''),
-            NULLIF(json_extract(chat_message, '$.metadata.created_at'), '')
-          ) AS observed_at
-        FROM message_nodes
-        WHERE json_extract(chat_message, '$.metadata.metrics') IS NOT NULL
-      ),
-      deduped AS (
-        SELECT message_id,
-               MAX(model) AS model,
-               MAX(input_tokens) AS input_tokens,
-               MAX(output_tokens) AS output_tokens,
-               MAX(cache_read_tokens) AS cache_read_tokens,
-               MAX(cache_creation_tokens) AS cache_creation_tokens,
-               MAX(observed_at) AS observed_at
-        FROM extracted
-        GROUP BY message_id
-      )
-      SELECT model,
-             observed_at,
-             COALESCE(input_tokens, 0) AS input_tokens,
-             COALESCE(output_tokens, 0) AS output_tokens,
-             COALESCE(cache_read_tokens, 0) AS cache_read_tokens,
-             COALESCE(cache_creation_tokens, 0) AS cache_creation_tokens
-      FROM deduped
-      WHERE observed_at IS NOT NULL
-      `,
-    );
+    db.exec('BEGIN');
+    try {
+      const maxRow = Number(db.prepare('SELECT COALESCE(MAX(row_id), 0) AS m FROM message_nodes').get().m);
+      const totalRows = Number(db.prepare('SELECT COUNT(*) AS c FROM message_nodes').get().c);
+      let base = isUsableState(previous) ? previous : null;
+      let reason = base ? '' : 'no previous state';
+      if (base !== null) {
+        if (maxRow < base.watermark) {
+          base = null;
+          reason = 'database shrank below the watermark';
+        } else {
+          const newRows = Number(db.prepare('SELECT COUNT(*) AS c FROM message_nodes WHERE row_id > ?').get(base.watermark).c);
+          if (totalRows - newRows !== base.rowsAtWatermark) {
+            base = null;
+            reason = 'rows below the watermark were removed';
+          }
+        }
+      }
+      const fromRow = base ? base.watermark : 0;
+      /** @type {Map<string|null, MessageTuple>} */
+      const messages = new Map((base ? base.messages : []).map((tuple) => [tuple[0], tuple]));
+      const batch = fromRow < maxRow ? db.prepare(BATCH_SQL).all(fromRow, maxRow) : [];
+      for (const row of batch) {
+        const id = row.message_id === undefined ? null : /** @type {string|null} */ (row.message_id);
+        const prior = messages.get(id);
+        /** @type {MessageTuple} */
+        const next = [
+          id,
+          String(maxOf(prior?.[1], row.model) ?? 'unknown'),
+          /** @type {string|null} */ (maxOf(prior?.[2], row.observed_at)),
+          /** @type {number|null} */ (maxOf(prior?.[3], row.input_tokens)),
+          /** @type {number|null} */ (maxOf(prior?.[4], row.output_tokens)),
+          /** @type {number|null} */ (maxOf(prior?.[5], row.cache_read_tokens)),
+          /** @type {number|null} */ (maxOf(prior?.[6], row.cache_creation_tokens)),
+        ];
+        messages.set(id, next);
+      }
+      db.exec('COMMIT');
+      return {
+        state: { format: STATE_FORMAT, watermark: maxRow, rowsAtWatermark: totalRows, messages: [...messages.values()] },
+        mode: base ? 'incremental' : 'full',
+        reason,
+        rows: batch.length,
+      };
+    } catch (error) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // The read transaction may never have started.
+      }
+      throw error;
+    }
   } finally {
     try {
-      db?.close();
+      db.close();
     } catch {
       // ignore
     }
   }
+}
+
+/**
+ * @param {any} utils
+ * @param {DevinState} state
+ * @returns {any[]}
+ */
+function cellsFromState(utils, state) {
+  /** @type {Map<string, any>} */
+  const byKey = new Map();
+  for (const [, model, observedAt, input, output, cacheRead, cacheWrite] of state.messages) {
+    if (observedAt === null) continue;
+    const ts = Date.parse(String(observedAt));
+    if (!Number.isFinite(ts) || ts <= 0) continue;
+    addUsage(byKey, {
+      model: String(model || 'unknown'),
+      day: utils.localDay(ts),
+      ts,
+      input: num(input),
+      output: num(output),
+      cacheRead: num(cacheRead),
+      cacheWrite: num(cacheWrite),
+      messages: 1,
+    });
+  }
+  return finalizeCells([...byKey.values()]);
 }
 
 /**
@@ -243,26 +353,15 @@ export async function scan(ctx) {
     foundCli = true;
     const fingerprint = await sqliteFingerprint(utils, databasePath);
     let cells = cache.get(databasePath, fingerprint);
+    let note = 'message_nodes metrics, deduplicated by message id; unchanged since last scan';
     if (!cells) {
-      const rows = await aggregateSessionsDatabase(utils, databasePath);
-      /** @type {Map<string, any>} */
-      const byKey = new Map();
-      for (const row of rows) {
-        const ts = Date.parse(String(row.observed_at || ''));
-        if (!Number.isFinite(ts) || ts <= 0) continue;
-        addUsage(byKey, {
-          model: String(row.model || 'unknown'),
-          day: utils.localDay(ts),
-          ts,
-          input: num(row.input_tokens),
-          output: num(row.output_tokens),
-          cacheRead: num(row.cache_read_tokens),
-          cacheWrite: num(row.cache_creation_tokens),
-          messages: 1,
-        });
-      }
-      cells = finalizeCells([...byKey.values()]);
-      cache.set(databasePath, fingerprint, cells);
+      const previous = typeof cache.peek === 'function' ? cache.peek(databasePath)?.state : undefined;
+      const updated = await updateState(utils, databasePath, previous);
+      cells = cellsFromState(utils, updated.state);
+      cache.set(databasePath, fingerprint, cells, updated.state);
+      note = updated.mode === 'incremental'
+        ? `message_nodes metrics, deduplicated by message id; incremental: ${updated.rows} new message(s)`
+        : `message_nodes metrics, deduplicated by message id; full rebuild (${updated.reason})`;
     }
     allCells.push(...cells);
 
@@ -277,7 +376,7 @@ export async function scan(ctx) {
       exists: true,
       files: 1,
       bytes,
-      note: 'message_nodes metrics, deduplicated by message id',
+      note,
     });
 
     if (cells.length === 0) ctx.warn('Devin CLI: sessions.db found but no recorded generation metrics');
@@ -335,3 +434,6 @@ export async function scan(ctx) {
 
   return { sources, cells: mergeCells(allCells) };
 }
+
+/** Internals exposed for host/tools/devin-incremental.mjs; not part of the provider contract. */
+export const __test = { updateState, cellsFromState, BATCH_SQL };

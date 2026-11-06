@@ -42,7 +42,9 @@
 /**
  * @typedef {Object} CacheFace
  * @property {(filePath: string, fingerprint: string) => Cell[]|undefined} get
- * @property {(filePath: string, fingerprint: string, cells: Cell[]) => void} set
+ * @property {(filePath: string, fingerprint: string, cells: Cell[], state?: unknown) => void} set
+ * @property {(filePath: string) => ({fp: string, cells: Cell[], state?: unknown}|undefined)} [peek]
+ *   previous entry regardless of fingerprint (incremental providers); optional in test harnesses
  */
 
 /**
