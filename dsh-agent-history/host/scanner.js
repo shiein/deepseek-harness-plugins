@@ -56,6 +56,29 @@ export async function loadSnapshot(dataDir) {
 }
 
 /**
+ * The per-provider view of the shared cache handed to `provider.scan` as `ctx.cache`.
+ * @param {HistoryCache} sharedCache
+ * @param {string} providerId
+ */
+export function cacheFace(sharedCache, providerId) {
+  return {
+    /** @param {string} filePath @param {string} fingerprint */
+    get: (filePath, fingerprint) => sharedCache.get(providerId, filePath, fingerprint),
+    /**
+     * The optional resume `state` is taken as a rest argument on purpose: several providers pick
+     * their calling convention from `cache.set.length` (>= 4 means "pass providerId first"), so
+     * the declared arity of this face must stay 3.
+     * @param {string} filePath @param {string} fingerprint @param {any[]} rows @param {unknown[]} extra
+     */
+    set: (filePath, fingerprint, rows, ...extra) => sharedCache.set(providerId, filePath, fingerprint, rows, extra[0]),
+    /** @param {string} filePath */
+    peek: (filePath) => sharedCache.peek(providerId, filePath),
+    /** @param {string} filePath */
+    touch: (filePath) => sharedCache.touch(providerId, filePath),
+  };
+}
+
+/**
  * Run one full scan.
  * @param {{dataDir: string, config?: Record<string, unknown>, signal?: AbortSignal,
  *          onProgress?: (message: string) => void}} options
@@ -78,16 +101,7 @@ export async function runScan(options) {
   await sharedCache.load();
 
   /** @param {string} providerId */
-  function bindCache(providerId) {
-    return {
-      /** @param {string} filePath @param {string} fingerprint */
-      get: (filePath, fingerprint) => sharedCache.get(providerId, filePath, fingerprint),
-      /** @param {string} filePath @param {string} fingerprint @param {any[]} rows */
-      set: (filePath, fingerprint, rows) => sharedCache.set(providerId, filePath, fingerprint, rows),
-      /** @param {string} filePath */
-      touch: (filePath) => sharedCache.touch(providerId, filePath),
-    };
-  }
+  const bindCache = (providerId) => cacheFace(sharedCache, providerId);
 
   /** @type {import('./types.js').SessionSummary[]} */
   const sessions = [];

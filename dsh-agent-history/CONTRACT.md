@@ -78,7 +78,8 @@ ctx.env = {
 ctx.utils                   // see below
 ctx.cache = {
   get(filePath, fingerprint),          // -> session rows | undefined
-  set(filePath, fingerprint, rows),    // store this provider's rows for that file
+  set(filePath, fingerprint, rows, state?), // store rows (+ optional JSON resume state)
+  peek(filePath),                      // -> {fp, sessions, state?} | undefined, ignores the fingerprint
 }
 ctx.warn(message)           // collect a warning (string) for this provider
 ```
@@ -168,6 +169,13 @@ utils.basenameOf(path) / utils.normalizeSlashes(path)
 Use `ctx.cache` for every file whose parse is expensive. Fingerprint = `size + mtimeMs` of the
 underlying file(s) (for SQLite include `-wal`). When a fingerprint matches, the cached rows are
 reused without reading the file — this is what makes Refresh cheap after the first scan.
+
+One large store holding many sessions (Devin's `sessions.db`) can reuse per-session work across
+fingerprint changes: `peek` returns the previous entry whatever its fingerprint, and the `state`
+saved with `set` carries what to reuse (see `providers/devin.js`: previews keyed by a per-session
+`row count : max row_id` signature). `peek` is optional in test harnesses, so guard it with
+`typeof cache.peek === 'function'`. Providers that pick a calling convention from
+`cache.set.length` rely on it staying 3 — `state` is passed as an extra argument, not declared.
 
 ```js
 const st = await utils.statSafe(file.path);

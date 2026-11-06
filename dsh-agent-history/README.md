@@ -42,7 +42,11 @@ There is no timer or file watcher while the panel is closed.
 - **Honest coverage** — agents that keep history server-side or encrypted are listed with their
   exact path and a reason instead of being hidden. No conversation is ever invented.
 - **Cheap refresh** — a per-file `size+mtime` fingerprint cache means a refresh after the first one
-  only re-parses changed files; the last snapshot is persisted, so a restart does not rescan.
+  only re-parses changed files; the last snapshot is persisted, so a restart does not rescan. Inside
+  the Devin database, only sessions whose rows changed re-read their previews.
+- **Off the Host thread** — every scan runs on a `worker_threads` worker, so synchronous SQLite
+  reads (Devin, Cursor, OpenCode, …) never stall the DSH Host process; single-session transcript
+  reads stay on the Host thread because each is bounded (~16 ms for the largest Devin session).
 - **Cross-platform** — macOS and Windows paths, BOM/CRLF tolerance, read-only SQLite, no external
   binaries.
 
@@ -94,7 +98,8 @@ POST /api/dsh-agent-history/launch → native terminal with the agent's resume c
 
 The first scan reads the transcripts once (tens of seconds on a busy machine); every later refresh
 only touches changed files (well under a second when nothing changed — measured 118 ms on a machine
-with 2 200+ sessions in 9 agents).
+with 2 200+ sessions in 9 agents). While a scan runs, the rest of DSH stays responsive (Host-thread
+latency stayed under 2 ms during a 12 s cold scan).
 
 The merged message timeline is bounded so one huge project cannot stall the panel: it reads the most
 recently active sessions of that folder (120 by default) and shows the count it merged when the
@@ -146,6 +151,7 @@ dsh-agent-history/
 ├── CONTRACT.md              Provider contract (SessionSummary, ScanContext, cache protocol)
 └── host/
     ├── scanner.js           Orchestration, normalization, snapshot persistence
+    ├── scan-worker.js       worker_threads entry: one scan off the Host thread
     ├── cache.js             size+mtime fingerprint cache
     ├── context.js           ScanContext factory
     ├── model.js             Normalization / project grouping / preview cleaning
@@ -154,7 +160,8 @@ dsh-agent-history/
     ├── scan-utils.js        fs/JSONL/zstd/SQLite helpers
     ├── fs-extra.js          Atomic write helpers
     ├── providers/index.js   Provider registry (drops in new provider files)
-    └── providers/*.js       One adapter per agent tool
+    ├── providers/*.js       One adapter per agent tool
+    └── tools/devin-incremental.mjs  Devin incremental == full-scan checks (15 checks, temp DB)
 ```
 
 ## Development

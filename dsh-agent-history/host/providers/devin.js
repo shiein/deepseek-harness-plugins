@@ -28,9 +28,10 @@
  * The database is multi-GB, so `scan` only uses index-only aggregates:
  *   - `SELECT session_id, COUNT(*) FROM message_nodes GROUP BY session_id` (covering index)
  *   - `SELECT session_id, COUNT(*) FROM prompt_history GROUP BY session_id`
- * plus one bounded first-user-message lookup per session for the preview. No full table scan.
- * The whole scan result is cached under the database path with a `db + -wal + -shm` fingerprint
- * (the WAL can hold GBs of uncheckpointed data while the main file's mtime stays put).
+ * plus bounded first-user / last-assistant lookups per session for the previews. No full table
+ * scan. The whole scan result is cached under the database path with a `db + -wal + -shm`
+ * fingerprint (the WAL can hold GBs of uncheckpointed data while the main file's mtime stays put);
+ * when it changed, only sessions whose (row count, max row_id) signature moved re-read previews.
  *
  * Resume: `devin --resume <session-id>` in the session's working directory.
  */
@@ -114,79 +115,129 @@ async function sqliteFingerprint(utils, path) {
   return parts.join('|');
 }
 
+const STATE_FORMAT = 1;
+
+/**
+ * @typedef {Object} PreviewState
+ * @property {string} sig           `${rowCount}:${maxRowId}` of the session's message_nodes rows
+ * @property {string} titleFromPrompt
+ * @property {string} preview       cleaned first real user prompt (may be '')
+ * @property {string} lastPreview   cleaned last assistant text (may be '')
+ */
+
+/** @param {unknown} state @returns {Record<string, PreviewState>} */
+function previousPreviews(state) {
+  const value = /** @type {any} */ (state);
+  if (!value || value.format !== STATE_FORMAT || !value.sessions || typeof value.sessions !== 'object') return {};
+  return value.sessions;
+}
+
 /**
  * Read one `sessions.db` into session summaries. Every query is bounded or index-only.
+ *
+ * The per-session preview lookups (first real user prompt, last assistant text) are the only
+ * part that reads message bodies, so they are reused from the previous scan for every session
+ * whose rows did not change. A session's signature is its row count plus its highest row_id, both
+ * from the covering `(session_id)` index: Devin appends rows (AUTOINCREMENT row_id), so any new or
+ * removed row changes it. All statements share one read transaction (one snapshot) while Devin
+ * keeps writing.
  * @param {typeof import('../scan-utils.js')} utils
  * @param {string} databasePath
  * @param {AbortSignal} signal
- * @returns {Promise<any[]>}
+ * @param {unknown} previousState
+ * @returns {Promise<{sessions: any[], state: {format: number, sessions: Record<string, PreviewState>}, reused: number, refreshed: number}>}
  */
-async function readSessionSummaries(utils, databasePath, signal) {
+async function readSessionSummaries(utils, databasePath, signal, previousState) {
   /** @type {any[]} */
   const sessions = [];
-  /** @type {import('node:sqlite').DatabaseSync|null} */
-  let db = null;
+  /** @type {Record<string, PreviewState>} */
+  const nextPreviews = {};
+  const prior = previousPreviews(previousState);
+  let reused = 0;
+  let refreshed = 0;
+  const db = await utils.openSqliteDatabase(databasePath, { readOnly: true });
   try {
-    db = await utils.openSqliteDatabase(databasePath, { readOnly: true });
+    db.exec('BEGIN');
+    try {
+      const rows = db.prepare(
+        `SELECT id, working_directory, title, created_at, last_activity_at, model, agent_mode, main_chain_id
+           FROM sessions WHERE hidden = 0 ORDER BY last_activity_at DESC`,
+      ).all();
 
-    const rows = utils.querySqlite(
-      db,
-      `SELECT id, working_directory, title, created_at, last_activity_at, model, agent_mode, main_chain_id
-         FROM sessions WHERE hidden = 0 ORDER BY last_activity_at DESC`,
-    );
-    if (rows.length === 0) return sessions;
+      /** @type {Map<string, {total: number, sig: string}>} */
+      const nodeStats = new Map();
+      for (const row of db.prepare('SELECT session_id, COUNT(*) AS total, MAX(row_id) AS last_row FROM message_nodes GROUP BY session_id').all()) {
+        const id = typeof row.session_id === 'string' ? row.session_id : '';
+        if (id !== '') nodeStats.set(id, { total: Number(row.total) || 0, sig: `${Number(row.total) || 0}:${Number(row.last_row) || 0}` });
+      }
+      /** @type {Map<string, number>} */
+      const promptCounts = new Map();
+      for (const row of db.prepare('SELECT session_id, COUNT(*) AS total FROM prompt_history GROUP BY session_id').all()) {
+        const id = typeof row.session_id === 'string' ? row.session_id : '';
+        if (id !== '') promptCounts.set(id, Number(row.total) || 0);
+      }
 
-    /** @type {Map<string, number>} */
-    const nodeCounts = new Map();
-    for (const row of utils.querySqlite(db, 'SELECT session_id, COUNT(*) AS total FROM message_nodes GROUP BY session_id')) {
-      const id = typeof row.session_id === 'string' ? row.session_id : '';
-      if (id !== '') nodeCounts.set(id, Number(row.total) || 0);
-    }
-    /** @type {Map<string, number>} */
-    const promptCounts = new Map();
-    for (const row of utils.querySqlite(db, 'SELECT session_id, COUNT(*) AS total FROM prompt_history GROUP BY session_id')) {
-      const id = typeof row.session_id === 'string' ? row.session_id : '';
-      if (id !== '') promptCounts.set(id, Number(row.total) || 0);
-    }
-
-    for (const row of rows) {
-      if (signal?.aborted) break;
-      const id = typeof row.id === 'string' ? row.id : '';
-      if (id === '' || !nodeCounts.has(id)) continue;
-      const firstPrompt = firstUserPrompt(db, id);
-      const lastAssistant = lastAssistantText(db, id);
-      const rawTitle = typeof row.title === 'string' ? row.title.trim() : '';
-      const title =
-        rawTitle !== '' && rawTitle.toLowerCase() !== 'untitled' ? rawTitle : titleFromPrompt(firstPrompt, 90);
-      const startedAt = toTs(row.created_at);
-      const updatedAt = toTs(row.last_activity_at) || startedAt;
-      const extra = [row.model, row.agent_mode].filter((value) => typeof value === 'string' && value !== '').join(' · ');
-      sessions.push({
-        nativeId: id,
-        title: title || '未命名会话',
-        projectPath: typeof row.working_directory === 'string' ? row.working_directory : '',
-        startedAt,
-        updatedAt,
-        messages: nodeCounts.get(id) || 0,
-        userMessages: promptCounts.get(id) || 0,
-        sizeBytes: 0,
-        preview: cleanPrompt(firstPrompt).slice(0, 220) || rawTitle.slice(0, 220),
-        lastPreview: cleanPrompt(lastAssistant).slice(0, 220),
-        sourcePath: databasePath,
-        extra: extra || undefined,
-        ref: { db: databasePath, id, head: Number(row.main_chain_id) || 0 },
-      });
+      for (const row of rows) {
+        if (signal?.aborted) break;
+        const id = typeof row.id === 'string' ? row.id : '';
+        const stats = nodeStats.get(id);
+        if (id === '' || stats === undefined) continue;
+        let previews = prior[id];
+        if (previews && previews.sig === stats.sig) {
+          reused += 1;
+        } else {
+          refreshed += 1;
+          const firstPrompt = firstUserPrompt(db, id);
+          const lastAssistant = lastAssistantText(db, id);
+          previews = {
+            sig: stats.sig,
+            titleFromPrompt: titleFromPrompt(firstPrompt ?? '', 90),
+            preview: cleanPrompt(firstPrompt ?? '').slice(0, 220),
+            lastPreview: cleanPrompt(lastAssistant ?? '').slice(0, 220),
+          };
+          // A failed lookup is shown as empty but not remembered, so the next scan retries it.
+          if (firstPrompt === null || lastAssistant === null) previews = { ...previews, sig: '' };
+        }
+        if (previews.sig !== '') nextPreviews[id] = previews;
+        const rawTitle = typeof row.title === 'string' ? row.title.trim() : '';
+        const title =
+          rawTitle !== '' && rawTitle.toLowerCase() !== 'untitled' ? rawTitle : previews.titleFromPrompt;
+        const startedAt = toTs(row.created_at);
+        const updatedAt = toTs(row.last_activity_at) || startedAt;
+        const extra = [row.model, row.agent_mode].filter((value) => typeof value === 'string' && value !== '').join(' · ');
+        sessions.push({
+          nativeId: id,
+          title: title || '未命名会话',
+          projectPath: typeof row.working_directory === 'string' ? row.working_directory : '',
+          startedAt,
+          updatedAt,
+          messages: stats.total,
+          userMessages: promptCounts.get(id) || 0,
+          sizeBytes: 0,
+          preview: previews.preview || rawTitle.slice(0, 220),
+          lastPreview: previews.lastPreview,
+          sourcePath: databasePath,
+          extra: extra || undefined,
+          ref: { db: databasePath, id, head: Number(row.main_chain_id) || 0 },
+        });
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // The read transaction may never have started.
+      }
+      throw error;
     }
   } finally {
-    if (db) {
-      try {
-        db.close();
-      } catch {
-        // A close failure must not discard the rows we already read.
-      }
+    try {
+      db.close();
+    } catch {
+      // A close failure must not discard the rows we already read.
     }
   }
-  return sessions;
+  return { sessions, state: { format: STATE_FORMAT, sessions: nextPreviews }, reused, refreshed };
 }
 
 /**
@@ -209,7 +260,7 @@ function looksInjected(value) {
  * persisted) the empty string is returned and the caller falls back to the generated title.
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {string} sessionId
- * @returns {string}
+ * @returns {string|null} null when the lookup failed
  */
 function firstUserPrompt(db, sessionId) {
   let rows = [];
@@ -223,7 +274,7 @@ function firstUserPrompt(db, sessionId) {
       )
       .all(sessionId);
   } catch {
-    return '';
+    return null;
   }
   let fallback = '';
   for (const row of rows) {
@@ -234,7 +285,7 @@ function firstUserPrompt(db, sessionId) {
   return fallback !== '' && !looksInjected(fallback) ? fallback : '';
 }
 
-/** @param {import('node:sqlite').DatabaseSync} db @param {string} sessionId @returns {string} */
+/** @param {import('node:sqlite').DatabaseSync} db @param {string} sessionId @returns {string|null} null when the lookup failed */
 function lastAssistantText(db, sessionId) {
   return utilsQueryFirst(
     db,
@@ -251,14 +302,14 @@ function lastAssistantText(db, sessionId) {
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {string} sql
  * @param {unknown[]} params
- * @returns {string}
+ * @returns {string|null} null when the query failed
  */
 function utilsQueryFirst(db, sql, params) {
   try {
     const row = db.prepare(sql).get(...params);
     return row && typeof row.content === 'string' ? row.content : '';
   } catch {
-    return '';
+    return null;
   }
 }
 
@@ -282,17 +333,20 @@ export async function scan(ctx) {
 
     const fingerprint = await sqliteFingerprint(utils, databasePath);
     let rows = cache.get(databasePath, fingerprint);
+    let note = 'SQLite sessions.db; transcript walked from sessions.main_chain_id; unchanged since last scan';
     if (!rows) {
-      let readable = true;
+      const previous = typeof cache.peek === 'function' ? cache.peek(databasePath)?.state : undefined;
       try {
-        rows = await readSessionSummaries(utils, databasePath, ctx.signal);
+        const result = await readSessionSummaries(utils, databasePath, ctx.signal, previous);
+        rows = result.sessions;
+        cache.set(databasePath, fingerprint, rows, result.state);
+        note = `SQLite sessions.db; transcript walked from sessions.main_chain_id; previews: ${result.reused} reused, ${result.refreshed} re-read`;
       } catch (error) {
-        readable = false;
+        // Only a successful read is cached: a transient lock must be retried on the next scan.
         ctx.warn(`Devin CLI: cannot read ${databasePath}: ${error?.message || error}`);
         rows = [];
+        note = 'SQLite sessions.db could not be read this scan';
       }
-      // Only a successful read is cached: a transient lock must be retried on the next scan.
-      if (readable) cache.set(databasePath, fingerprint, rows);
     }
     sessions.push(...rows);
 
@@ -307,7 +361,7 @@ export async function scan(ctx) {
       exists: true,
       files: rows.length,
       bytes,
-      note: 'SQLite sessions.db; transcript walked from sessions.main_chain_id',
+      note,
     });
   }
 

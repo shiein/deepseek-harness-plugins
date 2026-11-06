@@ -19,7 +19,8 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { loadSnapshot, readSessionViaProvider, runScan } from './host/scanner.js';
+import { Worker } from 'node:worker_threads';
+import { loadSnapshot, readSessionViaProvider } from './host/scanner.js';
 import { TranscriptReader, buildTimeline } from './host/transcript.js';
 import { buildLaunchPlan, copyableCommand, launchInTerminal } from './host/launch.js';
 import { projectKey } from './host/model.js';
@@ -27,6 +28,36 @@ import { OpenedProjects } from './host/opened-projects.js';
 
 /** Cordis plugin name. */
 export const name = 'agent-history';
+
+const SCAN_WORKER_URL = new URL('./host/scan-worker.js', import.meta.url);
+
+/**
+ * Run one scan on a worker thread (see host/scan-worker.js for why it must leave the Host thread).
+ * Single-session transcript reads stay on the Host thread: they are bounded per session (the
+ * largest Devin session reads in ~16 ms).
+ * @param {{dataDir: string, config: Record<string, unknown>, onWorker: (worker: Worker|null) => void}} options
+ * @returns {Promise<import('./host/scanner.js').Snapshot>}
+ */
+function runScanInWorker({ dataDir, config, onWorker }) {
+  return new Promise((resolve, reject) => {
+    // Profile config is plain YAML data; a JSON round-trip drops anything a worker cannot clone.
+    const worker = new Worker(SCAN_WORKER_URL, { workerData: { dataDir, config: JSON.parse(JSON.stringify(config ?? {})) } });
+    onWorker(worker);
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      onWorker(null);
+      fn(value);
+    };
+    worker.once('message', (message) => {
+      if (message?.ok) settle(resolve, message.snapshot);
+      else settle(reject, new Error(`scan worker failed: ${message?.error ?? 'unknown error'}`));
+    });
+    worker.once('error', (error) => settle(reject, error));
+    worker.once('exit', (code) => settle(reject, new Error(`scan worker exited with code ${code} before reporting`)));
+  });
+}
 
 /** Hard dependency: the browser HTTP carrier that serves the Web GUI this page renders in. */
 export const inject = ['webServer'];
@@ -144,6 +175,8 @@ export function apply(ctx, config = {}) {
   let snapshotLoadAttempted = false;
   /** @type {Promise<{snapshot: import('./host/scanner.js').Snapshot}>|null} */
   let scanning = null;
+  /** @type {Worker|null} */
+  let activeWorker = null;
 
   const logger = typeof ctx.logger?.info === 'function' ? ctx.logger : null;
   const opened = new OpenedProjects(dataDir);
@@ -184,7 +217,7 @@ export function apply(ctx, config = {}) {
   function ensureScan() {
     if (scanning !== null) return scanning;
     scanning = (async () => {
-      const result = await runScan({ dataDir, config, signal: new AbortController().signal });
+      const result = await runScanInWorker({ dataDir, config, onWorker: (worker) => { activeWorker = worker; } });
       snapshot = result;
       reader.clear();
       return { snapshot: result };
@@ -364,6 +397,12 @@ export function apply(ctx, config = {}) {
       },
     },
   ];
+
+  ctx.effect(() => () => {
+    // Plugin stop / hot reload: do not leave a scan worker reading databases in the background.
+    void activeWorker?.terminate();
+    activeWorker = null;
+  }, 'agent-history: scan worker');
 
   ctx.effect(() => {
     const disposers = routes.map((route) => ctx.webServer.register(route));

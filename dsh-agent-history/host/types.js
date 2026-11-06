@@ -66,7 +66,9 @@
 /**
  * @typedef {Object} CacheFace
  * @property {(filePath: string, fingerprint: string) => SessionSummary[]|undefined} get
- * @property {(filePath: string, fingerprint: string, sessions: SessionSummary[]) => void} set
+ * @property {(filePath: string, fingerprint: string, sessions: SessionSummary[], state?: unknown) => void} set
+ * @property {(filePath: string) => ({fp: string, sessions: SessionSummary[], state?: unknown}|undefined)} [peek]
+ *   previous entry regardless of fingerprint (incremental providers); optional in test harnesses
  */
 
 /**

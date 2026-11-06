@@ -13,6 +13,8 @@ import { mkdirSafe } from './fs-extra.js';
 const CACHE_FORMAT = 1;
 const MAX_FILES_PER_PROVIDER = 50000;
 
+/** @typedef {{fp: string, sessions: any[], state?: unknown}} CacheEntry */
+
 export class HistoryCache {
   /**
    * @param {{filePath: string, providerVersions: Record<string, number>, onChange?: () => void}} options
@@ -20,7 +22,7 @@ export class HistoryCache {
   constructor(options) {
     this.filePath = options.filePath;
     this.providerVersions = options.providerVersions || {};
-    /** @type {Map<string, {cacheVersion: number, files: Map<string, {fp: string, sessions: any[]}>}>} */
+    /** @type {Map<string, {cacheVersion: number, files: Map<string, CacheEntry>}>} */
     this.providers = new Map();
     /** @type {Map<string, Set<string>>} */
     this.touched = new Map();
@@ -51,7 +53,9 @@ export class HistoryCache {
       const files = new Map();
       for (const [file, value] of Object.entries(entry.files || {})) {
         if (value && typeof value.fp === 'string' && Array.isArray(value.sessions)) {
-          files.set(file, { fp: value.fp, sessions: value.sessions });
+          files.set(file, value.state === undefined
+            ? { fp: value.fp, sessions: value.sessions }
+            : { fp: value.fp, sessions: value.sessions, state: value.state });
         }
         if (files.size >= MAX_FILES_PER_PROVIDER) break;
       }
@@ -75,12 +79,26 @@ export class HistoryCache {
   }
 
   /**
+   * Previous entry for a file regardless of its fingerprint, so a provider can reuse per-item work
+   * from its stored resume state (e.g. unchanged sessions inside one large database).
+   * @param {string} providerId
+   * @param {string} filePath
+   * @returns {CacheEntry|undefined}
+   */
+  peek(providerId, filePath) {
+    const entry = this.providers.get(providerId)?.files.get(filePath);
+    if (entry) this.touch(providerId, filePath);
+    return entry;
+  }
+
+  /**
    * @param {string} providerId
    * @param {string} filePath
    * @param {string} fingerprint
    * @param {any[]} sessions
+   * @param {unknown} [state] provider-defined JSON-serialisable resume state
    */
-  set(providerId, filePath, fingerprint, sessions) {
+  set(providerId, filePath, fingerprint, sessions, state) {
     let provider = this.providers.get(providerId);
     const cacheVersion = this.providerVersions[providerId] ?? 1;
     if (!provider || provider.cacheVersion !== cacheVersion) {
@@ -91,7 +109,7 @@ export class HistoryCache {
       const oldest = provider.files.keys().next();
       if (!oldest.done) provider.files.delete(oldest.value);
     }
-    provider.files.set(filePath, { fp: fingerprint, sessions });
+    provider.files.set(filePath, state === undefined ? { fp: fingerprint, sessions } : { fp: fingerprint, sessions, state });
     this.touch(providerId, filePath);
   }
 
@@ -131,7 +149,11 @@ export class HistoryCache {
     const payload = { format: CACHE_FORMAT, savedAt: Date.now(), providers: {} };
     for (const [id, provider] of this.providers) {
       const files = {};
-      for (const [file, entry] of provider.files) files[file] = { fp: entry.fp, sessions: entry.sessions };
+      for (const [file, entry] of provider.files) {
+        files[file] = entry.state === undefined
+          ? { fp: entry.fp, sessions: entry.sessions }
+          : { fp: entry.fp, sessions: entry.sessions, state: entry.state };
+      }
       payload.providers[id] = { cacheVersion: provider.cacheVersion, files };
     }
     try {
