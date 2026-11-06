@@ -83,6 +83,19 @@ window.__ModuleLoader__.load({
       historyDelete: 'Delete',
       nodes: 'nodes',
       edges: 'edges',
+      viewSwitch: 'Topology view',
+      viewAll: 'Overview',
+      viewFlow: 'Call chain',
+      viewData: 'Data',
+      viewAuth: 'Access',
+      viewExternal: 'External',
+      viewAllHint: 'Every node and edge of the analysis',
+      viewFlowHint: 'How a request travels: entries, steps and call edges',
+      viewDataHint: 'Which steps read or write which stores and tables',
+      viewAuthHint: 'Authorization boundaries and the steps they guard',
+      viewExternalHint: 'Third-party services and the steps that call them',
+      viewEmpty: 'Nothing of this kind in the current analysis',
+      viewCount: '{n} nodes',
       zoomIn: 'Zoom in',
       zoomOut: 'Zoom out',
       zoomFit: 'Fit to view',
@@ -175,6 +188,19 @@ window.__ModuleLoader__.load({
       historyDelete: '删除',
       nodes: '节点',
       edges: '连线',
+      viewSwitch: '拓扑视图',
+      viewAll: '全貌',
+      viewFlow: '调用链',
+      viewData: '数据',
+      viewAuth: '权限',
+      viewExternal: '外部',
+      viewAllHint: '分析出的全部节点与连线',
+      viewFlowHint: '请求怎么走：入口、业务步骤与调用连线',
+      viewDataHint: '哪些步骤读写了哪些存储和表',
+      viewAuthHint: '鉴权边界，以及受它约束的步骤',
+      viewExternalHint: '第三方服务，以及调用它们的步骤',
+      viewEmpty: '当前分析里没有这一类内容',
+      viewCount: '{n} 个节点',
       zoomIn: '放大',
       zoomOut: '缩小',
       zoomFit: '适应画布',
@@ -242,7 +268,7 @@ window.__ModuleLoader__.load({
         font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap;
         transition: border-color .12s, background .12s, opacity .12s; }
       .bf-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.04)); }
-      .bf-btn:focus-visible, .bf-zoom button:focus-visible, .bf-icon-btn:focus-visible {
+      .bf-btn:focus-visible, .bf-zoom button:focus-visible, .bf-icon-btn:focus-visible, .bf-view:focus-visible {
         outline: 2px solid var(--bf-accent); outline-offset: 1px; }
       .bf-btn:disabled { opacity: .45; cursor: default; }
       .bf-btn-primary { background: var(--dsw-alias-button-primary-fill, #1f2328); border-color: transparent;
@@ -286,7 +312,15 @@ window.__ModuleLoader__.load({
       .bf-toolbar { flex: none; display: flex; flex-wrap: nowrap; gap: 10px; align-items: center;
         padding: 2px 16px 8px; color: var(--dsw-alias-label-secondary, #57606a); font-size: 11px; min-width: 0; }
       .bf-graph-title { font-size: 12.5px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f2328);
-        flex: 0 1 auto; min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        flex: 0 1 auto; min-width: 3em; max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .bf-views { display: inline-flex; flex: none; gap: 2px; padding: 2px; border-radius: 8px;
+        border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); background: var(--dsw-alias-bg-layer-1, #fafbfc); }
+      .bf-view { height: 22px; padding: 0 8px; border: 0; border-radius: 6px; cursor: pointer; background: transparent;
+        font: inherit; font-size: 11.5px; white-space: nowrap; color: var(--dsw-alias-label-secondary, #57606a); }
+      .bf-view:hover:not(:disabled) { color: var(--dsw-alias-label-primary, #1f2328); }
+      .bf-view.is-on { background: var(--dsw-alias-bg-base, #fff); color: var(--bf-accent); font-weight: 600;
+        box-shadow: 0 0 0 1px var(--dsw-alias-border-l1, rgba(0,0,0,.08)), 0 1px 2px rgba(0,0,0,.08); }
+      .bf-view:disabled { cursor: default; opacity: .4; }
       .bf-legend { display: flex; flex-wrap: nowrap; gap: 10px; align-items: center; flex: 0 1 auto; min-width: 0;
         overflow: hidden; }
       .bf-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; white-space: nowrap; }
@@ -476,7 +510,7 @@ window.__ModuleLoader__.load({
       .bf-table-share:focus-visible { outline: 2px solid var(--bf-accent); outline-offset: 1px; }
       .bf-table-note { padding-left: 19px; font-size: 11px; line-height: 1.5; color: var(--dsw-alias-label-secondary, #57606a); }
       @media (max-width: 1320px) { .bf-legend-edge { display: none; } }
-      @media (max-width: 1180px) { .bf-steps { display: none; } .bf-side { width: 300px; } }
+      @media (max-width: 1180px) { .bf-steps { display: none; } .bf-side { width: 300px; } .bf-graph-title { max-width: 7em; } }
       @media (max-width: 900px) {
         .bf-status, .bf-legend { display: none; }
         .bf-side { width: 260px; }
@@ -900,6 +934,36 @@ window.__ModuleLoader__.load({
     }
 
     /** Lower-cased table name → ids of the nodes that touch it. */
+    /**
+     * Topology views derived from the one analysis (no extra model call). A view keeps its core
+     * node kinds, the edges of its kinds, and both endpoints of every kept edge — so the access
+     * view also shows the steps a permission guards and the external view shows who calls out.
+     */
+    const VIEWS = [
+      { id: 'all' },
+      { id: 'flow', coreKinds: ['entry', 'process'], edgeKinds: ['flow'] },
+      { id: 'data', coreKinds: ['data'], edgeKinds: ['data'], withTables: true },
+      { id: 'auth', coreKinds: ['permission'], edgeKinds: ['auth'] },
+      { id: 'external', coreKinds: ['external'], touchingCore: true },
+    ];
+
+    /** @returns {{nodes: any[], edges: any[]}} the subgraph a view shows (the graph itself for `all`). */
+    function deriveView(graph, viewId) {
+      const view = VIEWS.find((item) => item.id === viewId);
+      if (graph === null || view === undefined || view.id === 'all') return graph;
+      const core = new Set(graph.nodes
+        .filter((n) => view.coreKinds.includes(n.kind) || (view.withTables === true && tablesOf(n).length > 0))
+        .map((n) => n.id));
+      const edges = graph.edges.filter((e) => (view.touchingCore === true
+        ? core.has(e.from) || core.has(e.to)
+        : view.edgeKinds.includes(e.kind)));
+      const keep = new Set(core);
+      for (const e of edges) { keep.add(e.from); keep.add(e.to); }
+      const nodes = graph.nodes.filter((n) => keep.has(n.id));
+      const known = new Set(nodes.map((n) => n.id));
+      return { ...graph, nodes, edges: edges.filter((e) => known.has(e.from) && known.has(e.to)) };
+    }
+
     function tableUsage(graph) {
       const usage = new Map();
       for (const node of graph?.nodes ?? []) {
@@ -1354,21 +1418,38 @@ window.__ModuleLoader__.load({
         const [zoomTouched, setZoomTouched] = useState(false);
         const [fullscreen, setFullscreen] = useState('');
         const [focusTable, setFocusTable] = useState(null);
+        const [view, setView] = useState('all');
         const [, setLocaleTick] = useState(0);
         const canvasRef = useRef(null);
         const graphRef = useRef(null);
 
         const selected = graph?.nodes.find((n) => n.id === selectedId) ?? null;
+        const views = useMemo(() => VIEWS.map((item) => {
+          const sub = deriveView(graph, item.id);
+          return { id: item.id, graph: sub, count: sub === null ? 0 : sub.nodes.length };
+        }), [graph]);
+        // A record without anything of the chosen kind falls back to the overview; the disabled
+        // button shows why.
+        const activeView = views.find((item) => item.id === view && item.count > 0) ?? views[0];
+        const shown = activeView.graph;
         const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
         const sizeBucket = `${Math.round(canvasSize.width / 80)}x${Math.round(canvasSize.height / 80)}`;
         const layout = useMemo(
-          () => (graph === null ? null : pickLayout(graph, canvasSize)),
+          () => (shown === null ? null : pickLayout(shown, canvasSize)),
           // eslint-disable-next-line react-hooks/exhaustive-deps
-          [graph, sizeBucket],
+          [shown, sizeBucket],
         );
 
         const usage = useMemo(() => tableUsage(graph), [graph]);
-        const focusIds = focusTable === null ? null : usage.get(focusTable) ?? null;
+        const shownIds = useMemo(() => new Set(shown?.nodes.map((n) => n.id) ?? []), [shown]);
+        const focusIds = focusTable === null ? null : (usage.get(focusTable) ?? []).filter((id) => shownIds.has(id));
+
+        const switchView = useCallback((next) => {
+          setView(next);
+          setZoomTouched(false);
+          const sub = views.find((item) => item.id === next)?.graph;
+          if (selectedId !== null && sub && !sub.nodes.some((n) => n.id === selectedId)) setSelectedId(null);
+        }, [views, selectedId]);
         // Records saved before table detection carry no `tables` field on any node.
         const tablesKnown = graph !== null && graph.nodes.some((n) => Array.isArray(n.tables));
 
@@ -1748,20 +1829,36 @@ window.__ModuleLoader__.load({
               error !== '' ? h('div', { className: 'bf-error' }, error) : null,
               h('div', { className: `bf-graph${fullscreen === 'native' ? ' is-native' : ''}`, ref: graphRef },
                 graph !== null ? h('div', { className: 'bf-toolbar' },
-                  h('span', { className: 'bf-graph-title', title: graph.business }, graph.business || business),
+                  h('div', { className: 'bf-views', role: 'tablist', 'aria-label': t('viewSwitch') },
+                    views.map((item) => {
+                      const label = t(`view${item.id[0].toUpperCase()}${item.id.slice(1)}`);
+                      const empty = item.count === 0;
+                      return h('button', {
+                        key: item.id,
+                        role: 'tab',
+                        'aria-selected': item.id === activeView.id,
+                        className: `bf-view${item.id === activeView.id ? ' is-on' : ''}`,
+                        disabled: empty,
+                        title: empty
+                          ? t('viewEmpty')
+                          : `${t(`view${item.id[0].toUpperCase()}${item.id.slice(1)}Hint`)} · ${t('viewCount', { n: item.count })}`,
+                        onClick: () => switchView(item.id),
+                      }, label);
+                    })),
+                  h('span', { className: 'bf-graph-title', title: graph.business || business }, graph.business || business),
                   h('span', { className: 'bf-count' },
-                    `${graph.nodes.length} ${t('nodes')} · ${graph.edges.length} ${t('edges')}${current ? ` · ${formatWhen(current.at)}` : ''}`),
+                    `${shown.nodes.length} ${t('nodes')} · ${shown.edges.length} ${t('edges')}${current ? ` · ${formatWhen(current.at)}` : ''}`),
                   h('button', {
                     className: 'bf-btn bf-btn-sm', onClick: update, disabled: busy !== '' || (current === null && analyzeDisabled),
                     title: t('updateHint'),
                   }, h(Icon, { d: ICON.refresh, size: 13 }), busy === 'update' ? t('updating') : t('update')),
                   h('span', { style: { flex: 1 } }),
                   h('div', { className: 'bf-legend' },
-                    KIND_ORDER.map((kind) => h('span', { key: kind, className: 'bf-legend-item' },
+                    KIND_ORDER.filter((kind) => shown.nodes.some((n) => n.kind === kind)).map((kind) => h('span', { key: kind, className: 'bf-legend-item' },
                       h('i', { className: 'bf-dot', style: { background: KIND_COLOR[kind] } }),
                       kindLabel(kind, t))),
                     h('span', { className: 'bf-legend-sep bf-legend-edge', 'aria-hidden': true }),
-                    ['flow', 'data', 'auth'].map((kind) => h('span', { key: kind, className: 'bf-legend-item bf-legend-edge' },
+                    ['flow', 'data', 'auth'].filter((kind) => shown.edges.some((e) => e.kind === kind)).map((kind) => h('span', { key: kind, className: 'bf-legend-item bf-legend-edge' },
                       h('svg', { width: 18, height: 8, 'aria-hidden': true },
                         h('path', {
                           d: 'M1 4h16', stroke: EDGE_COLOR[kind], strokeWidth: 1.6, strokeLinecap: 'round',
@@ -1812,7 +1909,7 @@ window.__ModuleLoader__.load({
                         className: 'bf-btn', onClick: (event) => { event.stopPropagation(); setHistoryOpen(true); },
                       }, h(Icon, { d: ICON.history }), t('openHistory', { n: history.length })) : null)
                     : h('div', { className: 'bf-stage' },
-                      h(GraphView, { graph, layout, selectedId, zoom, focusIds, onSelect: setSelectedId, t }))),
+                      h(GraphView, { graph: shown, layout, selectedId, zoom, focusIds, onSelect: setSelectedId, t }))),
                 maximised && selected !== null
                   ? h('div', { className: 'bf-float' }, nodeCard,
                     h('button', {
