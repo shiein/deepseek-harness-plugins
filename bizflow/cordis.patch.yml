@@ -1,0 +1,3 @@
+- insert:
+    - id: bizflow
+      name: '@local/bizflow'

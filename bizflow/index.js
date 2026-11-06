@@ -1,0 +1,891 @@
+/**
+ * Business Flow Analyst — Host half.
+ *
+ * Serves a small JSON API over the Harness web server (`/api/bizflow/*`) so the
+ * package's Client half can ask the configured agent to map a project's data
+ * business flow and to turn node requirements into precise session prompts.
+ * All routes are loopback-only.
+ */
+
+import { randomUUID } from 'node:crypto';
+import {
+  mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync,
+} from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, extname, join, relative, resolve, sep } from 'node:path';
+
+/** Hard dependency: the browser HTTP carrier that serves the Web GUI this page renders in. */
+export const inject = ['webServer'];
+
+const PREFIX = '/api/bizflow';
+const MAX_BODY_BYTES = 512 * 1024;
+/** Whole saved history (up to HISTORY_LIMIT graphs) is posted at once. */
+const MAX_HISTORY_BODY_BYTES = 8 * 1024 * 1024;
+const ANALYSIS_TIMEOUT_MS = 8 * 60 * 1000;
+
+const NODE_KINDS = new Set(['entry', 'process', 'data', 'permission', 'external']);
+const EDGE_KINDS = new Set(['flow', 'data', 'auth']);
+
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', 'target', 'vendor',
+  '.next', '.nuxt', 'coverage', '__pycache__', '.venv', 'venv', '.idea', '.vscode',
+  '.gradle', 'Pods', 'DerivedData', '.turbo', '.cache',
+]);
+const TEXT_EXT = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.java', '.kt', '.kts', '.go', '.py',
+  '.rb', '.php', '.cs', '.rs', '.sql', '.md', '.yml', '.yaml', '.toml', '.xml',
+  '.properties', '.gradle', '.vue', '.svelte', '.html', '.css', '.scss',
+]);
+const CANDIDATE_RE = /(controller|service|route|router|handler|api|mapper|dao|repository|schema|model|entity|migration|permission|auth|login|middleware|interceptor|config|index|main|app|readme|package\.json|pom\.xml|build\.gradle)/i;
+const HISTORY_FILE = join(homedir(), '.dsh', 'bizflow', 'history.json');
+
+/** Saved analyses, kept in the DSH home so a new GUI port keeps them. */
+function readHistoryFile() {
+  let text;
+  try {
+    text = readFileSync(HISTORY_FILE, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return [];
+    throw bizError(`cannot read the history file: ${error?.message ?? String(error)}`, 500);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Refuse to continue: a write now would replace the unreadable file and lose every record.
+    throw bizError(`history file is not valid JSON, fix or move it first: ${HISTORY_FILE}`, 500);
+  }
+  if (!Array.isArray(parsed)) throw bizError(`history file is not a list: ${HISTORY_FILE}`, 500);
+  return parsed.filter((entry) => (
+    entry && typeof entry.id === 'string'
+    && typeof entry.projectPath === 'string'
+    && entry.graph && Array.isArray(entry.graph.nodes)
+  ));
+}
+
+/** History is unbounded by design (the user decides what to delete); newest first on disk. */
+function writeHistoryFile(entries) {
+  const sorted = [...entries].sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
+  try {
+    mkdirSync(dirname(HISTORY_FILE), { recursive: true });
+    const temporary = `${HISTORY_FILE}.${process.pid}.tmp`;
+    writeFileSync(temporary, JSON.stringify(sorted), 'utf8');
+    renameSync(temporary, HISTORY_FILE);
+    return sorted;
+  } catch {
+    return undefined;
+  }
+}
+
+function isHistoryEntry(entry) {
+  return Boolean(entry && typeof entry.id === 'string' && entry.id !== ''
+    && typeof entry.projectPath === 'string'
+    && entry.graph && Array.isArray(entry.graph.nodes));
+}
+
+const MAX_DIGEST_CHARS = 20000;
+const MAX_NODE_DIGEST_CHARS = 26000;
+
+/** Read a text file with a size fence, or `undefined` when it is not usable. */
+function safeRead(fullPath, maxBytes) {
+  try {
+    const stat = statSync(fullPath);
+    if (!stat.isFile() || stat.size > maxBytes) return undefined;
+    return readFileSync(fullPath, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/** Every regular file under `root`, skipping build/dependency directories. */
+function listProjectFiles(root) {
+  const files = [];
+  const visit = (dir, depth) => {
+    if (files.length >= 6000 || depth > 7) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (files.length >= 6000) return;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
+        visit(full, depth + 1);
+      } else if (entry.isFile()) {
+        files.push(full);
+      }
+    }
+  };
+  visit(root, 0);
+  return files;
+}
+
+/**
+ * Pre-read the project so the model starts with evidence instead of spending
+ * many tool round-trips exploring: a file index plus excerpts of likely
+ * entry/service/data/permission files.
+ */
+function buildProjectDigest(root) {
+  const absoluteRoot = resolve(root);
+  const absolute = listProjectFiles(absoluteRoot);
+  // Forward slashes on every platform: the model and the node `files` lists speak POSIX paths.
+  const rels = absolute.map((file) => relative(absoluteRoot, file).split(sep).join('/'));
+  const ranked = rels
+    .map((rel) => {
+      const ext = extname(rel).toLowerCase();
+      let score = TEXT_EXT.has(ext) ? 3 : -100;
+      if (CANDIDATE_RE.test(rel)) score += 6;
+      score -= rel.split('/').length * 2;
+      if (/(^|\/)(readme|package\.json|pom\.xml|build\.gradle|requirements\.txt)$/i.test(rel)) score += 4;
+      return { rel, ext, score };
+    })
+    .filter((item) => item.score > -50)
+    .sort((a, b) => b.score - a.score);
+  const parts = [];
+  let total = 0;
+  for (const item of ranked) {
+    if (parts.length >= 24 || total >= MAX_DIGEST_CHARS) break;
+    const text = safeRead(join(absoluteRoot, item.rel), 200_000);
+    if (text === undefined) continue;
+    const excerpt = text.split('\n').slice(0, 80).join('\n').trim();
+    if (excerpt === '') continue;
+    const block = `--- ${item.rel} ---\n${excerpt}`;
+    if (total + block.length > MAX_DIGEST_CHARS) break;
+    parts.push(block);
+    total += block.length;
+  }
+  return { tree: rels.slice(0, 400).join('\n'), excerpts: parts.join('\n\n') };
+}
+
+/** Excerpts of the files the graph associates with one node (fenced to the root). */
+function buildNodeDigest(root, files) {
+  const absoluteRoot = resolve(root);
+  const parts = [];
+  let total = 0;
+  const list = Array.isArray(files) ? files.slice(0, 10) : [];
+  for (const rel of list) {
+    if (typeof rel !== 'string' || rel === '') continue;
+    const full = resolve(absoluteRoot, rel);
+    if (full !== absoluteRoot && !full.startsWith(`${absoluteRoot}${sep}`)) continue;
+    const text = safeRead(full, 200_000);
+    if (text === undefined) continue;
+    const excerpt = text.split('\n').slice(0, 160).join('\n').trim();
+    if (excerpt === '') continue;
+    const block = `--- ${rel} ---\n${excerpt}`;
+    if (total + block.length > MAX_NODE_DIGEST_CHARS) break;
+    parts.push(block);
+    total += block.length;
+  }
+  return parts.join('\n\n');
+}
+
+/** Resolve a client-supplied project path to an existing directory, or throw a 400. */
+function resolveProjectPath(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (raw === '') throw bizError('requires projectPath');
+  const absolute = resolve(raw);
+  let stat;
+  try {
+    stat = statSync(absolute);
+  } catch {
+    throw bizError(`project directory does not exist: ${absolute}`);
+  }
+  if (!stat.isDirectory()) throw bizError(`project path is not a directory: ${absolute}`);
+  return absolute;
+}
+
+function bizError(message, status = 400) {
+  const error = new Error(`bizflow: ${message}`);
+  error.status = status;
+  return error;
+}
+
+function requireService(ctx, name) {
+  const service = ctx.get(name);
+  if (service === undefined) throw bizError(`service "${name}" is unavailable in this profile`, 503);
+  return service;
+}
+
+/** Join the text blocks of one assistant message. */
+function messageText(message) {
+  if (typeof message !== 'object' || message === null) return '';
+  const content = Array.isArray(message.content) ? message.content : [];
+  return content
+    .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n');
+}
+
+/**
+ * The message carried by a Session event: `assistant/message` nests it under
+ * `data.message`, while `user/message` stores the message itself as `data`.
+ */
+function eventMessage(event) {
+  if (typeof event !== 'object' || event === null) return undefined;
+  const data = event.data;
+  if (typeof data === 'object' && data !== null) {
+    if (data.message !== undefined) return data.message;
+    if (typeof data.role === 'string') return data;
+  }
+  return event.message;
+}
+
+/** The profile's configured model as agent options, when it is readable. */
+function configuredAgentOptions(ctx) {
+  try {
+    const selection = ctx.get('agentDefaultModel')?.currentSelection?.();
+    if (selection
+      && typeof selection.provider === 'string' && selection.provider !== ''
+      && typeof selection.model === 'string' && selection.model !== '') {
+      return { provider: selection.provider, model: selection.model };
+    }
+  } catch {
+    /* unconfigured or unavailable */
+  }
+  return undefined;
+}
+
+/**
+ * Resolve one live analysis agent for `cwd`, creating it on first use.
+ *
+ * `agents.create` publishes a running agent bound to the project directory
+ * without touching UI navigation (unlike `uiWorkspace.connectWorkspace`, which
+ * selects the Session and would pull the user out of this panel). One agent per
+ * project is kept so a later prompt refinement continues the same conversation.
+ */
+function acquireAnalysisAgent(ctx, agentsByCwd, cwd) {
+  const cached = agentsByCwd.get(cwd);
+  if (cached !== undefined) return cached;
+  const attempt = (async () => {
+    const agents = requireService(ctx, 'agents');
+    const sessionId = randomUUID();
+    const handle = await agents.create({
+      sessionId,
+      meta: { cwd },
+      agentOptions: configuredAgentOptions(ctx),
+    });
+    return { sessionId: handle?.agent?.id ?? sessionId, handle };
+  })();
+  agentsByCwd.set(cwd, attempt);
+  attempt.catch(() => {
+    if (agentsByCwd.get(cwd) === attempt) agentsByCwd.delete(cwd);
+  });
+  return attempt;
+}
+
+/** Drop a cached agent so the next attempt starts from a fresh Session. */
+function invalidateAnalysisAgent(agentsByCwd, cwd) {
+  const entry = agentsByCwd.get(cwd);
+  if (entry === undefined) return;
+  agentsByCwd.delete(cwd);
+  if (typeof entry.then === 'function') {
+    entry.then((value) => value?.handle?.dispose?.()).catch(() => { /* already gone */ });
+  }
+}
+
+/**
+ * Run one turn of the configured agent in `cwd` and return the last assistant text.
+ *
+ * The configured provider (e.g. an ACP adapter) only answers inside a real
+ * Session step, so the analysis runs as a genuine Session turn: the agent is
+ * created (or reused) for the project, `prompt` submits the request, and
+ * `follow` streams events until `turn/end`.
+ */
+async function runAgentTurn(ctx, agentsByCwd, cwd, promptText, signal, sessionIdInput) {
+  const controller = requireService(ctx, 'sessionController');
+  const timeout = AbortSignal.timeout(ANALYSIS_TIMEOUT_MS);
+  const combined = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
+
+  let sessionId = typeof sessionIdInput === 'string' ? sessionIdInput : '';
+  if (sessionId === '') {
+    const entry = await acquireAnalysisAgent(ctx, agentsByCwd, cwd);
+    sessionId = entry.sessionId;
+  }
+  if (typeof sessionId !== 'string' || sessionId === '') {
+    throw bizError('no usable session for the analysis turn', 502);
+  }
+
+  let answer = '';
+  let turnEnded = false;
+  let turnDetail = '';
+  let sawMessage = false;
+  const seenTypes = new Map();
+  const followError = { value: undefined };
+
+  // A reused analysis agent replays its earlier turns in the first snapshot, so
+  // only events after that snapshot's watermark belong to this call's prompt.
+  const promptMarker = promptText.replace(/\s+/g, ' ').trim().slice(0, 60);
+  const snapshotRecords = [];
+  let baselineSeq = -1;
+  let armed = false;
+
+  const follow = controller.follow(
+    { address: { kind: 'session', sessionId } },
+    combined,
+  );
+  const collect = (async () => {
+    try {
+      const take = (event) => {
+        if (event === undefined || event === null) return;
+        if (typeof event.type === 'string') seenTypes.set(event.type, (seenTypes.get(event.type) ?? 0) + 1);
+        if (!armed) {
+          const seq = typeof event.seq === 'number' ? event.seq : undefined;
+          if (seq !== undefined && baselineSeq >= 0 && seq > baselineSeq) {
+            armed = true;
+          } else if (event.type === 'user/message') {
+            if (messageText(eventMessage(event)).replace(/\s+/g, ' ').includes(promptMarker)) armed = true;
+          }
+          if (!armed) return;
+        }
+        if (event.type === 'assistant/message') {
+          const text = messageText(eventMessage(event));
+          if (text.trim() !== '') {
+            sawMessage = true;
+            answer = text;
+          }
+        } else if (event.type === 'turn/end') {
+          turnEnded = true;
+          const reason = event.data?.reason ?? event.reason;
+          turnDetail = typeof reason?.kind === 'string' ? reason.kind : 'unknown';
+          if (reason?.kind === 'error' || reason?.kind === 'aborted') {
+            const failure = reason?.error ?? reason?.reason;
+            turnDetail += `: ${failure?.message ?? failure?.kind ?? 'unknown'}`;
+          }
+        }
+      };
+      for await (const frame of follow) {
+        if (frame === undefined || frame === null) continue;
+        if (frame.type === 'snapshot' && Array.isArray(frame.records)) {
+          for (const record of frame.records) {
+            snapshotRecords.push(record);
+            const seq = record?.event?.seq;
+            if (typeof seq === 'number' && seq > baselineSeq) baselineSeq = seq;
+          }
+          continue;
+        }
+        if (frame.type === 'event') take(frame.event);
+        if (turnEnded) return;
+      }
+      // The whole turn can land inside the first snapshot when it finishes before
+      // any live frame arrives; use its last assistant message then.
+      // Only records after this call's own user/message count — a reused Session's snapshot also
+      // holds earlier turns whose answers must never be returned for this prompt.
+      if (!sawMessage) {
+        let mine = false;
+        for (const record of snapshotRecords) {
+          const event = record?.event;
+          if (event?.type === 'user/message'
+            && messageText(eventMessage(event)).replace(/\s+/g, ' ').includes(promptMarker)) {
+            mine = true;
+            continue;
+          }
+          if (!mine || event?.type !== 'assistant/message') continue;
+          const text = messageText(eventMessage(record.event));
+          if (text.trim() !== '') {
+            sawMessage = true;
+            answer = text;
+          }
+        }
+      }
+    } catch (error) {
+      followError.value = error;
+    }
+  })();
+
+  try {
+    await controller.prompt({
+      requestId: randomUUID(),
+      sessionId,
+      mode: 'queue',
+      content: [{ type: 'text', text: promptText }],
+    }, combined);
+    await collect;
+  } finally {
+    // The session is left in the workspace for transparency; detach the follower.
+    try {
+      await follow.return?.();
+    } catch {
+      /* follower already ended */
+    }
+  }
+
+  if (followError.value !== undefined && !turnEnded) {
+    if (combined.aborted) throw bizError('analysis timed out or was cancelled', 504);
+    throw bizError(`session follow failed: ${followError.value?.message ?? String(followError.value)}`, 502);
+  }
+  if (!sawMessage) {
+    const seen = [...seenTypes.entries()].map(([type, count]) => `${type}×${count}`).join(', ') || 'none';
+    throw bizError(
+      `agent produced no assistant message (turn: ${turnDetail === '' ? 'no turn/end' : turnDetail}; events: ${seen}) — retry the analysis`,
+      502,
+    );
+  }
+  return { answer, sessionId };
+}
+
+/** Every balanced top-level {...} JSON object found in model output. */
+function extractJsonObjects(text) {
+  const found = [];
+  let from = 0;
+  while (from < text.length) {
+    const start = text.indexOf('{', from);
+    if (start === -1) break;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let end = -1;
+    for (let i = start; i < text.length; i++) {
+      const c = text[i];
+      if (inString) {
+        if (escape) escape = false;
+        else if (c === '\\') escape = true;
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') inString = true;
+      else if (c === '{') depth += 1;
+      else if (c === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end === -1) break;
+    try {
+      found.push(JSON.parse(text.slice(start, end + 1)));
+    } catch {
+      /* not JSON, keep scanning */
+    }
+    from = end + 1;
+  }
+  return found;
+}
+
+/** The first object that looks like a graph with nodes, else the first object. */
+function pickGraphObject(text) {
+  const objects = extractJsonObjects(text);
+  if (objects.length === 0) return undefined;
+  return objects.find((value) => Array.isArray(value?.nodes) && value.nodes.length > 0) ?? objects[0];
+}
+
+/** Whether a parsed value carries at least one node object. */
+function usableGraph(value) {
+  if (typeof value !== 'object' || value === null) return false;
+  const nodes = Array.isArray(value.nodes) ? value.nodes : [];
+  return nodes.some((node) => typeof node === 'object' && node !== null);
+}
+
+function clip(text, max) {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n…(truncated ${text.length - max} chars)`;
+}
+
+function normalizeGraph(value, rootPath) {
+  if (typeof value !== 'object' || value === null) throw bizError('model did not return a graph object', 502);
+  const nodes = [];
+  const ids = new Set();
+  const rawNodes = Array.isArray(value.nodes) ? value.nodes : [];
+  for (const raw of rawNodes) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const id = typeof raw.id === 'string' && raw.id !== '' ? raw.id : `n${nodes.length + 1}`;
+    if (ids.has(id)) continue;
+    ids.add(id);
+    nodes.push({
+      id,
+      name: typeof raw.name === 'string' && raw.name !== '' ? raw.name : id,
+      kind: NODE_KINDS.has(raw.kind) ? raw.kind : 'process',
+      summary: typeof raw.summary === 'string' ? raw.summary : '',
+      files: Array.isArray(raw.files) ? raw.files.filter((f) => typeof f === 'string').slice(0, 12) : [],
+    });
+  }
+  const edges = [];
+  const rawEdges = Array.isArray(value.edges) ? value.edges : [];
+  for (const raw of rawEdges) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    if (!ids.has(raw.from) || !ids.has(raw.to) || raw.from === raw.to) continue;
+    edges.push({
+      from: raw.from,
+      to: raw.to,
+      label: typeof raw.label === 'string' ? raw.label.slice(0, 60) : '',
+      kind: EDGE_KINDS.has(raw.kind) ? raw.kind : 'flow',
+    });
+  }
+  if (nodes.length === 0) throw bizError('model returned an empty graph', 502);
+  return {
+    business: typeof value.business === 'string' && value.business !== '' ? value.business : '',
+    rootPath,
+    nodes: nodes.slice(0, 40),
+    edges: edges.slice(0, 80),
+  };
+}
+
+const ANALYZE_PROMPT = (business, digest) => [
+  `请分析当前项目（你的工作目录就是项目根目录）中以下业务的「数据业务流程」：${business}`,
+  '',
+  '服务端已预扫描并摘录了项目文件，通常足以直接给出结论；只有摘录明显不足时才用工具补充，最多 3 次只读工具调用。',
+  '不要修改任何文件，不要安装依赖或运行命令，不要创建子代理、团队或任务。',
+  '',
+  '项目文件索引（节选）：',
+  digest.tree === '' ? '(空)' : digest.tree,
+  '',
+  '关键文件摘录：',
+  digest.excerpts === '' ? '(无可用摘录，请自行用工具少量查看)' : digest.excerpts,
+  '',
+  '然后回复且仅回复一个 JSON 对象（不要 markdown 代码围栏，不要多余文字）：',
+  '{',
+  '  "business": "<规范化的业务名>",',
+  '  "nodes": [{"id": "n1", "name": "<简短名称>", "kind": "...", "summary": "<一两句话>", "files": ["相对路径"]}],',
+  '  "edges": [{"from": "n1", "to": "n2", "label": "<短标签>", "kind": "..."}]',
+  '}',
+  '',
+  '节点 kind 只能是：entry（用户/API/任务入口）、process（业务步骤/服务）、data（模型/表/存储/文件）、permission（鉴权/角色/租户边界）、external（第三方服务）。',
+  '边 kind 只能是：flow（调用/控制顺序）、data（读写/产出）、auth（鉴权约束）。',
+  '图保持可读：6-20 个节点，从入口排到数据落点；节点尽量使用项目里真实的模块/文件名。',
+  'nodes 绝不能是空数组：若该项目没有直接实现该业务，就分析其中最接近的真实数据流程，并在 business 字段里注明。',
+  '每个节点必须带上实现它的项目相对路径文件（能识别时）。',
+].join('\n');
+
+/** One retry when the previous answer carried no nodes at all. */
+const ANALYZE_REPAIR_PROMPT = [
+  '你上一条回答没有给出任何节点（nodes 为空），这不是可用结果。',
+  '请重新输出，务必保证 nodes 至少 6 个：',
+  '- 若该业务在本项目中确实没有实现，就改为分析项目中「最接近的真实数据流程」，并在 business 字段中注明；',
+  '- 若信息不足，可用工具补充查看，最多 3 次只读调用；',
+  '- 不要返回空数组，不要解释。',
+  '只输出一个 JSON 对象，结构：',
+  '{"business":"...","nodes":[{"id":"n1","name":"...","kind":"entry|process|data|permission|external","summary":"...","files":["相对路径"]}],"edges":[{"from":"n1","to":"n2","label":"...","kind":"flow|data|auth"}]}',
+].join('\n');
+
+const DRAFT_PROMPT = ({ business, node, neighbors, requirement, filesDigest }) => [
+  '你是一名资深工程师。当前项目（你的工作目录即项目根目录）的数据业务流程中有一个节点，需要把用户的粗略需求改写成一段可直接执行的精准实现 prompt。',
+  '',
+  `业务流程：${business === '' ? '(未命名)' : business}`,
+  `选中节点：${node.name} [${typeof node.kind === 'string' ? node.kind : 'process'}]`,
+  typeof node.summary === 'string' && node.summary !== '' ? `节点说明：${node.summary}` : '',
+  neighbors === '' ? '' : `业务相邻关系：\n${neighbors}`,
+  Array.isArray(node.files) && node.files.length > 0 ? `节点关联文件：${node.files.join(', ')}` : '',
+  '',
+  '服务端已摘录节点关联文件，通常可直接据此输出；确需确认细节时最多 2 次只读工具调用。',
+  '不要修改任何文件，不要创建子代理、团队或任务。',
+  filesDigest === '' ? '' : `关联文件摘录：\n${filesDigest}`,
+  '',
+  `用户需求：${requirement}`,
+  '',
+  '然后输出且仅输出最终 prompt 文本本身（markdown，不要解释、不要前后缀），要求：',
+  '- 一句话重述目标；',
+  '- 点名需要改动的具体文件/符号及原因；',
+  '- 描述期望行为，包含数据与权限影响；',
+  '- 列出验收标准；',
+  '- 全文不超过 400 字。',
+].filter((part) => part !== '').join('\n');
+
+async function handleAnalyze(ctx, agentsByCwd, body, signal) {
+  const business = typeof body.business === 'string' ? body.business.trim() : '';
+  if (business === '') throw bizError('analyze requires a business description');
+  const projectPath = resolveProjectPath(body.projectPath);
+
+  const sessionIdOverride = typeof body.sessionId === 'string' && body.sessionId !== '' ? body.sessionId : undefined;
+  let digest;
+  try {
+    digest = buildProjectDigest(projectPath);
+  } catch (error) {
+    throw bizError(`cannot read project directory: ${error?.message ?? String(error)}`);
+  }
+  let answer = '';
+  let sessionId = '';
+  try {
+    ({ answer, sessionId } = await runAgentTurn(
+      ctx, agentsByCwd, projectPath, ANALYZE_PROMPT(business, digest), signal, sessionIdOverride,
+    ));
+  } catch (error) {
+    invalidateAnalysisAgent(agentsByCwd, projectPath);
+    throw error;
+  }
+  let parsed = pickGraphObject(answer);
+  if (!usableGraph(parsed)) {
+    // The model sometimes answers with an empty graph when it believes the
+    // business is absent; one repair turn asks for the closest real flow.
+    let retryAnswer = '';
+    try {
+      const retry = await runAgentTurn(
+        ctx, agentsByCwd, projectPath, ANALYZE_REPAIR_PROMPT, signal, sessionId === '' ? undefined : sessionId,
+      );
+      retryAnswer = retry.answer;
+      sessionId = retry.sessionId ?? sessionId;
+    } catch {
+      /* keep the first answer's diagnostics */
+    }
+    const retried = pickGraphObject(retryAnswer);
+    if (usableGraph(retried)) parsed = retried;
+    else if (retryAnswer.trim() !== '') answer = retryAnswer;
+  }
+  if (!usableGraph(parsed)) {
+    throw bizError(
+      `agent returned no usable nodes — got: ${answer.replace(/\s+/g, ' ').slice(0, 400)}`,
+      502,
+    );
+  }
+  const graph = normalizeGraph(parsed, projectPath);
+  return { graph, sessionId };
+}
+
+async function handleDraft(ctx, agentsByCwd, body, signal) {
+  const projectPath = resolveProjectPath(body.projectPath);
+  const node = typeof body.node === 'object' && body.node !== null ? body.node : undefined;
+  const requirement = typeof body.requirement === 'string' ? body.requirement.trim() : '';
+  if (node === undefined || typeof node.name !== 'string') throw bizError('draft requires a selected node');
+  if (requirement === '') throw bizError('draft requires a requirement');
+
+  const business = typeof body.business === 'string' ? body.business : '';
+  let neighbors = '';
+  const graph = typeof body.graph === 'object' && body.graph !== null ? body.graph : undefined;
+  if (graph !== undefined && Array.isArray(graph.edges) && Array.isArray(graph.nodes)) {
+    const byId = new Map(graph.nodes.map((n) => [n?.id, n]));
+    const related = [];
+    for (const edge of graph.edges) {
+      if (edge?.from === node.id) related.push(`→ ${byId.get(edge.to)?.name ?? edge.to} (${edge.kind}${edge.label ? `: ${edge.label}` : ''})`);
+      if (edge?.to === node.id) related.push(`← ${byId.get(edge.from)?.name ?? edge.from} (${edge.kind}${edge.label ? `: ${edge.label}` : ''})`);
+    }
+    if (related.length > 0) neighbors = related.slice(0, 12).join('\n');
+  }
+
+  const sessionIdOverride = typeof body.sessionId === 'string' && body.sessionId !== '' ? body.sessionId : undefined;
+  const filesDigest = buildNodeDigest(projectPath, node.files);
+  let answer = '';
+  try {
+    ({ answer } = await runAgentTurn(
+      ctx, agentsByCwd, projectPath,
+      DRAFT_PROMPT({ business, node, neighbors, requirement, filesDigest }), signal, sessionIdOverride,
+    ));
+  } catch (error) {
+    invalidateAnalysisAgent(agentsByCwd, projectPath);
+    throw error;
+  }
+  const trimmed = answer.trim();
+  if (trimmed === '') throw bizError('agent returned an empty prompt — retry', 502);
+  return { prompt: clip(trimmed, 12000) };
+}
+
+function handleHistoryGet() {
+  const entries = readHistoryFile().sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
+  return { entries };
+}
+
+/**
+ * Merge entries into the history (by id). Never deletes: an old page that still posts its whole
+ * (possibly truncated) list can no longer wipe records — deletions go through /history/delete.
+ */
+function handleHistoryMerge(body) {
+  const entries = Array.isArray(body.entries) ? body.entries.filter(isHistoryEntry) : undefined;
+  if (entries === undefined) throw bizError('history save requires an entries array');
+  const byId = new Map(readHistoryFile().map((entry) => [entry.id, entry]));
+  for (const entry of entries) {
+    const existing = byId.get(entry.id);
+    if (existing === undefined || (Number(entry.at) || 0) >= (Number(existing.at) || 0)) byId.set(entry.id, entry);
+  }
+  const stored = writeHistoryFile([...byId.values()]);
+  if (stored === undefined) throw bizError('cannot write the history file', 500);
+  return { entries: stored };
+}
+
+/** Insert or replace one entry; `replaceSameRun` also drops older records of the same project + business. */
+function handleHistoryUpsert(body) {
+  const entry = body.entry;
+  if (!isHistoryEntry(entry)) throw bizError('history upsert requires a valid entry');
+  const sameRun = (other) => other.projectPath === entry.projectPath && (other.business ?? '') === (entry.business ?? '');
+  const rest = readHistoryFile().filter((other) => other.id !== entry.id && !(body.replaceSameRun === true && sameRun(other)));
+  const stored = writeHistoryFile([{ ...entry, at: Number(entry.at) || Date.now() }, ...rest]);
+  if (stored === undefined) throw bizError('cannot write the history file', 500);
+  return { entries: stored };
+}
+
+/** Delete by ids, by project folder, or everything (`all: true`). */
+function handleHistoryDelete(body) {
+  const ids = Array.isArray(body.ids) ? new Set(body.ids.filter((id) => typeof id === 'string')) : null;
+  const project = typeof body.projectPath === 'string' && body.projectPath !== '' ? body.projectPath : null;
+  if (body.all !== true && ids === null && project === null) {
+    throw bizError('history delete requires ids, projectPath or all');
+  }
+  const kept = body.all === true ? [] : readHistoryFile().filter((entry) => !(
+    (ids !== null && ids.has(entry.id)) || (project !== null && entry.projectPath === project)));
+  const stored = writeHistoryFile(kept);
+  if (stored === undefined) throw bizError('cannot write the history file', 500);
+  return { entries: stored };
+}
+
+function handlePing(ctx) {
+  let configured = false;
+  let provider = '';
+  let model = '';
+  try {
+    const selection = ctx.get('agentDefaultModel')?.currentSelection?.();
+    if (selection && typeof selection.provider === 'string' && typeof selection.model === 'string'
+      && selection.provider !== '' && selection.model !== '') {
+      configured = true;
+      provider = selection.provider;
+      model = selection.model;
+    }
+  } catch {
+    /* unconfigured */
+  }
+  return { configured, provider, model };
+}
+
+// ----------------------------------------------------------------------------------------------
+// Loopback fence, mirrors the local plugin pattern: requests that did not arrive on a loopback
+// socket with an exact loopback `Host` authority, no cross-site fetch metadata, and no foreign
+// `Origin`/`Referer` are refused before any handler runs.
+// ----------------------------------------------------------------------------------------------
+
+function isLoopbackHostname(hostname) {
+  if (typeof hostname !== 'string' || hostname === '') return false;
+  if (hostname === 'localhost' || hostname === '::1' || hostname === '[::1]') return true;
+  return /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){2}$/.test(hostname);
+}
+
+function isLoopbackSource(value) {
+  if (value === undefined) return true;
+  if (typeof value !== 'string' || value.trim() === '') return true;
+  if (value.trim().toLowerCase() === 'null') return false;
+  try {
+    return isLoopbackHostname(new URL(value.trim()).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackRequest(request) {
+  const address = request.socket?.remoteAddress || '';
+  const loopbackAddress =
+    address === '::1' ||
+    address.startsWith('127.') ||
+    address.startsWith('::ffff:127.') ||
+    address === '::ffff:7f00:1';
+  if (!loopbackAddress) return false;
+  const host = request.headers.host;
+  if (typeof host !== 'string') return false;
+  let hostname = '';
+  try {
+    hostname = new URL(`http://${host}`).hostname;
+  } catch {
+    return false;
+  }
+  if (!isLoopbackHostname(hostname)) return false;
+  if (request.headers['sec-fetch-site'] === 'cross-site') return false;
+  if (!isLoopbackSource(request.headers.origin)) return false;
+  if (!isLoopbackSource(request.headers.referer)) return false;
+  return true;
+}
+
+const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+
+function writeJson(response, status, body) {
+  try {
+    response.writeHead(status, JSON_HEADERS);
+    response.end(JSON.stringify(body));
+  } catch {
+    /* the browser may have navigated away */
+  }
+}
+
+async function readJsonBody(request, limit = MAX_BODY_BYTES) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    total += chunk.length;
+    if (total > limit) throw bizError(`request body exceeds ${limit} bytes`, 413);
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) return {};
+  const text = Buffer.concat(chunks).toString('utf8');
+  if (text.trim() === '') return {};
+  try {
+    const value = JSON.parse(text);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw bizError('request body must be a JSON object');
+    }
+    return value;
+  } catch (error) {
+    if (error && error.status) throw error;
+    throw bizError('request body is not valid JSON');
+  }
+}
+
+export function apply(ctx) {
+  /** cwd → Promise<{ sessionId, handle }> for the live analysis agent of that project. */
+  const agentsByCwd = new Map();
+  // One route per path: the carrier keys exact routes by path, so methods are
+  // dispatched inside the handler instead of registering the path again.
+  const ROUTES = [
+    ['/ping', ['GET'], async () => handlePing(ctx)],
+    ['/analyze', ['POST'], async (body, signal) => handleAnalyze(ctx, agentsByCwd, body, signal)],
+    ['/draft', ['POST'], async (body, signal) => handleDraft(ctx, agentsByCwd, body, signal)],
+    ['/history', ['GET'], async () => handleHistoryGet()],
+    ['/history/save', ['POST'], async (body) => handleHistoryMerge(body), MAX_HISTORY_BODY_BYTES],
+    ['/history/upsert', ['POST'], async (body) => handleHistoryUpsert(body)],
+    ['/history/delete', ['POST'], async (body) => handleHistoryDelete(body)],
+    ['/history/clear', ['POST'], async () => handleHistoryDelete({ all: true })],
+  ];
+
+  ctx.effect(() => {
+    const disposers = [];
+    for (const [suffix, methods, handler, bodyLimit] of ROUTES) {
+      try {
+        disposers.push(ctx.webServer.register({
+        kind: 'exact',
+        path: `${PREFIX}${suffix}`,
+        handler: async (request, response) => {
+          try {
+            if (!isLoopbackRequest(request)) {
+              writeJson(response, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden: loopback-only' } });
+              return;
+            }
+            if (!methods.includes(request.method)) {
+              writeJson(response, 405, { ok: false, error: { code: 'method', message: `expected ${methods.join(' or ')}` } });
+              return;
+            }
+            const hasBody = request.method !== 'GET' && request.method !== 'DELETE';
+            const body = hasBody ? await readJsonBody(request, bodyLimit) : {};
+            const controller = new AbortController();
+            // 'aborted' on IncomingMessage is deprecated; a response closed before it finished
+            // means the browser went away, so stop the (possibly minutes-long) agent turn.
+            response.on('close', () => {
+              if (!response.writableFinished) controller.abort();
+            });
+            const payload = await handler(body, controller.signal, request.method);
+            writeJson(response, 200, { ok: true, ...payload });
+          } catch (error) {
+            const status = error && error.status ? error.status : 500;
+            const message = error instanceof Error ? error.message : String(error);
+            writeJson(response, status, { ok: false, error: { code: 'internal', message } });
+          }
+        },
+        }));
+      } catch (error) {
+        // A route left behind by an earlier activation still owns this path; the
+        // panel keeps working, and the fresh handler takes over after a restart.
+        ctx.logger?.warn?.(`bizflow: route ${PREFIX}${suffix} is already registered`, error);
+      }
+    }
+    return () => {
+      for (const dispose of disposers) {
+        try {
+          dispose();
+        } catch {
+          /* ignore disposal errors */
+        }
+      }
+      for (const entry of agentsByCwd.values()) {
+        Promise.resolve(entry)
+          .then((value) => value?.handle?.dispose?.())
+          .catch(() => { /* agent already gone */ });
+      }
+      agentsByCwd.clear();
+    };
+  }, 'bizflow: routes');
+}

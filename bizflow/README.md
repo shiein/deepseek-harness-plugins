@@ -1,0 +1,91 @@
+# 业务流程分析（BizFlow）— DSH 插件
+
+在 DeepSeek Harness 的左侧栏加一个「业务流程分析」面板：选一个本地项目目录，用自然语言描述一项业务
+（例如「会员下单支付的完整链路」「发票审批流程」），由 profile 里**已配置的默认模型**阅读项目，
+把这项业务的**数据业务流程**画成拓扑图；再选中图上的某个节点写下粗略需求，插件会把它改写成一段
+可以直接交给 Agent 执行的**精准实现 prompt**，并能一键在该项目里新建会话。
+
+## 功能
+
+- **业务流程拓扑图**：节点分 5 类（`entry` 入口、`process` 流程、`data` 数据、`permission` 权限、
+  `external` 外部服务），连线分 3 类（`flow` 调用、`data` 读写、`auth` 鉴权）。图一般为 6–20 个节点，
+  从入口排到数据落点，节点尽量使用项目里真实的模块和文件名，并附带实现它的相对路径文件。
+- **画布操作**：缩放、适应画布、全屏（浏览器全屏不可用时退回页面内最大化）；点击节点查看详情，
+  点击空白处或按 Esc 取消选择。
+- **细化节点 → 精准 prompt**：结合业务名、节点说明、相邻节点关系和关联文件摘录，生成包含目标、
+  要改动的文件或符号、期望行为（含数据与权限影响）和验收标准的 prompt（不超过 400 字），可以复制，
+  也可以「在项目中新建会话」直接使用。
+- **历史记录**：每次分析都会保存，可以按业务或项目路径搜索、重新打开、用当前项目重新分析并更新、
+  单条删除、按项目删除或全部清空（删除前都会确认）。历史不设上限。
+- **服务自检**：面板会显示默认模型是否已配置以及 provider / model 名称；未配置时给出提示。
+- 中英双语界面。
+
+## 工作方式
+
+1. Host 端先在本地预扫描项目：跳过 `node_modules`、`.git`、`dist`、`build`、`target`、`.venv`
+   等目录，按文件名挑出 controller / service / route / mapper / schema / migration / auth / config
+   等候选文件，摘录成索引和关键片段（约 2 万字符以内）。
+2. 通过 Harness 的 `agents` 服务为该项目创建一个分析用 Agent（工作目录就是项目根目录，模型取自
+   `agentDefaultModel` 的当前选择），用 `sessionController` 提交一轮真实的会话，直到 `turn/end`。
+   同一项目复用同一个 Agent，后续细化会延续同一段对话；出错时丢弃，下次重新创建。
+3. 要求模型只输出一个 JSON 对象；插件从回复中提取并校验节点和连线。如果第一次没有给出节点，会再
+   追问一次。单轮最长 8 分钟，关闭面板或断开连接会取消正在进行的那一轮。
+
+> 提示词要求模型「不修改文件、不安装依赖、不运行命令，最多 3 次只读工具调用」，但这只是对模型的
+> 约束，插件本身并没有在工具层面禁止写操作。实际权限仍取决于你在 Harness 里的审批或权限预设。
+
+## 安装
+
+这是一个 DSH profile bundle（`cordis.patch.yml` 插入 Host 行 `bizflow`，`package.json#dsh.client`
+声明 Client 模块）。
+
+在 Web GUI 的插件管理里选择「从本地目录安装 bundle」，指向本目录即可。安装后 profile 的
+`package.json` 里会出现这两项，可以据此核对：
+
+```jsonc
+{
+  "dsh": { "profile": { "bundles": ["@local/bizflow"] } },
+  "dependencies": { "@local/bizflow": "link:/path/to/bizflow" }
+}
+```
+
+前提：profile 里已配置可用的默认模型（`@deepseek-ai/dsh-agent-default-model`）。
+
+更新 `index.js` 后需要重新启用插件行或重启 DSH；只改 `client.js` 时刷新一次页面即可。
+
+## HTTP 接口
+
+全部挂在 `/api/bizflow/` 下，只接受来自本机回环地址的请求（校验连接地址、`Host`、`Origin`/`Referer`
+和跨站 fetch 元数据），其他请求一律返回 403。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/ping` | 默认模型是否已配置，以及 provider / model |
+| POST | `/analyze` | `{projectPath, business, sessionId?}` → 拓扑图 |
+| POST | `/draft` | `{projectPath, business, node, graph, requirement, sessionId?}` → `{prompt}` |
+| GET | `/history` | 读取历史 |
+| POST | `/history/save` | 按 id 合并整份历史（只增改，不删除） |
+| POST | `/history/upsert` | 新增或更新一条 |
+| POST | `/history/delete` | 删除一条或某个项目的全部记录 |
+| POST | `/history/clear` | 清空历史 |
+
+## 数据位置
+
+- 历史记录：`~/.dsh/bizflow/history.json`（原子写入；文件损坏时会拒绝写入，避免覆盖丢失）
+- 旧版本存在浏览器 `localStorage` 里的记录，会在首次打开时迁移到上述文件
+
+## 目录结构
+
+```
+package.json        # bundle 清单：dsh.bundle.patch + dsh.client
+cordis.patch.yml    # 插入 Host 行 bizflow
+index.js            # Host：项目预扫描、Agent 会话、图校验、历史存储、HTTP 路由
+client.js           # Client：左侧栏入口、拓扑图画布、节点细化、历史面板
+locale/zh.json, en.json
+icon.svg
+```
+
+## 已知限制
+
+- 拓扑图质量取决于所配置模型的能力和项目摘录的覆盖面；超大项目只会摘录其中一部分文件。
+- 分析结果是模型的归纳，不是静态分析结论，节点和文件对应关系需要人工核对。

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent 历史对话",
+    "description": "本机所有 AI 编程 Agent 的历史对话浏览器：扫描 Claude Code、Codex、DeepSeek Harness、OpenCode、Pi、Grok Build、Devin、Antigravity 等工具保存在本机的会话，可按 Agent 或按项目文件夹分类；按项目分类时把同一文件夹里多个 Agent 的对话合并成一条按时间排序的时间轴，并可一键在对应 Agent 中继续该对话。只有手动刷新时才会读取文件。"
+  }
+}

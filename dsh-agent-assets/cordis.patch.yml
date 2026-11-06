@@ -1,0 +1,8 @@
+# Agent Assets bundle patch for the desktop profile.
+#
+# One Host row serves /api/dsh-agent-assets/* for skills, agent-prompt instruction files and
+# MCP servers; one Client module (declared by package.json#dsh.client) registers the left-sidebar
+# entry and the main-column management page.
+- insert:
+    - id: agent-assets
+      name: '@local/dsh-agent-assets'

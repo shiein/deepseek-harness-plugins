@@ -1,0 +1,55 @@
+{
+  "name": "@local/dsh-agent-assets",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Left-sidebar asset manager for DeepSeek Harness: skills, MCP servers and agent prompts, grouped by scope, with create/read/update/delete.",
+  "icon": "./icon.svg",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "skills",
+    "mcp",
+    "agent-prompts"
+  ],
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "host/*.js",
+    "locale/*.json",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "API.md",
+    "DESIGN.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:integration": "node test/host-integration.mjs",
+    "test:render": "node test/client-render.test.mjs",
+    "test:live": "node test/live-api.mjs"
+  }
+}

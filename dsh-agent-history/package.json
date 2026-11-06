@@ -1,0 +1,40 @@
+{
+  "name": "@local/dsh-agent-history",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local AI coding-agent conversation history: scans the session stores of Claude Code, Codex, DeepSeek Harness, OpenCode, Pi, Grok Build, Devin, Antigravity and more, then browses every conversation by agent or by project folder on one multi-agent timeline, and resumes any conversation in its own agent.",
+  "icon": "icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "host/*.js",
+    "host/providers/*.js",
+    "locale/*.json",
+    "icon.svg",
+    "cordis.patch.yml",
+    "CONTRACT.md",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}

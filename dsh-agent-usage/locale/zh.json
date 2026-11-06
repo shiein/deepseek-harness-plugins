@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent Token 用量",
+    "description": "本地 AI 编程 Agent 的 Token 用量看板：扫描 Claude Code、Codex、Cursor、OpenCode、Trae、Qoder、Devin、Pi、DeepSeek Harness 等工具保存在本机的会话文件，按 Agent、模型、日期汇总消耗量与估算费用。只有手动刷新时才会扫描文件。"
+  }
+}

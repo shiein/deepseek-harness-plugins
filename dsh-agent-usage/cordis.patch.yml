@@ -1,0 +1,5 @@
+# Bundle patch: one Host plugin row that serves the local usage snapshot through
+# /api/dsh-agent-usage/* and one Client module that renders the sidebar entry and page.
+- insert:
+    - id: agent-usage
+      name: '@local/dsh-agent-usage'

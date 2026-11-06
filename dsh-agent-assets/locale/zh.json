@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "title": "Agent 资产",
+    "description": "在左侧栏统一管理 Harness 技能、MCP 服务与 Agent 提示词文件，按用户级 / 工作区级 / 内置分组展示，支持增删改查。"
+  },
+  "entry": {
+    "label": "Agent 资产"
+  }
+}

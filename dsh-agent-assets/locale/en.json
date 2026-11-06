@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "title": "Agent Assets",
+    "description": "Manage harness skills, MCP servers and agent prompt files from one sidebar page, grouped by scope, with create, read, update and delete."
+  },
+  "entry": {
+    "label": "Agent Assets"
+  }
+}

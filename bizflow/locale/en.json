@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Business Flow Analyst",
+    "description": "Analyze a local project's data business flow with the configured model, draw it as a topology graph, and turn node requirements into precise session prompts."
+  }
+}

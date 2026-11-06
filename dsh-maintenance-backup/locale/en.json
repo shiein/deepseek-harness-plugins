@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Cloud Backup Maintenance",
+    "description": "Back up DSH configuration, skills and local plugin projects to Quark Drive: connection status, backup scope and cloud snapshots, one-click backup, scheduled and on-change sync, plus a two-phase restore."
+  }
+}

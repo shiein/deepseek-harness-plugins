@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent Token Usage",
+    "description": "Local token-usage dashboard for AI coding agents: scans Claude Code, Codex, Cursor, OpenCode, Trae, Qoder, Devin, Pi, DeepSeek Harness and more, aggregating usage and estimated cost by agent, model and date. Files are scanned only on manual refresh."
+  }
+}

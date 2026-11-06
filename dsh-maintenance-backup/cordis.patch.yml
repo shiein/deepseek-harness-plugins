@@ -1,0 +1,17 @@
+# DSH 网盘备份维护插件：一个 Host 行（本地 HTTP API + 定时器/文件监听）
+# 和一个 Client 模块（左侧栏入口 + 维护面板）。
+#
+# 定时策略默认值写在这里；用户在面板里改策略后，插件会通过 ctx.configEditor
+# 把覆盖值写进 profile 的 cordis.patch.yml（于是策略本身也会进入备份快照），
+# 同时把运行态副本落在 ~/.dsh-maintenance/state.json。
+- insert:
+    - id: dsh-maintenance-backup
+      name: '@local/dsh-maintenance-backup'
+      config:
+        schedule:
+          enabled: true
+          intervalMinutes: 60
+          keep: 5
+          watch: true
+          debounceSeconds: 60
+        autoRestart: false

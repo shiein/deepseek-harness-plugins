@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="网盘备份维护">
+  <defs>
+    <linearGradient id="mb-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f766e"/>
+      <stop offset="1" stop-color="#0b4f6c"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#mb-bg)"/>
+  <g fill="none" stroke="#e6fffb" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 41h28a7 7 0 0 0 1.6-13.8A12 12 0 0 0 24.4 23 9.4 9.4 0 0 0 18 41Z" stroke-width="2.6"/>
+    <path d="M32 30v14" stroke-width="2.6"/>
+    <path d="m26.5 38.5 5.5 5.8 5.5-5.8" stroke-width="2.6"/>
+    <path d="M20 50h24" stroke-width="2.4" opacity="0.75"/>
+  </g>
+  <circle cx="45" cy="24" r="2.6" fill="#7be0d2"/>
+</svg>

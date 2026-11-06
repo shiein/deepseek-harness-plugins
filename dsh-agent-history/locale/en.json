@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent History",
+    "description": "A conversation browser for every AI coding agent on this machine: scans the local session stores of Claude Code, Codex, DeepSeek Harness, OpenCode, Pi, Grok Build, Devin, Antigravity and more, groups conversations by agent or by project folder, merges the agents working in one folder into a single time-ordered timeline, and resumes any conversation in its own agent. Files are read only on manual refresh."
+  }
+}
