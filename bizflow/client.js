@@ -3,9 +3,10 @@
  * Registers a global sidebar panel icon (sidebar.panellist) whose id selects
  * the matching `main` panel, then renders the analysis workspace there.
  *
- * The flow graph is drawn top-to-bottom (vertical layers) and auto-fits the
- * panel width, so a wide flow stays readable without horizontal scrolling.
- * Successful analyses are kept in localStorage so earlier runs can be reopened.
+ * The flow graph is a layered drawing (top-to-bottom, or left-to-right when that reads larger)
+ * whose automatic zoom keeps node text legible and scrolls along the long axis when needed.
+ * Clicking a node shows its details, including the database tables it reads or writes.
+ * Analyses are saved by the Host in ~/.dsh/bizflow/history.json.
  */
 window.__ModuleLoader__.load({
   id: '@local/bizflow',
@@ -87,6 +88,20 @@ window.__ModuleLoader__.load({
       zoomFit: 'Fit to view',
       summary: 'Summary',
       relatedFiles: 'Related files',
+      tables: 'Tables',
+      tableCount: '{n} tables',
+      tableRead: 'read',
+      tableWrite: 'write',
+      tableReadWrite: 'read/write',
+      tableUnverified: 'Not found in the related files — inferred by the model, please verify',
+      tableInferred: 'inferred',
+      tableFoundIn: 'Found in {file}',
+      tableShared: '+{n} nodes',
+      tableSharedHint: 'Highlight the {n} other nodes that use this table',
+      tableFocusClear: 'Clear table highlight',
+      tablesNone: 'No database table identified for this node',
+      tablesMissing: 'This record predates table detection; press Update to re-analyze and list the tables',
+      edgeLegendTitle: 'Edges',
       step1: 'Project',
       step2: 'Business',
       step3: 'Flow',
@@ -165,6 +180,20 @@ window.__ModuleLoader__.load({
       zoomFit: '适应画布',
       summary: '说明',
       relatedFiles: '关联文件',
+      tables: '涉及的表',
+      tableCount: '{n} 张表',
+      tableRead: '读',
+      tableWrite: '写',
+      tableReadWrite: '读写',
+      tableUnverified: '在关联文件中没有找到这个表名，属于模型推断，请核对',
+      tableInferred: '推断',
+      tableFoundIn: '出现在 {file}',
+      tableShared: '+{n} 个节点',
+      tableSharedHint: '在图中高亮另外 {n} 个涉及这张表的节点',
+      tableFocusClear: '取消表高亮',
+      tablesNone: '这个节点没有识别到直接读写的数据库表',
+      tablesMissing: '这条记录生成时还没有表识别，点「更新」重新分析后即可看到涉及的表',
+      edgeLegendTitle: '连线',
       step1: '项目',
       step2: '业务',
       step3: '流程',
@@ -257,8 +286,9 @@ window.__ModuleLoader__.load({
       .bf-toolbar { flex: none; display: flex; flex-wrap: nowrap; gap: 10px; align-items: center;
         padding: 2px 16px 8px; color: var(--dsw-alias-label-secondary, #57606a); font-size: 11px; min-width: 0; }
       .bf-graph-title { font-size: 12.5px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f2328);
-        min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .bf-legend { display: flex; flex-wrap: nowrap; gap: 10px; align-items: center; }
+        flex: 0 1 auto; min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .bf-legend { display: flex; flex-wrap: nowrap; gap: 10px; align-items: center; flex: 0 1 auto; min-width: 0;
+        overflow: hidden; }
       .bf-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; white-space: nowrap; }
       .bf-legend-col { flex-direction: column; align-items: stretch; gap: 6px; margin-top: 2px; }
       .bf-legend-row { display: flex; align-items: center; gap: 7px; font-size: 12px; }
@@ -416,6 +446,36 @@ window.__ModuleLoader__.load({
       .bf-dialog-title { font-size: 15px; font-weight: 650; }
       .bf-dialog-body { font-size: 12.5px; line-height: 1.6; color: var(--dsw-alias-label-secondary, #57606a); overflow-wrap: anywhere; }
       .bf-dialog-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+      .bf-legend-sep { width: 1px; height: 12px; flex: none; background: var(--dsw-alias-border-l2, rgba(0,0,0,.14)); }
+      .bf-edge-label text { font-family: inherit; }
+      .bf-section-count { margin-left: 6px; font-weight: 500; color: var(--dsw-alias-label-tertiary, #8b949e); }
+      .bf-tables { display: flex; flex-direction: column; gap: 6px; padding-top: 8px;
+        border-top: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); }
+      .bf-tables-note { padding-top: 8px; font-size: 11px; line-height: 1.55; color: var(--dsw-alias-label-tertiary, #8b949e);
+        border-top: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); }
+      .bf-table { display: flex; flex-direction: column; gap: 3px; padding: 6px 8px; border-radius: 8px;
+        border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); background: var(--dsw-alias-bg-base, #fff); }
+      .bf-table.is-active { border-color: color-mix(in srgb, #b98000 55%, transparent);
+        background: color-mix(in srgb, #b98000 7%, var(--dsw-alias-bg-base, #fff)); }
+      .bf-table-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .bf-table-icon { display: inline-flex; flex: none; color: #b98000; }
+      .bf-table-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px;
+        color: var(--dsw-alias-label-primary, #1f2328); }
+      .bf-access { flex: none; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.5; }
+      .bf-access-read { color: #2f6fed; background: color-mix(in srgb, #2f6fed 12%, transparent); }
+      .bf-access-write { color: #c4560d; background: color-mix(in srgb, #c4560d 12%, transparent); }
+      .bf-access-readwrite { color: #7a5af8; background: color-mix(in srgb, #7a5af8 12%, transparent); }
+      .bf-table-inferred { flex: none; padding: 0 6px; border-radius: 999px; font-size: 10px; line-height: 1.5; cursor: help;
+        color: #9a6700; border: 1px dashed color-mix(in srgb, #b98000 60%, transparent); }
+      .bf-table-share { flex: none; padding: 1px 6px; border: 0; border-radius: 6px; background: transparent; cursor: pointer;
+        font: inherit; font-size: 10.5px; color: var(--dsw-alias-label-secondary, #57606a); white-space: nowrap; }
+      .bf-table-share:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.05));
+        color: var(--dsw-alias-label-primary, #1f2328); }
+      .bf-table-share.is-on { color: #9a6700; background: color-mix(in srgb, #b98000 14%, transparent); }
+      .bf-table-share:focus-visible { outline: 2px solid var(--bf-accent); outline-offset: 1px; }
+      .bf-table-note { padding-left: 19px; font-size: 11px; line-height: 1.5; color: var(--dsw-alias-label-secondary, #57606a); }
+      @media (max-width: 1320px) { .bf-legend-edge { display: none; } }
       @media (max-width: 1180px) { .bf-steps { display: none; } .bf-side { width: 300px; } }
       @media (max-width: 900px) {
         .bf-status, .bf-legend { display: none; }
@@ -517,8 +577,8 @@ window.__ModuleLoader__.load({
     //     order and spacing (a few relaxation rounds), then the drawing is normalised.
     // ------------------------------------------------------------------------------------------
 
-    const NODE_W = 198;
-    const NODE_H = 64;
+    const NODE_W = 212;
+    const NODE_H = 70;
     const DUMMY = 18;
 
     function layoutGraph(nodes, edges, orientation = 'vertical') {
@@ -652,7 +712,7 @@ window.__ModuleLoader__.load({
       index();
 
       // 5. coordinates along the order axis
-      const gap = vertical ? 30 : 22;
+      const gap = vertical ? 36 : 26;
       const coord = new Map();
       for (const layer of layers) {
         let cursor = 0;
@@ -707,7 +767,8 @@ window.__ModuleLoader__.load({
       if (!Number.isFinite(minCoord)) { minCoord = 0; maxCoord = 0; }
 
       // map to x/y (top-left of real nodes, centre points for virtual ones)
-      const rankStep = vertical ? NODE_H + 58 : NODE_W + 76;
+      // rank gaps leave room for one row of edge labels between layers
+      const rankStep = vertical ? NODE_H + 74 : NODE_W + 104;
       const centre = (id) => {
         const o = coord.get(id) - minCoord;
         const rr = rank.get(id) * rankStep + (vertical ? NODE_H / 2 : NODE_W / 2);
@@ -728,8 +789,8 @@ window.__ModuleLoader__.load({
       return {
         pos,
         routes,
-        width: (vertical ? span : depth) + 8,
-        height: (vertical ? depth : span) + 8,
+        width: (vertical ? span : depth) + 16,
+        height: (vertical ? depth : span) + 16,
         NODE_W,
         NODE_H,
         orientation,
@@ -741,6 +802,21 @@ window.__ModuleLoader__.load({
     function fitScale(layout, size) {
       if (!layout || !size || size.width <= 0 || size.height <= 0) return 1;
       return Math.min(1, (size.width - 32) / layout.width, (size.height - 24) / layout.height);
+    }
+
+    /** Below this scale node text gets too small to read, so the automatic fit stops shrinking. */
+    const READABLE_SCALE = 0.8;
+    const MIN_SCALE = 0.3;
+
+    /**
+     * Automatic zoom: the whole graph when it fits at a readable size; otherwise fit the width
+     * (never above READABLE_SCALE) and let the canvas scroll along the long axis.
+     */
+    function readableScale(layout, size) {
+      const all = fitScale(layout, size);
+      if (all >= READABLE_SCALE || !layout || !size || size.width <= 0) return all;
+      const widthFit = Math.min(1, (size.width - 32) / layout.width);
+      return Math.max(all, Math.min(widthFit, READABLE_SCALE));
     }
 
     /** Pick the orientation that reads largest in the current canvas (ties keep top-to-bottom). */
@@ -806,109 +882,289 @@ window.__ModuleLoader__.load({
       search: 'M7 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10z M10.6 10.6 14 14',
     };
 
-    /** Anchor point of a node box on the side facing `toward`. */
-    function anchor(box, toward, w, hgt, vertical) {
-      const cx = box.x + w / 2;
-      const cy = box.y + hgt / 2;
-      if (vertical) return { x: cx, y: toward.y >= cy ? box.y + hgt : box.y };
-      return { x: toward.x >= cx ? box.x + w : box.x, y: cy };
+    const KIND_GLYPH = {
+      entry: 'M2.5 8h6.5 M6.5 5.3 9.2 8l-2.7 2.7 M10.5 3.2h1.8a1.2 1.2 0 0 1 1.2 1.2v7.2a1.2 1.2 0 0 1-1.2 1.2h-1.8',
+      process: 'M3.5 3h9v3.6h-9z M3.5 9.4h9V13h-9z M8 6.6v2.8',
+      data: 'M3 4.2c0-.9 2.2-1.6 5-1.6s5 .7 5 1.6v7.6c0 .9-2.2 1.6-5 1.6s-5-.7-5-1.6z'
+        + ' M3 4.2c0 .9 2.2 1.6 5 1.6s5-.7 5-1.6 M3 8c0 .9 2.2 1.6 5 1.6s5-.7 5-1.6',
+      permission: 'M8 2.2l4.6 1.7v3.5c0 2.9-1.9 5.1-4.6 6.1-2.7-1-4.6-3.2-4.6-6.1V3.9z M6 7.9l1.4 1.4 2.7-2.7',
+      external: 'M8 2.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z M2.5 8h11'
+        + ' M8 2.5c1.5 1.5 2.3 3.4 2.3 5.5S9.5 12 8 13.5 M8 2.5C6.5 4 5.7 5.9 5.7 8s.8 4 2.3 5.5',
+    };
+    const TABLE_GLYPH = 'M2.5 3.5h11v9h-11z M2.5 6.6h11 M6.6 6.6v5.9';
+
+    function tablesOf(node) {
+      return Array.isArray(node?.tables)
+        ? node.tables.filter((table) => table && typeof table.name === 'string' && table.name !== '')
+        : [];
+    }
+
+    /** Lower-cased table name → ids of the nodes that touch it. */
+    function tableUsage(graph) {
+      const usage = new Map();
+      for (const node of graph?.nodes ?? []) {
+        for (const table of tablesOf(node)) {
+          const key = table.name.toLowerCase();
+          if (!usage.has(key)) usage.set(key, []);
+          if (!usage.get(key).includes(node.id)) usage.get(key).push(node.id);
+        }
+      }
+      return usage;
+    }
+
+    /** Rough rendered width of `text` (CJK/full-width glyphs ≈ 1em, others ≈ 0.58em). */
+    function textWidth(text, fontSize) {
+      let width = 0;
+      for (const ch of String(text ?? '')) width += (ch.charCodeAt(0) >= 0x2e80 ? 1 : 0.58) * fontSize;
+      return width;
+    }
+
+    /**
+     * Edge end points spread along the node side they leave/enter, ordered by where the other
+     * end lies, so fan-in and fan-out stay apart instead of meeting in one point.
+     * Returns edge index → { from, to } anchor points.
+     */
+    function edgePorts(graph, layout) {
+      const { pos, routes, NODE_W: W, NODE_H: H } = layout;
+      const vertical = layout.orientation !== 'horizontal';
+      const centre = (box) => ({ x: box.x + W / 2, y: box.y + H / 2 });
+      const groups = new Map();
+      const ends = new Map();
+      const add = (edgeIndex, end, id, box, toward) => {
+        const c = centre(box);
+        const side = vertical ? (toward.y >= c.y ? 'b' : 't') : (toward.x >= c.x ? 'r' : 'l');
+        const key = `${id}\u0000${side}`;
+        if (!groups.has(key)) groups.set(key, { box, side, members: [] });
+        groups.get(key).members.push({ edgeIndex, end, cross: vertical ? toward.x : toward.y });
+      };
+      graph.edges.forEach((e, i) => {
+        const a = pos.get(e.from);
+        const b = pos.get(e.to);
+        if (!a || !b) return;
+        const via = routes.get(i) ?? [];
+        add(i, 'from', e.from, a, via[0] ?? centre(b));
+        add(i, 'to', e.to, b, via[via.length - 1] ?? centre(a));
+      });
+      for (const { box, side, members } of groups.values()) {
+        members.sort((m, n) => m.cross - n.cross);
+        const length = vertical ? W : H;
+        const step = vertical ? 18 : 12;
+        const span = Math.min(length * (vertical ? 0.72 : 0.6), (members.length - 1) * step);
+        members.forEach((member, k) => {
+          const offset = members.length === 1 ? 0 : -span / 2 + (k * span) / (members.length - 1);
+          const point = vertical
+            ? { x: box.x + W / 2 + offset, y: side === 'b' ? box.y + H : box.y }
+            : { x: side === 'r' ? box.x + W : box.x, y: box.y + H / 2 + offset };
+          if (!ends.has(member.edgeIndex)) ends.set(member.edgeIndex, {});
+          ends.get(member.edgeIndex)[member.end] = point;
+        });
+      }
+      return ends;
+    }
+
+    /** Control points of the cubic between `a` and `b`, tangent to the rank axis. */
+    function segmentControls(a, b, vertical) {
+      if (vertical) {
+        const k = (b.y - a.y) / 2;
+        return [{ x: a.x, y: a.y + k }, { x: b.x, y: b.y - k }];
+      }
+      const k = (b.x - a.x) / 2;
+      return [{ x: a.x + k, y: a.y }, { x: b.x - k, y: b.y }];
     }
 
     /** Smooth path through `points` with tangents along the rank axis. */
     function smoothPath(points, vertical) {
       let d = `M${points[0].x} ${points[0].y}`;
       for (let i = 1; i < points.length; i += 1) {
-        const a = points[i - 1];
-        const b = points[i];
-        if (vertical) {
-          const k = (b.y - a.y) / 2;
-          d += ` C ${a.x} ${a.y + k}, ${b.x} ${b.y - k}, ${b.x} ${b.y}`;
-        } else {
-          const k = (b.x - a.x) / 2;
-          d += ` C ${a.x + k} ${a.y}, ${b.x - k} ${b.y}, ${b.x} ${b.y}`;
-        }
+        const [c1, c2] = segmentControls(points[i - 1], points[i], vertical);
+        d += ` C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${points[i].x} ${points[i].y}`;
       }
       return d;
     }
 
-    function GraphView({ graph, layout, selectedId, onSelect, zoom, t }) {
-      const { pos, routes, NODE_W: W, NODE_H: H } = layout;
-      const vertical = layout.orientation !== 'horizontal';
-      const related = new Set();
-      if (selectedId !== null) {
-        for (const e of graph.edges) {
-          if (e.from === selectedId) related.add(e.to);
-          if (e.to === selectedId) related.add(e.from);
+    /** Candidate label centres on the drawn curve, middle segment and middle of the curve first. */
+    function labelCandidates(points, vertical) {
+      const segments = [];
+      for (let i = 1; i < points.length; i += 1) segments.push([points[i - 1], points[i]]);
+      const middle = (segments.length - 1) / 2;
+      const ordered = segments
+        .map((segment, i) => ({ segment, i }))
+        .sort((p, q) => Math.abs(p.i - middle) - Math.abs(q.i - middle));
+      const out = [];
+      for (const t of [0.5, 0.36, 0.64, 0.24, 0.76]) {
+        for (const { segment: [a, b] } of ordered) {
+          const [c1, c2] = segmentControls(a, b, vertical);
+          const u = 1 - t;
+          out.push({
+            x: u * u * u * a.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * b.x,
+            y: u * u * u * a.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * b.y,
+          });
         }
       }
-      const edges = graph.edges.map((e, i) => {
+      return out;
+    }
+
+    function overlaps(r, list) {
+      return list.some((o) => r.x < o.x + o.w && r.x + r.w > o.x && r.y < o.y + o.h && r.y + r.h > o.y);
+    }
+
+    function GraphView({ graph, layout, selectedId, onSelect, zoom, focusIds, t }) {
+      const { pos, routes, NODE_W: W, NODE_H: H } = layout;
+      const vertical = layout.orientation !== 'horizontal';
+      const [hoverNode, setHoverNode] = useState(null);
+      const [hoverEdge, setHoverEdge] = useState(null);
+      const ports = useMemo(() => edgePorts(graph, layout), [graph, layout]);
+
+      // What the drawing emphasises: a table highlight wins, then the selection, then the hover.
+      const focusNode = selectedId ?? hoverNode;
+      const lit = new Set();
+      const litEdges = new Set();
+      if (focusIds !== null && focusIds.length > 0) {
+        for (const id of focusIds) lit.add(id);
+        graph.edges.forEach((e, i) => { if (lit.has(e.from) && lit.has(e.to)) litEdges.add(i); });
+      } else if (focusNode !== null) {
+        lit.add(focusNode);
+        graph.edges.forEach((e, i) => {
+          if (e.from !== focusNode && e.to !== focusNode) return;
+          litEdges.add(i);
+          lit.add(e.from);
+          lit.add(e.to);
+        });
+      }
+      if (hoverEdge !== null && graph.edges[hoverEdge]) {
+        litEdges.add(hoverEdge);
+        lit.add(graph.edges[hoverEdge].from);
+        lit.add(graph.edges[hoverEdge].to);
+      }
+      const emphasis = lit.size > 0 || litEdges.size > 0;
+
+      const drawn = graph.edges.map((e, i) => {
         const a = pos.get(e.from);
         const b = pos.get(e.to);
-        if (!a || !b) return null;
-        const via = routes.get(i) ?? [];
-        const firstToward = via[0] ?? { x: b.x + W / 2, y: b.y + H / 2 };
-        const lastFrom = via[via.length - 1] ?? { x: a.x + W / 2, y: a.y + H / 2 };
-        const points = [anchor(a, firstToward, W, H, vertical), ...via, anchor(b, lastFrom, W, H, vertical)];
-        const stroke = EDGE_COLOR[e.kind] ?? EDGE_COLOR.flow;
-        const touches = selectedId !== null && (e.from === selectedId || e.to === selectedId);
-        const dim = selectedId !== null && !touches;
-        const mid = points.length >= 3
-          ? points[Math.floor(points.length / 2)]
-          : { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
-        const labelWidth = Math.min(120, e.label.length * 5.6 + 8);
-        return h('g', { key: `e${i}`, opacity: dim ? 0.22 : 1 },
-          h('path', {
-            d: smoothPath(points, vertical), fill: 'none', stroke, strokeWidth: touches ? 2 : 1.3,
-            markerEnd: `url(#bf-arrow-${EDGE_COLOR[e.kind] ? e.kind : 'flow'})`, opacity: 0.9,
-            strokeDasharray: e.kind === 'auth' ? '4 3' : undefined,
-          }),
-          e.label === '' ? null : h('g', null,
-            h('rect', {
-              x: mid.x - labelWidth / 2, y: mid.y - 7,
-              width: labelWidth, height: 14, rx: 4,
-              fill: 'var(--dsw-alias-bg-layer-1, #fafbfc)', opacity: 0.92,
-            }),
-            h('text', {
-              x: mid.x, y: mid.y + 3, fontSize: 9.5, textAnchor: 'middle',
-              fill: 'var(--dsw-alias-label-secondary, #57606a)',
-            }, fitText(e.label, 9.5, labelWidth - 6))));
+        const end = ports.get(i);
+        if (!a || !b || !end?.from || !end?.to) return null;
+        return { e, i, points: [end.from, ...(routes.get(i) ?? []), end.to] };
       });
 
-      const nodes = graph.nodes.map((n) => {
+      // Labels: emphasised edges first and always shown; the rest only where they fit without
+      // covering a node or another label (the full text stays available as a tooltip).
+      const blocked = [];
+      for (const [, box] of pos) blocked.push({ x: box.x - 4, y: box.y - 3, w: W + 8, h: H + 6 });
+      const labels = new Map();
+      const order = drawn.filter(Boolean).sort((p, q) => Number(litEdges.has(q.i)) - Number(litEdges.has(p.i)));
+      for (const item of order) {
+        const text = item.e.label;
+        if (text === '') continue;
+        const forced = litEdges.has(item.i);
+        if (emphasis && !forced) continue;
+        const fontSize = 10;
+        const width = Math.min(forced ? 190 : 150, textWidth(text, fontSize) + 14);
+        const height = 17;
+        let chosen = null;
+        const candidates = labelCandidates(item.points, vertical);
+        for (const c of candidates) {
+          const rect = { x: c.x - width / 2, y: c.y - height / 2, w: width, h: height };
+          if (!overlaps(rect, blocked)) { chosen = rect; break; }
+        }
+        if (chosen === null && forced) {
+          const c = candidates[0];
+          chosen = { x: c.x - width / 2, y: c.y - height / 2, w: width, h: height };
+        }
+        if (chosen === null) continue;
+        blocked.push({ x: chosen.x - 3, y: chosen.y - 2, w: chosen.w + 6, h: chosen.h + 4 });
+        labels.set(item.i, { rect: chosen, text: fitText(text, fontSize, width - 12), forced });
+      }
+
+      const edgeLayer = drawn.map((item) => {
+        if (item === null) return null;
+        const { e, i, points } = item;
+        const kind = EDGE_COLOR[e.kind] ? e.kind : 'flow';
+        const stroke = EDGE_COLOR[kind];
+        const on = litEdges.has(i);
+        const d = smoothPath(points, vertical);
+        return h('g', {
+          key: `e${i}`, className: 'bf-edge', opacity: emphasis && !on ? 0.16 : 1,
+          onMouseEnter: () => setHoverEdge(i), onMouseLeave: () => setHoverEdge(null),
+        },
+          h('title', null, e.label === '' ? t(`edge${kind[0].toUpperCase()}${kind.slice(1)}`) : e.label),
+          h('path', { d, fill: 'none', stroke: 'transparent', strokeWidth: 12 }),
+          h('path', {
+            d, fill: 'none', stroke, strokeWidth: on ? 2.2 : 1.4, strokeLinecap: 'round',
+            markerEnd: `url(#bf-arrow-${kind})`, opacity: on ? 1 : 0.78,
+            strokeDasharray: kind === 'auth' ? '5 4' : undefined,
+          }));
+      });
+
+      const labelLayer = [...labels.entries()].map(([i, { rect, text, forced }]) => {
+        const kind = EDGE_COLOR[graph.edges[i].kind] ? graph.edges[i].kind : 'flow';
+        return h('g', { key: `l${i}`, className: 'bf-edge-label', pointerEvents: 'none' },
+          h('rect', {
+            x: rect.x, y: rect.y, width: rect.w, height: rect.h, rx: rect.h / 2,
+            fill: 'var(--dsw-alias-bg-base, #fff)',
+            stroke: EDGE_COLOR[kind], strokeOpacity: forced ? 0.7 : 0.32, strokeWidth: 1,
+          }),
+          h('text', {
+            x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 + 3.5, fontSize: 10, textAnchor: 'middle',
+            fill: forced ? 'var(--dsw-alias-label-primary, #1f2328)' : 'var(--dsw-alias-label-secondary, #57606a)',
+          }, text));
+      });
+
+      const nodeLayer = graph.nodes.map((n) => {
         const p = pos.get(n.id);
         if (!p) return null;
-        const color = KIND_COLOR[n.kind] ?? KIND_COLOR.process;
+        const kind = KIND_COLOR[n.kind] ? n.kind : 'process';
+        const color = KIND_COLOR[kind];
         const selected = n.id === selectedId;
-        const dim = selectedId !== null && !selected && !related.has(n.id);
-        const sub = n.summary === '' ? kindLabel(n.kind, t) : n.summary;
+        const hovered = n.id === hoverNode;
+        const focused = focusIds !== null && focusIds.includes(n.id);
+        const dim = emphasis && !lit.has(n.id);
+        const tableCount = tablesOf(n).length;
+        const sub = n.summary === '' ? kindLabel(kind, t) : n.summary;
         return h('g', {
-          key: n.id, className: 'bf-node',
+          key: n.id, className: 'bf-node', 'data-id': n.id,
           transform: `translate(${p.x},${p.y})`,
-          opacity: dim ? 0.45 : 1,
+          opacity: dim ? 0.32 : 1,
           onClick: (event) => { event.stopPropagation(); onSelect(n.id); },
+          onMouseEnter: () => setHoverNode(n.id),
+          onMouseLeave: () => setHoverNode(null),
           style: { cursor: 'pointer' },
         },
           h('title', null, `${n.name}${n.summary ? `\n${n.summary}` : ''}`),
+          selected || focused ? h('rect', {
+            x: -4, y: -4, width: W + 8, height: H + 8, rx: 15, fill: 'none',
+            stroke: selected ? ACCENT : KIND_COLOR.data, strokeOpacity: 0.28, strokeWidth: 4,
+          }) : null,
           h('rect', {
-            width: W, height: H, rx: 10,
+            width: W, height: H, rx: 12,
             fill: 'var(--dsw-alias-bg-layer-2, #fff)',
-            stroke: selected ? ACCENT : color,
-            strokeWidth: selected ? 2.4 : 1.2,
+            stroke: selected ? ACCENT : focused ? KIND_COLOR.data : hovered ? color
+              : 'var(--dsw-alias-border-l2, rgba(0,0,0,.14))',
+            strokeWidth: selected ? 2 : 1.2,
             filter: 'url(#bf-soft)',
           }),
-          h('path', { d: `M0 10a10 10 0 0 1 10-10h1v${H}h-1A10 10 0 0 1 0 ${H - 10}z`, fill: color, opacity: 0.9 }),
+          h('rect', { x: 12, y: 12, width: 24, height: 24, rx: 7, fill: color, fillOpacity: 0.13 }),
+          h('path', {
+            d: KIND_GLYPH[kind], transform: 'translate(16,16)', fill: 'none', stroke: color,
+            strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round',
+          }),
           h('text', {
-            x: 20, y: 24, fontSize: 12, fontWeight: 600,
+            x: 46, y: 24, fontSize: 12.5, fontWeight: 600,
             fill: 'var(--dsw-alias-label-primary, #1f2328)',
-          }, fitText(n.name, 12, W - 34)),
+          }, fitText(n.name, 12.5, W - 58)),
           h('text', {
-            x: 20, y: 42, fontSize: 10,
+            x: 46, y: 41, fontSize: 10.5,
             fill: 'var(--dsw-alias-label-secondary, #57606a)',
-          }, fitText(sub, 10, W - 32)),
-          h('text', {
-            x: W - 10, y: H - 8, fontSize: 9, textAnchor: 'end',
-            fill: color, fontWeight: 600,
-          }, kindLabel(n.kind, t)));
+          }, fitText(sub, 10.5, W - 58)),
+          h('text', { x: 46, y: 59, fontSize: 9.5, fontWeight: 600, fill: color }, kindLabel(kind, t)),
+          tableCount === 0 ? null : h('g', { transform: `translate(${W - 12},0)` },
+            h('title', null, t('tableCount', { n: tableCount })),
+            h('path', {
+              d: TABLE_GLYPH, transform: `translate(${-14 - textWidth(String(tableCount), 9.5) - 3},49) scale(.8)`,
+              fill: 'none', stroke: KIND_COLOR.data, strokeWidth: 1.5, strokeLinejoin: 'round',
+            }),
+            h('text', {
+              x: 0, y: 59, fontSize: 9.5, fontWeight: 600, textAnchor: 'end', fill: KIND_COLOR.data,
+            }, String(tableCount))));
       });
 
       return h('svg', {
@@ -921,12 +1177,52 @@ window.__ModuleLoader__.load({
       },
         h('defs', null,
           Object.entries(EDGE_COLOR).map(([kind, color]) => h('marker', {
-            key: kind, id: `bf-arrow-${kind}`, viewBox: '0 0 10 10', refX: 9, refY: 5,
-            markerWidth: 6.5, markerHeight: 6.5, orient: 'auto-start-reverse',
-          }, h('path', { d: 'M0 0L10 5L0 10z', fill: color }))),
+            key: kind, id: `bf-arrow-${kind}`, viewBox: '0 0 10 10', refX: 8.6, refY: 5,
+            markerWidth: 7, markerHeight: 7, markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse',
+          }, h('path', { d: 'M0 1L9 5L0 9z', fill: color }))),
           h('filter', { id: 'bf-soft', x: '-20%', y: '-30%', width: '140%', height: '170%' },
-            h('feDropShadow', { dx: 0, dy: 1.5, stdDeviation: 1.6, floodOpacity: 0.13 }))),
-        h('g', { transform: 'translate(4,4)' }, edges, nodes));
+            h('feDropShadow', { dx: 0, dy: 1, stdDeviation: 1.8, floodOpacity: 0.1 }))),
+        h('g', { transform: 'translate(8,8)' }, edgeLayer, nodeLayer, labelLayer));
+    }
+
+    const ACCESS_KEY = { read: 'tableRead', write: 'tableWrite', readwrite: 'tableReadWrite' };
+
+    /**
+     * Tables a node reads or writes. `foundIn: null` marks a name the Host did not find in any
+     * related file (model inference); `undefined` comes from records saved before the check.
+     */
+    function TablesSection({ node, usage, focusTable, setFocusTable, known, t }) {
+      const tables = tablesOf(node);
+      if (!known) return h('div', { className: 'bf-tables-note' }, t('tablesMissing'));
+      if (tables.length === 0) {
+        return node.kind === 'data' ? h('div', { className: 'bf-tables-note' }, t('tablesNone')) : null;
+      }
+      return h('div', { className: 'bf-tables' },
+        h('div', { className: 'bf-section-label' }, t('tables'),
+          h('span', { className: 'bf-section-count' }, String(tables.length))),
+        tables.map((table) => {
+          const key = table.name.toLowerCase();
+          const others = (usage.get(key) ?? []).filter((id) => id !== node.id);
+          const active = focusTable === key;
+          const access = ACCESS_KEY[table.access];
+          const inferred = table.foundIn === null;
+          return h('div', { key, className: `bf-table${active ? ' is-active' : ''}` },
+            h('div', { className: 'bf-table-row' },
+              h('span', { className: 'bf-table-icon' }, h(Icon, { d: TABLE_GLYPH, size: 13 })),
+              h('span', {
+                className: 'bf-table-name',
+                title: typeof table.foundIn === 'string' ? t('tableFoundIn', { file: table.foundIn }) : table.name,
+              }, table.name),
+              inferred ? h('span', { className: 'bf-table-inferred', title: t('tableUnverified') }, t('tableInferred')) : null,
+              access === undefined ? null : h('span', { className: `bf-access bf-access-${table.access}` }, t(access)),
+              others.length === 0 ? null : h('button', {
+                className: `bf-table-share${active ? ' is-on' : ''}`,
+                title: active ? t('tableFocusClear') : t('tableSharedHint', { n: others.length }),
+                'aria-pressed': active,
+                onClick: (event) => { event.stopPropagation(); setFocusTable(active ? null : key); },
+              }, t('tableShared', { n: others.length }))),
+            table.note ? h('div', { className: 'bf-table-note' }, table.note) : null);
+        }));
     }
 
     function ConfirmDialog({ title, body, confirmLabel, cancelLabel, busy, onConfirm, onCancel }) {
@@ -1057,6 +1353,7 @@ window.__ModuleLoader__.load({
         const [zoom, setZoom] = useState(1);
         const [zoomTouched, setZoomTouched] = useState(false);
         const [fullscreen, setFullscreen] = useState('');
+        const [focusTable, setFocusTable] = useState(null);
         const [, setLocaleTick] = useState(0);
         const canvasRef = useRef(null);
         const graphRef = useRef(null);
@@ -1070,21 +1367,30 @@ window.__ModuleLoader__.load({
           [graph, sizeBucket],
         );
 
+        const usage = useMemo(() => tableUsage(graph), [graph]);
+        const focusIds = focusTable === null ? null : usage.get(focusTable) ?? null;
+        // Records saved before table detection carry no `tables` field on any node.
+        const tablesKnown = graph !== null && graph.nodes.some((n) => Array.isArray(n.tables));
+
         useEffect(() => {
           setRequirement('');
           setPrompt('');
+          setFocusTable(null);
         }, [selectedId]);
+
+        useEffect(() => { setFocusTable(null); }, [graph]);
 
         useEffect(() => {
           const onKey = (event) => {
             if (event.key !== 'Escape' || confirm !== null) return;
             if (historyOpen) setHistoryOpen(false);
             else if (fullscreen === 'page') setFullscreen('');
+            else if (focusTable !== null) setFocusTable(null);
             else if (selectedId !== null) setSelectedId(null);
           };
           window.addEventListener('keydown', onKey);
           return () => window.removeEventListener('keydown', onKey);
-        }, [selectedId, historyOpen, fullscreen, confirm]);
+        }, [selectedId, historyOpen, fullscreen, confirm, focusTable]);
 
         const loadHistory = useCallback(async () => {
           setHistoryLoading(true);
@@ -1153,9 +1459,11 @@ window.__ModuleLoader__.load({
 
         // Fit the whole graph into the visible canvas (both axes); a very large graph stops at 50%
         // and scrolls inside the canvas instead of shrinking into unreadable boxes.
-        const applyFit = useCallback(() => {
+        /** `readable` keeps text legible (may scroll); `all` shows the whole graph at once. */
+        const applyFit = useCallback((mode = 'readable') => {
           if (layout === null) return;
-          const next = Math.max(0.5, Math.round(fitScale(layout, canvasSize) * 100) / 100);
+          const raw = mode === 'all' ? fitScale(layout, canvasSize) : readableScale(layout, canvasSize);
+          const next = Math.max(MIN_SCALE, Math.round(raw * 100) / 100);
           setZoom((current) => (current === next ? current : next));
           const el = canvasRef.current;
           if (el !== null) el.scrollTo?.({ left: 0, top: 0 });
@@ -1164,6 +1472,37 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           if (!zoomTouched) applyFit();
         }, [applyFit, zoomTouched]);
+
+        // Keep the selected node (or the nodes of a highlighted table) on screen: opening the side
+        // panel narrows the canvas and re-fits the zoom, which would otherwise scroll it away.
+        useEffect(() => {
+          const ids = focusIds !== null && focusIds.length > 0 ? focusIds : selectedId !== null ? [selectedId] : [];
+          const el = canvasRef.current;
+          if (ids.length === 0 || el === null) return undefined;
+          const frame = window.requestAnimationFrame(() => {
+            const boxes = ids
+              .map((id) => [...el.querySelectorAll('.bf-node')].find((node) => node.dataset.id === id))
+              .filter(Boolean)
+              .map((node) => node.getBoundingClientRect());
+            if (boxes.length === 0) return;
+            const view = el.getBoundingClientRect();
+            const union = {
+              left: Math.min(...boxes.map((b) => b.left)), right: Math.max(...boxes.map((b) => b.right)),
+              top: Math.min(...boxes.map((b) => b.top)), bottom: Math.max(...boxes.map((b) => b.bottom)),
+            };
+            const pad = 16;
+            const inside = union.left >= view.left + pad && union.right <= view.right - pad
+              && union.top >= view.top + pad && union.bottom <= view.bottom - pad;
+            if (inside) return;
+            // Centre the group when it fits, otherwise bring its top-left corner into view.
+            const fitsX = union.right - union.left <= view.width - 2 * pad;
+            const fitsY = union.bottom - union.top <= view.height - 2 * pad;
+            const dx = fitsX ? (union.left + union.right) / 2 - (view.left + view.right) / 2 : union.left - view.left - pad;
+            const dy = fitsY ? (union.top + union.bottom) / 2 - (view.top + view.bottom) / 2 : union.top - view.top - pad;
+            el.scrollBy?.({ left: dx, top: dy, behavior: 'smooth' });
+          });
+          return () => window.cancelAnimationFrame(frame);
+        }, [selectedId, focusIds, zoom, layout]);
 
         // Browser fullscreen of the graph area, with an in-page maximise fallback.
         useEffect(() => {
@@ -1323,6 +1662,7 @@ window.__ModuleLoader__.load({
                   onClick: () => setSelectedId(null),
                 }, '×'))),
             selected.summary === '' ? null : h('div', { className: 'bf-summary' }, selected.summary),
+            h(TablesSection, { node: selected, usage, focusTable, setFocusTable, known: tablesKnown, t }),
             selected.files.length > 0 ? h('div', { className: 'bf-files' },
               h('div', { className: 'bf-section-label' }, t('relatedFiles')),
               selected.files.map((file, index) => h('span', { key: `${file}-${index}`, className: 'bf-file', title: file }, file)))
@@ -1419,7 +1759,15 @@ window.__ModuleLoader__.load({
                   h('div', { className: 'bf-legend' },
                     KIND_ORDER.map((kind) => h('span', { key: kind, className: 'bf-legend-item' },
                       h('i', { className: 'bf-dot', style: { background: KIND_COLOR[kind] } }),
-                      kindLabel(kind, t)))),
+                      kindLabel(kind, t))),
+                    h('span', { className: 'bf-legend-sep bf-legend-edge', 'aria-hidden': true }),
+                    ['flow', 'data', 'auth'].map((kind) => h('span', { key: kind, className: 'bf-legend-item bf-legend-edge' },
+                      h('svg', { width: 18, height: 8, 'aria-hidden': true },
+                        h('path', {
+                          d: 'M1 4h16', stroke: EDGE_COLOR[kind], strokeWidth: 1.6, strokeLinecap: 'round',
+                          strokeDasharray: kind === 'auth' ? '4 3' : undefined,
+                        })),
+                      t(`edge${kind[0].toUpperCase()}${kind.slice(1)}`)))),
                   h('div', { className: 'bf-zoom' },
                     h('button', {
                       title: t('zoomOut'), 'aria-label': t('zoomOut'),
@@ -1432,7 +1780,7 @@ window.__ModuleLoader__.load({
                     }, '+'),
                     h('button', {
                       title: t('zoomFit'), 'aria-label': t('zoomFit'),
-                      onClick: () => { setZoomTouched(false); applyFit(); },
+                      onClick: () => { setZoomTouched(true); applyFit('all'); },
                     }, h(Icon, { d: ICON.fit, size: 13 })),
                     h('button', {
                       title: maximised ? t('exitFullscreen') : t('fullscreen'),
@@ -1464,7 +1812,7 @@ window.__ModuleLoader__.load({
                         className: 'bf-btn', onClick: (event) => { event.stopPropagation(); setHistoryOpen(true); },
                       }, h(Icon, { d: ICON.history }), t('openHistory', { n: history.length })) : null)
                     : h('div', { className: 'bf-stage' },
-                      h(GraphView, { graph, layout, selectedId, zoom, onSelect: setSelectedId, t }))),
+                      h(GraphView, { graph, layout, selectedId, zoom, focusIds, onSelect: setSelectedId, t }))),
                 maximised && selected !== null
                   ? h('div', { className: 'bf-float' }, nodeCard,
                     h('button', {

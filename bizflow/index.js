@@ -25,6 +25,17 @@ const ANALYSIS_TIMEOUT_MS = 8 * 60 * 1000;
 
 const NODE_KINDS = new Set(['entry', 'process', 'data', 'permission', 'external']);
 const EDGE_KINDS = new Set(['flow', 'data', 'auth']);
+/** Table access as the model reports it, folded onto the three values the panel shows. */
+const TABLE_ACCESS = new Map([
+  ['read', 'read'], ['r', 'read'], ['select', 'read'], ['query', 'read'],
+  ['write', 'write'], ['w', 'write'], ['insert', 'write'], ['update', 'write'], ['delete', 'write'],
+  ['readwrite', 'readwrite'], ['read-write', 'readwrite'], ['read_write', 'readwrite'], ['rw', 'readwrite'],
+  ['both', 'readwrite'], ['crud', 'readwrite'],
+]);
+const MAX_TABLES_PER_NODE = 20;
+/** Files read per analysis to check that a reported table name really occurs in the project. */
+const TABLE_EVIDENCE_FILE_LIMIT = 60;
+const TABLE_EVIDENCE_FILE_BYTES = 400_000;
 
 const SKIP_DIRS = new Set([
   'node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', 'target', 'vendor',
@@ -485,6 +496,84 @@ function clip(text, max) {
   return `${text.slice(0, max)}\n…(truncated ${text.length - max} chars)`;
 }
 
+/**
+ * Tables one node reads or writes, as the model listed them: `{ name, access, note }`.
+ * Names are kept as written in the code (schema-qualified names included); quoting
+ * characters are stripped, duplicates merged (read + write → readwrite).
+ */
+function normalizeTables(value) {
+  if (!Array.isArray(value)) return [];
+  const byName = new Map();
+  for (const raw of value) {
+    const item = typeof raw === 'string' ? { name: raw } : raw;
+    if (typeof item !== 'object' || item === null || typeof item.name !== 'string') continue;
+    const name = item.name.replace(/[`"'[\]]/g, '').trim().slice(0, 80);
+    if (name === '' || /\s/.test(name)) continue;
+    const accessKey = typeof item.access === 'string' ? item.access.trim().toLowerCase() : '';
+    const access = TABLE_ACCESS.get(accessKey) ?? '';
+    const note = typeof item.note === 'string' ? item.note.trim().slice(0, 120) : '';
+    const key = name.toLowerCase();
+    const existing = byName.get(key);
+    if (existing === undefined) {
+      byName.set(key, { name, access, note });
+      continue;
+    }
+    if (existing.access !== access && access !== '') {
+      existing.access = existing.access === '' ? access : 'readwrite';
+    }
+    if (existing.note === '' && note !== '') existing.note = note;
+  }
+  return [...byName.values()].slice(0, MAX_TABLES_PER_NODE);
+}
+
+/** Matcher: does `name` (or its last `schema.` segment) occur in a text as a whole identifier? */
+function identifierMatcher(name) {
+  const candidates = [name];
+  const dot = name.lastIndexOf('.');
+  if (dot > 0 && dot < name.length - 1) candidates.push(name.slice(dot + 1));
+  const patterns = candidates.map((candidate) => {
+    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^A-Za-z0-9_$])${escaped}($|[^A-Za-z0-9_$])`, 'i');
+  });
+  return (text) => patterns.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Check every reported table against the project's own text: the node's files first, then
+ * the files of the other nodes. A hit records the first file it was found in (`foundIn`);
+ * `foundIn: null` means the name was not seen in any associated file, so the panel can tell
+ * an evidenced table from one the model only inferred. Reads stay inside `rootPath`.
+ */
+function attachTableEvidence(graph, rootPath) {
+  const absoluteRoot = resolve(rootPath);
+  const cache = new Map();
+  let reads = 0;
+  const textOf = (rel) => {
+    if (cache.has(rel)) return cache.get(rel);
+    let text;
+    const full = resolve(absoluteRoot, rel);
+    const inside = full === absoluteRoot || full.startsWith(`${absoluteRoot}${sep}`);
+    if (inside && reads < TABLE_EVIDENCE_FILE_LIMIT) {
+      reads += 1;
+      text = safeRead(full, TABLE_EVIDENCE_FILE_BYTES);
+    }
+    cache.set(rel, text);
+    return text;
+  };
+  const allFiles = [...new Set(graph.nodes.flatMap((node) => node.files))];
+  for (const node of graph.nodes) {
+    const order = [...node.files, ...allFiles.filter((file) => !node.files.includes(file))];
+    for (const table of node.tables) {
+      const matches = identifierMatcher(table.name);
+      table.foundIn = order.find((rel) => {
+        const text = textOf(rel);
+        return text !== undefined && matches(text);
+      }) ?? null;
+    }
+  }
+  return graph;
+}
+
 function normalizeGraph(value, rootPath) {
   if (typeof value !== 'object' || value === null) throw bizError('model did not return a graph object', 502);
   const nodes = [];
@@ -501,6 +590,7 @@ function normalizeGraph(value, rootPath) {
       kind: NODE_KINDS.has(raw.kind) ? raw.kind : 'process',
       summary: typeof raw.summary === 'string' ? raw.summary : '',
       files: Array.isArray(raw.files) ? raw.files.filter((f) => typeof f === 'string').slice(0, 12) : [],
+      tables: normalizeTables(raw.tables),
     });
   }
   const edges = [];
@@ -539,7 +629,8 @@ const ANALYZE_PROMPT = (business, digest) => [
   '然后回复且仅回复一个 JSON 对象（不要 markdown 代码围栏，不要多余文字）：',
   '{',
   '  "business": "<规范化的业务名>",',
-  '  "nodes": [{"id": "n1", "name": "<简短名称>", "kind": "...", "summary": "<一两句话>", "files": ["相对路径"]}],',
+  '  "nodes": [{"id": "n1", "name": "<简短名称>", "kind": "...", "summary": "<一两句话>", "files": ["相对路径"],',
+  '             "tables": [{"name": "<表名>", "access": "read|write|readwrite", "note": "<可选，一句话说明用途>"}]}],',
   '  "edges": [{"from": "n1", "to": "n2", "label": "<短标签>", "kind": "..."}]',
   '}',
   '',
@@ -548,6 +639,9 @@ const ANALYZE_PROMPT = (business, digest) => [
   '图保持可读：6-20 个节点，从入口排到数据落点；节点尽量使用项目里真实的模块/文件名。',
   'nodes 绝不能是空数组：若该项目没有直接实现该业务，就分析其中最接近的真实数据流程，并在 business 字段里注明。',
   '每个节点必须带上实现它的项目相对路径文件（能识别时）。',
+  'tables 列出该节点直接读写的数据库表或集合：从 SQL、ORM 实体/模型的表名映射、Mapper、迁移脚本中识别，',
+  '名称必须与项目代码里的写法完全一致（带 schema 前缀时保留）；access 写 read、write 或 readwrite。',
+  '该节点不访问数据库或无法确认时给空数组，不要编造表名；data 类节点代表某个库时，列出其中与该业务相关的表。',
 ].join('\n');
 
 /** One retry when the previous answer carried no nodes at all. */
@@ -558,8 +652,22 @@ const ANALYZE_REPAIR_PROMPT = [
   '- 若信息不足，可用工具补充查看，最多 3 次只读调用；',
   '- 不要返回空数组，不要解释。',
   '只输出一个 JSON 对象，结构：',
-  '{"business":"...","nodes":[{"id":"n1","name":"...","kind":"entry|process|data|permission|external","summary":"...","files":["相对路径"]}],"edges":[{"from":"n1","to":"n2","label":"...","kind":"flow|data|auth"}]}',
+  '{"business":"...","nodes":[{"id":"n1","name":"...","kind":"entry|process|data|permission|external","summary":"...","files":["相对路径"],"tables":[{"name":"表名","access":"read|write|readwrite"}]}],"edges":[{"from":"n1","to":"n2","label":"...","kind":"flow|data|auth"}]}',
+  'tables 只写项目代码中真实出现的表名，没有就给空数组。',
 ].join('\n');
+
+const TABLE_ACCESS_LABEL = { read: '读', write: '写', readwrite: '读写' };
+
+/** `节点涉及的表：orders(读写), order_item(写)` for the draft prompt, or '' when none are known. */
+function tablesLine(tables) {
+  const list = normalizeTables(tables);
+  if (list.length === 0) return '';
+  const items = list.map((table) => {
+    const access = TABLE_ACCESS_LABEL[table.access];
+    return access === undefined ? table.name : `${table.name}(${access})`;
+  });
+  return `节点涉及的表：${items.join(', ')}`;
+}
 
 const DRAFT_PROMPT = ({ business, node, neighbors, requirement, filesDigest }) => [
   '你是一名资深工程师。当前项目（你的工作目录即项目根目录）的数据业务流程中有一个节点，需要把用户的粗略需求改写成一段可直接执行的精准实现 prompt。',
@@ -569,6 +677,7 @@ const DRAFT_PROMPT = ({ business, node, neighbors, requirement, filesDigest }) =
   typeof node.summary === 'string' && node.summary !== '' ? `节点说明：${node.summary}` : '',
   neighbors === '' ? '' : `业务相邻关系：\n${neighbors}`,
   Array.isArray(node.files) && node.files.length > 0 ? `节点关联文件：${node.files.join(', ')}` : '',
+  tablesLine(node.tables),
   '',
   '服务端已摘录节点关联文件，通常可直接据此输出；确需确认细节时最多 2 次只读工具调用。',
   '不要修改任何文件，不要创建子代理、团队或任务。',
@@ -630,7 +739,7 @@ async function handleAnalyze(ctx, agentsByCwd, body, signal) {
       502,
     );
   }
-  const graph = normalizeGraph(parsed, projectPath);
+  const graph = attachTableEvidence(normalizeGraph(parsed, projectPath), projectPath);
   return { graph, sessionId };
 }
 
