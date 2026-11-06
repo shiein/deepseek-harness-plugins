@@ -1,6 +1,6 @@
 # DeepSeek Harness Plugins
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）桌面版编写的 5 个本地插件。每个插件都是一个独立的 profile bundle，会在 Web GUI 左侧栏加一个入口。插件都在本机运行，Host 端的 HTTP 接口只接受本机回环地址的请求。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）桌面版编写的 6 个本地插件。每个插件都是一个独立的 profile bundle；前 5 个在 Web GUI 左侧栏加一个入口，Host 端的 HTTP 接口只接受本机回环地址的请求；`dsh-page-preview` 则给 Agent 提供页面预览工具，并在右侧边栏显示预览面板。
 
 | 插件 | 包名 | 作用 |
 |---|---|---|
@@ -9,6 +9,7 @@
 | [Agent 历史对话](./dsh-agent-history) | `@local/dsh-agent-history` | 扫描本机 Claude Code、Codex、DeepSeek Harness、OpenCode、Gemini CLI、Cursor 等二十多种 AI 编程 Agent 的会话，可按项目文件夹合并成一条多 Agent 时间轴，也可按 Agent 浏览，并能一键在原 Agent 中继续对话 |
 | [Agent Token 用量](./dsh-agent-usage) | `@local/dsh-agent-usage` | 从本地会话和用量文件统计各个 AI 编程 Agent 的 Token 消耗，按 Agent、模型、日期汇总，并估算按 API 计价的费用 |
 | [网盘备份维护](./dsh-maintenance-backup) | `@local/dsh-maintenance-backup` | 把 DSH 配置、技能和本地插件工程备份到夸克网盘：立即备份、定时与变更监听、云端快照预览，以及分两阶段、可回滚的还原 |
+| [页面预览](./dsh-page-preview) | `dsh-page-preview` | 让 Agent 在隔离子进程里启动项目自己的构建器，预览真实业务页面（static / 已有服务 / 项目命令 / Vue 3 + Vite / Vue CLI / React + Vite），可注入身份、权限、路由和接口 Mock 场景，并在代码改动后刷新验证。仍在迭代中，需要先构建 |
 
 每个插件的功能、接口、数据位置和限制，见各自目录下的 README。
 
@@ -18,6 +19,7 @@
 - `dsh-agent-history`、`dsh-agent-usage` 和 `dsh-maintenance-backup` 同时适配了 macOS 和 Windows 路径；Windows 上的验证程度见各自 README。
 - `bizflow` 需要 profile 里配置好可用的默认模型。
 - `dsh-maintenance-backup` 需要安装并授权夸克网盘技能（`~/.dsh/skills/quarkclouddrive`）。
+- `dsh-page-preview` 用 TypeScript 编写，依赖锁定在 DSH `0.2.1-rc.5` 的 npm 包；安装前要先在它的目录里运行 `npm install && npm run build`（`lib/`、`browser/` 是构建产物，不在仓库里）。平台方面，macOS arm64 实测过，Linux 只在 Docker 中验证过，Windows 未实现。
 
 ## 安装
 
@@ -36,7 +38,7 @@
 
 ## 目录结构
 
-每个插件目录的结构大致相同：
+前 5 个插件是纯 JavaScript，目录结构大致相同：
 
 ```
 <plugin>/
@@ -51,7 +53,10 @@
   test/ docs/         # 测试脚本与设计、调研文档（部分插件有）
 ```
 
+`dsh-page-preview` 是 TypeScript 工程（`src/` → `lib/`），结构见它自己的 README。
+
 ## 说明
 
-- 这些都是个人插件，包名用的是 `@local/` 作用域，没有发布到 npm。
+- 这些都是个人插件，没有发布到 npm；前 5 个的包名用的是 `@local/` 作用域。
+- `dsh-page-preview` 是从它独立的本地 git 仓库导出的快照，不包含提交历史。
 - 部分测试脚本和文档里有作者本机的路径；在别的机器上运行测试前，需要先把这些路径改掉。

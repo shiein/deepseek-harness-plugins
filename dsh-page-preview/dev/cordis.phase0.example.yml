@@ -1,0 +1,15 @@
+# 仅用于隔离 DSH_HOME 的 Phase 0 实测；复制为 cordis.dev.yml 后改成绝对路径。
+# 锁定版本的 web profile 默认禁用 Browser。这里显式启用，不修改用户 profile。
+- id: ui-sidebar-browser
+  disabled: false
+- id: tool-fs
+  disabled: false
+- id: session-title-llm
+  disabled: true
+- id: session-telemetry-otel
+  disabled: true
+- insert:
+    - id: page-preview
+      name: '/ABSOLUTE/PATH/TO/dsh-page-preview/lib/index.js'
+    - id: page-preview-phase0
+      name: '/ABSOLUTE/PATH/TO/dsh-page-preview/dev/phase0-host-plugin.mjs'

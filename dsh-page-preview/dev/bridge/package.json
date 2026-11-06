@@ -1,0 +1,26 @@
+{
+  "name": "dsh-page-preview-phase0-bridge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./lib/host.js",
+  "files": ["lib/host.js", "lib/client.js", "lib/typert.host.js"],
+  "exports": {
+    ".": { "types": "./host.mts", "default": "./lib/host.js" },
+    "./client": { "types": "./client.mts", "default": "./lib/client.js" },
+    "./typert": { "types": "./protocol.ts", "default": "./lib/typert.host.js" },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-gateway",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-sidebar-browser",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  }
+}

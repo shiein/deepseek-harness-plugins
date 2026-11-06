@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- Phase 0 真实 HMR 样本（方案 §14）：受控注入必须早于 Vite 与业务入口。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Page Preview · HMR 验证样本</title>
+  <link rel="icon" href="data:,">
+  <script type="module" src="/main.js"></script>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">PAGE PREVIEW / PHASE 0</p>
+    <h1>真实模块热更新</h1>
+    <p>修改模块、产生编译错误，再修复；页面中的交互计数应保持。</p>
+    <dl><dt>当前模块</dt><dd id="revision">加载中</dd><dt>更新状态</dt><dd id="status" role="status">等待初始化</dd><dt>bootstrap 顺序</dt><dd id="bootstrap">检查中</dd></dl>
+    <button id="increment">交互计数：0</button>
+    <p class="note">人工测试数据 · 不连接业务后端</p>
+  </main>
+</body>
+</html>

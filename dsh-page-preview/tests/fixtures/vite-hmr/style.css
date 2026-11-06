@@ -1,0 +1,10 @@
+/* HMR 验证页（方案 §14），本地字体和资源，复用非 Vite 样本的暖纸色与深绿。 */
+:root { color-scheme: light; color: #263b32; background: #f5f4ed; font: 14px/1.7 "PingFang SC", "Microsoft YaHei", sans-serif; }
+body { margin: 0; } main { max-width: 680px; margin: 0 auto; padding: 48px 28px; }
+.eyebrow { font: 11px/1.5 "Avenir Next", sans-serif; letter-spacing: .14em; color: #59685d; }
+h1 { font: 500 clamp(26px, 5vw, 36px)/1.4 "Songti SC", serif; margin: 16px 0 20px; }
+dl { margin: 32px 0; padding: 20px 0; border-top: 2px solid #263b32; border-bottom: 1px solid #c9d1c6; }
+dt { font-size: 12px; color: #59685d; margin-top: 16px; } dt:first-child { margin-top: 0; }
+dd { margin: 4px 0 0; overflow-wrap: anywhere; } #revision { font-size: 24px; font-weight: 600; }
+button { background: #285940; color: #fafaf5; padding: 12px 20px; border: 0; border-radius: 3px; font: inherit; cursor: pointer; }
+button:focus-visible { outline: 2px solid #285940; outline-offset: 4px; } .note { margin-top: 24px; color: #59685d; font-size: 12px; }

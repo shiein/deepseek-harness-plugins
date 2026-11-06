@@ -1,0 +1,20 @@
+{
+  "name": "dsh-preview-vue27-cli-toolchain",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.18"
+  },
+  "devDependencies": {
+    "@vue/cli-service": "5.0.9",
+    "@vue/cli-plugin-babel": "5.0.9",
+    "@vue/cli-plugin-typescript": "5.0.9",
+    "vue": "2.7.16",
+    "vue-template-compiler": "2.7.16",
+    "ant-design-vue": "1.7.8",
+    "babel-plugin-import": "1.13.8",
+    "less": "4.2.2",
+    "less-loader": "11.1.4",
+    "typescript": "5.9.3"
+  }
+}

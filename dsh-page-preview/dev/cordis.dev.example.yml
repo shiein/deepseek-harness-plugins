@@ -1,0 +1,11 @@
+# 本地开发 overlay 模板。复制为 dev/cordis.dev.yml（已在 .gitignore）并把路径改成本机绝对路径：
+#   pnpm dsh web --patch /abs/path/to/dsh-page-preview/dev/cordis.dev.yml
+# DSH 文档要求 name 为绝对路径；patch 文件不改变 loader 解析模块路径的目录。
+- insert:
+    - id: page-preview
+      name: '/ABSOLUTE/PATH/TO/dsh-page-preview/src/index.ts'
+      config:
+        dataDir: '/ABSOLUTE/PATH/TO/page-preview-plugin-data'
+        # turn/end 触发模式（R3-5）：off | smart | always；默认 smart。
+        # always 的 auto-open 本轮无审批上下文，如实 unsupported。
+        # trigger: smart

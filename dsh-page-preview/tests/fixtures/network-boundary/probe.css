@@ -1,0 +1,2 @@
+/* 仅验证原始同源 CSS 未被策略破坏。 */
+body { --network-probe-local: 1; }

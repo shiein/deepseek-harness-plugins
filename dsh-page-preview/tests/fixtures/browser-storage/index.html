@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- Phase 0 存储观察样本（方案 §7.4、§14）：只访问本次随机命名空间的状态。 -->
+<html lang="zh-CN"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Page Preview · 存储验证样本</title><link rel="icon" href="data:,"><link rel="stylesheet" href="./style.css"><script type="module" src="./app.js"></script>
+</head><body><main>
+  <p class="eyebrow">PAGE PREVIEW / PHASE 0</p><h1>浏览器存储边界</h1>
+  <p>只观察本次样本的状态。A / B 是人工测试标签，不代表应用已识别工作区。</p>
+  <label>测试标签 <select id="label"><option>A</option><option>B</option></select></label>
+  <dl><dt>样本来源</dt><dd id="origin"></dd><dt>localStorage</dt><dd id="local">检查中</dd><dt>本次 Cookie（存在与否）</dt><dd id="cookies"></dd><dt>操作结果</dt><dd id="result" role="status">初始化中</dd></dl>
+  <p><button id="write">写入当前标签</button> <button id="inspect">重新检查</button> <button id="clear">仅清理本次样本</button></p>
+  <p><button id="cross">跨站读取 localhost</button></p>
+  <p><a id="alias">打开 localhost 样本</a> · <a id="other">打开另一端口样本</a></p>
+  <p><a id="navigate">跨站导航到 localhost Cookie 回显</a></p>
+  <p class="note">无真实账号 · 不读取 document.cookie · 不枚举其他存储 · 两个 loopback 端口</p>
+</main></body></html>

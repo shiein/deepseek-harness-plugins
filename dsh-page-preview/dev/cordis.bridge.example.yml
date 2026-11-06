@@ -1,0 +1,10 @@
+# 只用于全新隔离 DSH_HOME；先用 dsh plugin --profile web add /abs/path/dev/bridge 链接本地包。
+- id: ui-sidebar-browser
+  disabled: false
+- id: session-title-llm
+  disabled: true
+- id: session-telemetry-otel
+  disabled: true
+- insert:
+    - id: page-preview-phase0-carrier
+      name: dsh-page-preview-phase0-bridge

@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- 非 Vite 模拟项目（方案 §14）：页面来自本样本，无 Page Preview bootstrap 或构建器。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>青禾 · 订单工作台（模拟样本）</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header><span class="wordmark">青禾<span>QINGHE</span></span><span class="sample-label">本地模拟样本 · 无真实业务数据</span></header>
+  <main>
+    <div class="intro"><p class="eyebrow">WORKSPACE / ORDERS</p><h1>订单工作台<span>让每一个项目，有迹可循。</span></h1></div>
+    <div class="toolbar"><label>订单状态<select id="filter"><option>全部</option><option>待处理</option><option>进行中</option><option>已完成</option></select></label><p id="load-status" role="status">正在加载订单…</p></div>
+    <div class="workspace">
+      <section aria-label="订单列表"><div class="table-wrap"><table><thead><tr><th>客户 / 订单</th><th>服务</th><th>金额</th><th>状态</th><th><span class="sr-only">操作</span></th></tr></thead><tbody id="orders"></tbody></table></div><p id="empty" hidden>暂无此状态的订单。试试选择“全部”。</p></section>
+      <aside aria-labelledby="detail-title"><p class="eyebrow">ORDER DETAILS</p><h2 id="detail-title">选择一个订单</h2><div id="detail"><p>点击列表中的“查看详情”，在这里查看项目摘要。</p></div></aside>
+    </div>
+    <footer><span>仅连接本地样本 API</span><span>刷新方式：整页刷新 · 无 HMR</span></footer>
+  </main>
+</body>
+</html>
