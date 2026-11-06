@@ -21,7 +21,7 @@ available there — the plugin has **no native dependencies, no shell-outs, and 
 | Trae / Trae CN | `%APPDATA%\Trae\User\...`, `%APPDATA%\Trae CN\ModularData\ai-agent\database.db` (SQLCipher-encrypted) |
 | Qoder | `%APPDATA%\Qoder\SharedClientCache\cache\db\local.db` |
 | WorkBuddy | `%USERPROFILE%\.workbuddy` (`WORKBUDDY_HOME`) |
-| Devin | CLI: `%LOCALAPPDATA%\devin\cli\sessions.db` · Desktop: `%APPDATA%\Devin` (no local counters) |
+| Devin | CLI: `%APPDATA%\devin\cli\sessions.db`, `%LOCALAPPDATA%\devin\cli\sessions.db` · Desktop: `%APPDATA%\devin` (no local counters) |
 | Pi | `%USERPROFILE%\.pi\agent\sessions` (`PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`) |
 | Gemini CLI | `%USERPROFILE%\.gemini\tmp\**` (`GEMINI_DIR`) |
 | Copilot CLI | `%USERPROFILE%\.copilot\session-state` |

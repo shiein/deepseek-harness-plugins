@@ -73,6 +73,9 @@ export function expandConfigPath(value, home) {
   text = text.replace(/\$HOME(?![A-Za-z0-9_])/g, home);
   if (text === '~') text = home;
   else if (text.startsWith('~/') || text.startsWith('~\\')) text = `${home}${text.slice(1)}`;
+  // Windows 上展开后是混合分隔符（C:\home/.dsh/x）；/ 在 Windows 路径里只会是分隔符，
+  // 统一成 \，保证 src 与 join() 生成的路径可做字符串比较/去重。
+  if (PLATFORM === 'win32') text = text.replace(/\//g, '\\');
   return text;
 }
 

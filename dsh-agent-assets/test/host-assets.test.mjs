@@ -78,7 +78,13 @@ async function statOrUndefined(path) {
 
 before(async () => {
   root = await mkdtemp(join(tmpdir(), 'dsh-agent-assets-test-'))
-  homes = { dshHome: join(root, 'dsh-home'), agentsHome: join(root, 'agents-home') }
+  homes = {
+    dshHome: join(root, 'dsh-home'),
+    agentsHome: join(root, 'agents-home'),
+    claudeHome: join(root, 'claude-home'),
+    windsurfHome: join(root, 'windsurf-home'),
+    devinHome: join(root, 'devin-home'),
+  }
   workspace = join(root, 'workspace')
 
   projectDshSkills = join(workspace, '.dsh', 'skills')
@@ -666,7 +672,13 @@ describe('instructions: read/write/delete', { concurrency: false }, () => {
   it('creates parent directories on write', async () => {
     const orphanHome = join(root, 'orphan-home')
     const orphanInstructions = createInstructions({
-      homes: { dshHome: orphanHome, agentsHome: join(root, 'orphan-agents') },
+      homes: {
+        dshHome: orphanHome,
+        agentsHome: join(root, 'orphan-agents'),
+        claudeHome: join(root, 'orphan-claude'),
+        windsurfHome: join(root, 'orphan-windsurf'),
+        devinHome: join(root, 'orphan-devin'),
+      },
     })
     const target = join(orphanHome, 'AGENTS.md')
     const { instruction } = await orphanInstructions.write({
@@ -771,5 +783,108 @@ describe('instructions: read/write/delete', { concurrency: false }, () => {
       'forbidden',
     )
     assert.equal(await readFile(secret, 'utf8'), 'TOP SECRET\n')
+  })
+})
+
+describe('third-party read-only assets', { concurrency: false }, () => {
+  // Separate sandbox homes so nothing under the developer's real agent
+  // directories (~/.claude, ~/.codeium/windsurf, ~/.devin) is ever touched.
+  // `root` only exists after the outer `before`, so resolve lazily per test.
+  const roHomes = () => {
+    const roRoot = join(root, 'readonly-homes')
+    return {
+      dshHome: join(roRoot, 'dsh'),
+      agentsHome: join(roRoot, 'agents'),
+      claudeHome: join(roRoot, 'claude'),
+      windsurfHome: join(roRoot, 'windsurf'),
+      devinHome: join(roRoot, 'devin'),
+    }
+  }
+
+  it('lists third-party skills read-only and refuses to mutate them', async () => {
+    const homes = roHomes()
+    await writeSkillFixture(join(homes.windsurfHome, 'skills'), 'foreign-skill', {
+      description: 'Windsurf skill',
+      body: 'foreign body\n',
+    })
+    await writeSkillFixture(join(homes.claudeHome, 'skills'), 'claude-skill', {
+      description: 'Claude skill',
+    })
+    const roSkills = createSkills({ homes })
+    const { skills: list, counts } = await roSkills.list({ workspace })
+    const foreign = list.find((skill) => skill.name === 'foreign-skill')
+    assert.equal(foreign.scope, 'user')
+    assert.equal(foreign.source, 'user-windsurf')
+    assert.equal(foreign.editable, false)
+    assert.equal(list.find((skill) => skill.name === 'claude-skill').source, 'user-claude')
+    assert.equal(counts.user, 2)
+
+    const { skill } = await roSkills.read({ scope: 'user', name: 'foreign-skill', workspace })
+    assert.match(skill.body, /foreign body/)
+
+    await expectError(
+      roSkills.update({ scope: 'user', name: 'foreign-skill', description: 'x', workspace }),
+      'forbidden',
+    )
+    await expectError(
+      roSkills.remove({ scope: 'user', name: 'foreign-skill', workspace }),
+      'forbidden',
+    )
+
+    // Creating the same name in a writable root is allowed and shadows the foreign copy.
+    const created = await roSkills.create({
+      scope: 'user',
+      name: 'foreign-skill',
+      description: 'local copy',
+      workspace,
+    })
+    assert.ok(created.skill.shadowed.some((entry) => entry.scope === 'user'))
+  })
+
+  it('lists third-party instruction files read-only and refuses to mutate them', async () => {
+    const homes = roHomes()
+    await writeFileFixture(join(homes.claudeHome, 'CLAUDE.md'), '# Claude rules\n')
+    await writeFileFixture(
+      join(homes.windsurfHome, 'memories', 'global_rules.md'),
+      '# Windsurf rules\n',
+    )
+    const roInstructions = createInstructions({ homes })
+    const { files } = await roInstructions.list({ workspace })
+
+    const claude = files.find((file) => file.path === join(homes.claudeHome, 'CLAUDE.md'))
+    assert.equal(claude.scope, 'user')
+    assert.equal(claude.editable, false)
+    assert.equal(claude.exists, true)
+    const windsurf = files.find(
+      (file) => file.path === join(homes.windsurfHome, 'memories', 'global_rules.md'),
+    )
+    assert.equal(windsurf.editable, false)
+
+    // Absent third-party files are not listed — there is nothing to create there.
+    assert.ok(!files.some((file) => file.path === join(homes.devinHome, 'AGENTS.md')))
+
+    const { instruction } = await roInstructions.read({
+      scope: 'user',
+      workspace,
+      path: join(homes.claudeHome, 'CLAUDE.md'),
+    })
+    assert.match(instruction.content, /Claude rules/)
+    await expectError(
+      roInstructions.write({
+        scope: 'user',
+        workspace,
+        path: join(homes.claudeHome, 'CLAUDE.md'),
+        content: 'x',
+      }),
+      'forbidden',
+    )
+    await expectError(
+      roInstructions.remove({
+        scope: 'user',
+        workspace,
+        path: join(homes.claudeHome, 'CLAUDE.md'),
+      }),
+      'forbidden',
+    )
   })
 })

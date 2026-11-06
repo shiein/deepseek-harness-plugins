@@ -4,7 +4,8 @@
  * Devin CLI persists its own session store under the XDG data directory:
  *
  *   macOS / Linux: ~/.local/share/devin/cli/sessions.db   (+ -wal, often several GB)
- *   Windows:       %LOCALAPPDATA%\devin\cli\sessions.db
+ *   Windows:       %APPDATA%\devin\cli\sessions.db        (Roaming; shares the Desktop product dir)
+ *                  %LOCALAPPDATA%\devin\cli\sessions.db  (CLI binaries live here, data normally does not)
  *                  %USERPROFILE%\.local\share\devin\cli\sessions.db
  *
  * Schema (verified on this machine):
@@ -79,6 +80,11 @@ function cliDataRoots(ctx) {
     roots.push(utils.expandPath(env.config.devinDataDir));
   }
   if (env.platform === 'win32') {
+    // Observed on Windows: the CLI writes its data under the Roaming product dir (`devin`,
+    // shared with the desktop app), while %LOCALAPPDATA%\devin only holds the binaries.
+    // Do not add a `Devin` casing variant: both spellings resolve to the same directory on
+    // case-insensitive volumes and the same sessions.db would be scanned twice.
+    if (env.appData) roots.push(utils.joinPath(env.appData, 'devin'));
     if (env.localAppData) roots.push(utils.joinPath(env.localAppData, 'devin'));
     roots.push(utils.joinPath(env.home, '.local', 'share', 'devin'));
   } else if (env.platform === 'darwin') {

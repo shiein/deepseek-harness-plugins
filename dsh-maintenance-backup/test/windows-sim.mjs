@@ -68,7 +68,9 @@ await check('Windows PATH 用分号并含 System32', () => {
   assert.ok(!env.PATH.includes('/opt/homebrew'), '不应混入 macOS 路径');
 });
 await check('POSIX 环境保持原有 PATH 追加', () => {
-  const env = buildChildEnv({ PATH: '/usr/bin' }, { home: '/Users/tester' });
+  // 不传 platform 时会取真实宿主平台；这条用例要验证 POSIX 分支，必须显式指定，
+  // 否则在 Windows 上运行本模拟时会走进 win32 分支而失败。
+  const env = buildChildEnv({ PATH: '/usr/bin' }, { home: '/Users/tester', platform: 'darwin' });
   assert.ok(env.PATH.includes('/opt/homebrew/bin'));
   assert.ok(env.PATH.endsWith('/usr/bin'));
 });

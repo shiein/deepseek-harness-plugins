@@ -91,6 +91,26 @@ export function createQuark(core) {
   async function call(args, options = {}) {
     const { timeoutMs = 120000 } = options;
     const started = core.now();
+    // CLI 文件缺失时不要起子进程：否则 Node 的 MODULE_NOT_FOUND 崩溃输出会原样冒到面板
+    // （用户看到的就是一截 "}\nNode.js vX.Y.Z" 版本横幅，完全无法定位问题）。
+    if (!existsSync(core.paths.cliPath)) {
+      const candidates = (core.paths.cliCandidates || [core.paths.cliPath])
+        .map((p) => `  - ${p}`)
+        .join('\n');
+      return {
+        ok: false,
+        code: null,
+        msg: `找不到夸克网盘 CLI 脚本：${core.paths.cliPath}\n已尝试以下位置：\n${candidates}\n请安装 quarkclouddrive skill，或用 QUARK_CLI 环境变量指定脚本路径。`,
+        data: null,
+        resultLine: null,
+        lines: [],
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+        durationMs: core.now() - started,
+        timedOut: false,
+      };
+    }
     const result = await core.runNode([core.paths.cliPath, ...args, ...sessionArgs], { timeoutMs });
     const lines = parseNdjson(result.stdout);
     const resultLine = [...lines].reverse().find((line) => line && line.type === 'result') || null;

@@ -19,6 +19,13 @@ UI 依赖；Host 半通过 `/api/dsh-agent-assets/*` 只对本机回环请求提
 同名技能的优先级与 Harness 完全一致：`project-dsh` > `project-agents` > `user-dsh` > `user-agents` >
 bundled。被覆盖的同名项会显示在详情/列表的 `shadowed` 信息里，而不是静默消失。
 
+此外，**第三方 Agent 目录以只读方式纳入面板**：`~/.claude/skills`、`~/.codeium/windsurf/skills`、
+`~/.devin/skills` 下的技能（source 分别为 `user-claude` / `user-windsurf` / `user-devin`，用户级、
+优先级最低），以及 `~/.claude/CLAUDE.md`、`~/.codeium/windsurf/memories/global_rules.md`、
+`~/.devin/AGENTS.md` 这几个第三方指令文件（仅当文件存在时列出）。它们可查看但不可编辑/删除——
+归属其他 Agent，避免面板误改；在可写根新建同名技能即可遮蔽第三方副本。对应目录可用
+`DSH_CLAUDE_HOME` / `DSH_WINDSURF_HOME` / `DSH_DEVIN_HOME` 覆盖。
+
 ## 功能
 
 - **技能**：新建（kebab-case 名称 + 描述 + 何时使用 + Markdown 正文）、**导入**（本地文件夹 / 多技能文件夹 / 仓库 `skills/<name>/` / SKILL.md / `.zip`·`.skill` 压缩包，先扫描预览、可勾选、同名需确认覆盖）、查看、编辑、删除；保留未知
@@ -85,5 +92,7 @@ curl -s http://127.0.0.1:49536/api/dsh-agent-assets/health
 - 工作区级 MCP 只在**新建立的 Session** 上挂载；已存在的 Session 保持原挂载，直到它被销毁。
 - MCP 的 `env` / `headers` 明文保存在本机 JSON（`0600`），没有接 Harness 凭据系统；需要密钥时更推荐
   用 bundle 行配合 Loader `!!js` 引用已有凭据。
-- 内置技能只读：卸载/修改内置技能要改提供它的 bundle。
+- 内置技能只读：卸载/修改内置技能要改提供它的 bundle。第三方 Agent 目录（`.claude` /
+  `.codeium/windsurf` / `.devin`）同理只读，请用对应 Agent 自己的方式维护，或在可写根新建
+  同名技能遮蔽。
 - 技能名称不可重命名（改名称 = 新建 + 删除），避免破坏已有引用。

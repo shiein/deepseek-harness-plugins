@@ -28,7 +28,15 @@ before(async () => {
   workspace = join(root, 'ws')
   await mkdir(workspace, { recursive: true })
   userDsh = join(root, 'home', '.dsh')
-  skills = createSkills({ homes: { dshHome: userDsh, agentsHome: join(root, 'home', '.agents') } })
+  skills = createSkills({
+    homes: {
+      dshHome: userDsh,
+      agentsHome: join(root, 'home', '.agents'),
+      claudeHome: join(root, 'home', '.claude'),
+      windsurfHome: join(root, 'home', '.codeium', 'windsurf'),
+      devinHome: join(root, 'home', '.devin'),
+    },
+  })
 })
 
 after(async () => {

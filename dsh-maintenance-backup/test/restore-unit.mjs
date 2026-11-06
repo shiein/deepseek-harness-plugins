@@ -18,11 +18,12 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { createCore } from '../host/core.js';
 import { createRestoreEngine } from '../host/restore.js';
@@ -31,7 +32,9 @@ import { pathInside, resolveTarCommand } from '../host/platform.js';
 
 // ---------------------------------------------------------------- 沙箱与内容
 
-const sandbox = join('/tmp', `dsh-restore-unit-${process.pid}`);
+// resolve() 让沙箱根在 Windows 上带盘符（与真实 HOME 同为绝对路径，引擎内 resolve() 比较成立）；
+// 在 POSIX 上 resolve('/tmp/x') 仍是 /tmp/x，行为不变。
+const sandbox = resolve('/tmp', `dsh-restore-unit-${process.pid}`);
 const HOME = join(sandbox, 'home');
 const DSH_HOME = join(HOME, '.dsh');
 const WORKSPACE = join(HOME, 'Documents', 'workspace');
@@ -309,6 +312,8 @@ async function main() {
 
   // 环境必须在 createCore 之前设置（createCore 读取 env）
   process.env.HOME = HOME;
+  // Windows 上 os.homedir() 读 USERPROFILE 而不是 HOME，沙箱 home 必须两个都设
+  if (process.platform === 'win32') process.env.USERPROFILE = HOME;
   process.env.DSH_HOME = DSH_HOME;
   process.env.DSH_WORKSPACE_DIR = WORKSPACE;
   process.env.DSH_SYNC_DIR = SYNC_DIR;
@@ -621,11 +626,12 @@ async function main() {
     const backupRoot = core.paths.safetyDir;
     const moved = join(sandbox, 'safety-moved');
     rmSync(moved, { recursive: true, force: true });
-    execFileSync('/bin/mv', [join(backupRoot, readdirSync(backupRoot).find((name) => !name.startsWith('.'))), moved]);
+    // 与 /bin/mv 等价的跨平台 rename（同一盘内原子移动）
+    renameSync(join(backupRoot, readdirSync(backupRoot).find((name) => !name.startsWith('.'))), moved);
     try {
       await assert.rejects(() => engine.rollback(), /没有可用的安全副本/);
     } finally {
-      execFileSync('/bin/mv', [moved, join(backupRoot, 'restored-backup')]);
+      renameSync(moved, join(backupRoot, 'restored-backup'));
     }
     assert.equal(listDirSafe(backupRoot).length, 1);
   });
@@ -917,6 +923,18 @@ async function main() {
   });
 
   await check('DSH_MAINTENANCE_TAR 覆盖 tar：stage 解压 / 安全副本 / rollback 解压都走它', async () => {
+    // Windows 无法用 #!/bin/sh 包装脚本拦截 execFile 调用（无 shebang，.cmd 会被 Node 拒绝），
+    // 本用例的拦截部分只在 POSIX 上运行；win32 仅验证 env 覆盖解析本身。
+    if (process.platform === 'win32') {
+      const sentinel = join(sandbox, 'custom-tar.exe');
+      process.env.DSH_MAINTENANCE_TAR = sentinel;
+      try {
+        assert.equal(resolveTarCommand(), sentinel, 'DSH_MAINTENANCE_TAR 应覆盖 tar 解析');
+      } finally {
+        delete process.env.DSH_MAINTENANCE_TAR;
+      }
+      return;
+    }
     // 准备本机已存在的目标，确保 apply 会为它们创建安全副本（触发 -czf）
     mkdirSync(join(WORKSPACE, 'plugins', 'plugin-a'), { recursive: true });
     writeFileSync(join(WORKSPACE, 'plugins', 'plugin-a', 'index.js'), 'fallback-old\n');

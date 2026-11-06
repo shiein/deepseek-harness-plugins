@@ -102,7 +102,7 @@ window.__ModuleLoader__.load({
       'conn.reauth.submit': '授权登录',
       'conn.reauth.submitting': '授权中…',
       'conn.reauth.hint': '终端兜底：在终端运行下面的命令，命令会打开浏览器并阻塞等待授权完成。',
-      'conn.reauth.command': 'node ~/.dsh/skills/quarkclouddrive/scripts/quark-drive.cjs login',
+      'conn.reauth.command': 'node "{cli}" login',
       'conn.reauth.commandNote': '授权完成后回到本页点「重新检测」。',
       'conn.error.retry': '重试连接',
 
@@ -409,7 +409,7 @@ window.__ModuleLoader__.load({
       'conn.reauth.submit': 'Sign in',
       'conn.reauth.submitting': 'Signing in…',
       'conn.reauth.hint': 'Terminal fallback: run the command below; it opens the browser and blocks until authorization finishes.',
-      'conn.reauth.command': 'node ~/.dsh/skills/quarkclouddrive/scripts/quark-drive.cjs login',
+      'conn.reauth.command': 'node "{cli}" login',
       'conn.reauth.commandNote': 'After authorizing, come back and press Recheck.',
       'conn.error.retry': 'Retry connection',
 
@@ -1583,7 +1583,7 @@ window.__ModuleLoader__.load({
             ),
             authError ? h(InlineError, { message: authError }) : null,
             h('div', { className: 'mb-hint' }, t('conn.reauth.hint')),
-            h('code', { className: 'mb-command' }, t('conn.reauth.command')),
+            h('code', { className: 'mb-command' }, t('conn.reauth.command', { cli: connection?.cliPath || '<quark-drive.cjs>' })),
             h('div', { className: 'mb-hint' }, t('conn.reauth.commandNote')),
           ),
         );

@@ -30,7 +30,11 @@ the other half is written against it.
 - `workspace` is an absolute directory path sent as a query/body field. When omitted the Host uses the
   process default working directory. The Host validates it against the live workspace registry (and
   the default directory); an unregistered path → `bad_request`.
-- Homes: `dshHome = $DSH_HOME || ~/.dsh`, `agentsHome = $DSH_AGENTS_HOME || ~/.agents`.
+- Homes: `dshHome = $DSH_HOME || ~/.dsh`, `agentsHome = $DSH_AGENTS_HOME || ~/.agents`,
+  `claudeHome = $DSH_CLAUDE_HOME || ~/.claude`,
+  `windsurfHome = $DSH_WINDSURF_HOME || ~/.codeium/windsurf`,
+  `devinHome = $DSH_DEVIN_HOME || ~/.devin`. The last three are third-party agent
+  directories: assets found under them are listed read-only.
 - Timestamps are ISO-8601 strings. Byte sizes are integers.
 
 ## GET /health
@@ -39,7 +43,9 @@ No parameters. Diagnostics only.
 
 ```json
 { "ok": true, "plugin": "@local/dsh-agent-assets", "version": "0.1.0",
-  "homes": { "dshHome": "/Users/x/.dsh", "agentsHome": "/Users/x/.agents" },
+  "homes": { "dshHome": "/Users/x/.dsh", "agentsHome": "/Users/x/.agents",
+    "claudeHome": "/Users/x/.claude", "windsurfHome": "/Users/x/.codeium/windsurf",
+    "devinHome": "/Users/x/.devin" },
   "workspace": "/abs/default/workspace",
   "mcp": { "moduleLoaded": true, "moduleError": null, "mounted": ["serverA"], "skippedAgents": 0 } }
 ```
@@ -50,7 +56,9 @@ No parameters. Diagnostics only.
 { "ok": true, "version": "0.1.0",
   "defaultWorkspace": "/abs/dir",
   "workspaces": [ { "id": "w1", "title": "dsh", "path": "/abs/dir" } ],
-  "homes": { "dshHome": "/Users/x/.dsh", "agentsHome": "/Users/x/.agents" },
+  "homes": { "dshHome": "/Users/x/.dsh", "agentsHome": "/Users/x/.agents",
+    "claudeHome": "/Users/x/.claude", "windsurfHome": "/Users/x/.codeium/windsurf",
+    "devinHome": "/Users/x/.devin" },
   "supports": { "skills": true, "instructions": true, "mcp": true } }
 ```
 
@@ -79,14 +87,19 @@ No parameters. Diagnostics only.
 ```
 
 - `source` mirrors the Harness skill source vocabulary: `user-dsh`, `user-agents`, `project-dsh`,
-  `project-agents`, `bundled`, `runtime`, `custom`, or another provider string.
+  `project-agents`, `bundled`, `runtime`, `custom`, or another provider string. Third-party agent
+  directories use `user-claude`, `user-windsurf`, `user-devin`.
 - Precedence for a duplicate `name` (winner shown, losers in `shadowed`):
-  `project-dsh` > `project-agents` > `user-dsh` > `user-agents` > `bundled`/`runtime`/`custom`.
+  `project-dsh` > `project-agents` > `user-dsh` > `user-agents` >
+  `user-claude`/`user-windsurf`/`user-devin` > `bundled`/`runtime`/`custom`.
 - `bundled`/`runtime`/`custom` entries come from the live `skills` service and have
   `editable: false`, `path: null`, `dir: null`.
+- `user-claude`/`user-windsurf`/`user-devin` entries are real filesystem rows but read-only
+  (`editable: false`): `update`/`delete` on them answers `forbidden`. Creating the same `name` in a
+  writable root is allowed — the writable copy shadows the third-party one.
 - A filesystem skill with an unreadable/invalid `SKILL.md` still lists (name from the directory) and
   the reason goes into `warnings`; it never aborts the whole list.
-- `editable` is true exactly for entries under `user`/`workspace` roots.
+- `editable` is true exactly for entries under the writable `user`/`workspace` roots.
 
 ### GET /skill?scope=&name=&workspace=
 
@@ -157,6 +170,9 @@ Fixed candidates:
 
 - user scope: `<dshHome>/AGENTS.md` (`label` `~/.dsh/AGENTS.md`),
   `<agentsHome>/AGENTS.md` (`~/.agents/AGENTS.md`)
+- user scope, third-party (listed only when the file already exists; `editable: false`,
+  `write`/`delete` → `forbidden`): `<claudeHome>/CLAUDE.md`,
+  `<windsurfHome>/memories/global_rules.md`, `<devinHome>/AGENTS.md`
 - workspace scope: `<workspace>/AGENTS.md`, `<workspace>/CLAUDE.md`,
   `<workspace>/AGENTS.local.md`, `<workspace>/CLAUDE.local.md`
 - Nested `AGENTS.md` / `CLAUDE.md` files that already exist in subdirectories of the workspace
@@ -179,6 +195,7 @@ Body: `{ "op": "write" | "delete", "scope": "user" | "workspace", "workspace": "
 - `write` creates parent directories and replaces the file atomically; response
   `{ "ok": true, "instruction": { ...InstructionView, "content": "…" } }`.
 - `delete` removes the file (404 when absent) and returns `{ "ok": true, "deleted": true }`.
+- Read-only third-party candidates reject `write`/`delete` with `forbidden`.
 - Directories outside the two candidate sets are rejected (`forbidden`).
 
 ## MCP servers
@@ -257,7 +274,7 @@ Body: `{ "op": "create" | "update" | "delete" | "toggle", "scope": "user" | "wor
 
 ```js
 export function createSkills({ homes, serviceSkills })
-// homes: { dshHome, agentsHome }
+// homes: { dshHome, agentsHome, claudeHome, windsurfHome, devinHome }
 // serviceSkills: async ({ workspace }) => readonly ServiceSkill[] | null
 //   ServiceSkill: { name, description, whenToUse?, source, provider }
 // returns {
@@ -273,6 +290,7 @@ export function createSkills({ homes, serviceSkills })
 
 ```js
 export function createInstructions({ homes })
+// homes: { dshHome, agentsHome, claudeHome, windsurfHome, devinHome }
 // returns {
 //   list({ workspace }) -> { files, warnings }
 //   read({ scope, workspace, path })  -> { instruction }

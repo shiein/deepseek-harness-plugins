@@ -78,6 +78,18 @@ export function createCore(ctx) {
   const home = homeDirectory();
   const env = process.env;
   const dshHome = defaultDshHome(home);
+  // quarkclouddrive skill 的安装位置随宿主 agent 不同（.dsh 是文档约定，.agents/.claude 是
+  // agent 通用目录，.codeium/windsurf 是 windsurf 时代遗留）。按序探测第一个存在的副本；
+  // 都找不到时回退到文档默认路径，让错误信息指向规范位置。
+  const cliCandidates = [
+    typeof env.QUARK_CLI === 'string' ? env.QUARK_CLI.trim() : '',
+    join(dshHome, 'skills', 'quarkclouddrive', 'scripts', 'quark-drive.cjs'),
+    join(home, '.agents', 'skills', 'quarkclouddrive', 'scripts', 'quark-drive.cjs'),
+    join(home, '.codeium', 'windsurf', 'skills', 'quarkclouddrive', 'scripts', 'quark-drive.cjs'),
+    join(home, '.claude', 'skills', 'quarkclouddrive', 'scripts', 'quark-drive.cjs'),
+    join(home, '.devin', 'skills', 'quarkclouddrive', 'scripts', 'quark-drive.cjs'),
+  ].filter((p) => p !== '');
+  const cliPath = cliCandidates.find((p) => existsSync(p)) || cliCandidates[0];
   const dataDir = env.DSH_MAINTENANCE_DIR || join(home, '.dsh-maintenance');
   const restoreDir = join(dataDir, 'restore');
   const paths = {
@@ -107,7 +119,8 @@ export function createCore(ctx) {
     selfPackageDir: dirname(dirname(fileURLToPath(import.meta.url))),
     syncScript: join(defaultSyncDir(home), 'sync.sh'),
     scopeScript: join(defaultSyncDir(home), 'scope.sh'),
-    cliPath: join(dshHome, 'skills', 'quarkclouddrive', 'scripts', 'quark-drive.cjs'),
+    cliPath,
+    cliCandidates,
     configFile: join(dataDir, 'config.json'),
   };
 

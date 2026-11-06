@@ -3,7 +3,10 @@
  *
  * The DSH client host is not available under plain Node, so this test:
  *   1. stubs `window.__ModuleLoader__` and captures the module definition,
- *   2. supplies the real React 18 (+ react-dom/server) from the ACP plugin's node_modules,
+ *   2. supplies the real React 18 (+ react-dom/server) — resolved from
+ *      `AGENT_ASSETS_TEST_REACT` (a directory containing react + react-dom, e.g.
+ *      the ACP plugin's node_modules) or from candidates under the repo; when no
+ *      React install can be found the test skips instead of crashing,
  *   3. stubs `fetch` with API fixtures so no request can escape,
  *   4. loads `client.js`, runs `apply()` against a fake ctx, captures both slot registrations,
  *   5. server-renders the icon and the page for the initial loading state and for seeded data /
@@ -22,11 +25,36 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLE_DIR = path.resolve(HERE, '..');
 const CLIENT_FILE = path.join(BUNDLE_DIR, 'client.js');
-const ACP_TEST_BASE = '/Users/aesc/Documents/workspace/dsh/plugins/dsh-acp-rc5/test/client-render.test.mjs';
+// React is borrowed from a sibling plugin's node_modules (the client host is not
+// on disk here). `AGENT_ASSETS_TEST_REACT` may point at any directory that
+// contains `react` + `react-dom`; the legacy macOS path stays as a candidate so
+// existing dev machines keep working without configuration.
+const REACT_BASE_CANDIDATES = [
+  process.env.AGENT_ASSETS_TEST_REACT,
+  '/Users/aesc/Documents/workspace/dsh/plugins/dsh-acp-rc5/test/client-render.test.mjs',
+  path.resolve(BUNDLE_DIR, '..', 'dsh-acp-rc5', 'test', 'client-render.test.mjs'),
+  path.join(BUNDLE_DIR, 'node_modules', 'react', 'index.js'),
+].filter((value) => typeof value === 'string' && value !== '');
 
-const acpRequire = createRequire(ACP_TEST_BASE);
-const React = acpRequire('react');
-const { renderToStaticMarkup } = acpRequire('react-dom/server');
+let React = null;
+let renderToStaticMarkup = null;
+for (const base of REACT_BASE_CANDIDATES) {
+  try {
+    const candidateRequire = createRequire(base);
+    React = candidateRequire('react');
+    ({ renderToStaticMarkup } = candidateRequire('react-dom/server'));
+    break;
+  } catch {
+    // Try the next candidate.
+  }
+}
+if (React === null || typeof renderToStaticMarkup !== 'function') {
+  console.log(
+    'SKIP client-render: no React 18 install found ' +
+      '(set AGENT_ASSETS_TEST_REACT to a directory containing react + react-dom)',
+  );
+  process.exit(0);
+}
 const h = React.createElement;
 
 // ---------------------------------------------------------------------------------------

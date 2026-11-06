@@ -33,7 +33,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
 import { createCore } from '../host/core.js';
 import { resolveTarCommand } from '../host/platform.js';
@@ -48,7 +48,8 @@ import { scanSecrets } from '../host/native/secret-scan.js';
 
 const REAL_CONFIG_SH = join(homedir(), '.dsh-sync', 'config.sh');
 
-const sandbox = join('/tmp', `dsh-native-unit-${process.pid}`);
+// resolve() 让沙箱根在 Windows 上带盘符（与真实 HOME 同为绝对路径）；POSIX 上行为不变。
+const sandbox = resolve('/tmp', `dsh-native-unit-${process.pid}`);
 const HOME = join(sandbox, 'home');
 const DSH_HOME = join(HOME, '.dsh');
 const WORKSPACE = join(HOME, 'Documents', 'workspace');
@@ -201,6 +202,8 @@ async function main() {
 
   // 环境必须在 createCore 之前设置（createCore 读取 env）
   process.env.HOME = HOME;
+  // Windows 上 os.homedir() 读 USERPROFILE 而不是 HOME，沙箱 home 必须两个都设
+  if (process.platform === 'win32') process.env.USERPROFILE = HOME;
   process.env.DSH_HOME = DSH_HOME;
   process.env.DSH_WORKSPACE_DIR = WORKSPACE;
   process.env.DSH_SYNC_DIR = SYNC_DIR;
@@ -416,17 +419,20 @@ async function main() {
     assert.equal(pluginsAfter.bytes, pluginsEntry.bytes);
 
     // 不可读子目录 → readable 仍为 true，但 warning 标注读取失败
-    const unreadable = join(DSH_HOME, 'plugins', 'unreadable');
-    write(join(unreadable, 'x.txt'), 'x');
-    chmodSync(unreadable, 0o000);
-    try {
-      const third = await buildScopeReport({ core, config, keep: config.keep });
-      const pluginsThird = third.entries.find((entry) => entry.src === join(DSH_HOME, 'plugins'));
-      assert.ok(pluginsThird.warning, '不可读子目录应产生 warning');
-      assert.match(pluginsThird.warning, /子目录读取失败/);
-      assert.equal(pluginsThird.files, pluginsEntry.files);
-    } finally {
-      chmodSync(unreadable, 0o755);
+    // Windows 的 NTFS ACL 不认 POSIX mode bits，chmod 0o000 后目录依然可读，跳过该断言
+    if (process.platform !== 'win32') {
+      const unreadable = join(DSH_HOME, 'plugins', 'unreadable');
+      write(join(unreadable, 'x.txt'), 'x');
+      chmodSync(unreadable, 0o000);
+      try {
+        const third = await buildScopeReport({ core, config, keep: config.keep });
+        const pluginsThird = third.entries.find((entry) => entry.src === join(DSH_HOME, 'plugins'));
+        assert.ok(pluginsThird.warning, '不可读子目录应产生 warning');
+        assert.match(pluginsThird.warning, /子目录读取失败/);
+        assert.equal(pluginsThird.files, pluginsEntry.files);
+      } finally {
+        chmodSync(unreadable, 0o755);
+      }
     }
 
     // 禁用条目不计入 totals

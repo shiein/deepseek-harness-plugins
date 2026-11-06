@@ -60,13 +60,26 @@ export function assertSkillName(name) {
   return name
 }
 
-/** Resolved user-data homes, matching the Harness home-path rules. */
+/**
+ * Resolved user-data homes, matching the Harness home-path rules.
+ *
+ * `claudeHome` / `windsurfHome` / `devinHome` locate third-party agent config
+ * directories (e.g. Claude Code, Windsurf, Devin). Assets living under them are
+ * exposed read-only: they are owned by those agents, not by the Harness.
+ */
 export function resolveHomes(env = process.env) {
   const dshEnv = typeof env.DSH_HOME === 'string' ? env.DSH_HOME.trim() : ''
   const agentsEnv = typeof env.DSH_AGENTS_HOME === 'string' ? env.DSH_AGENTS_HOME.trim() : ''
+  const claudeEnv = typeof env.DSH_CLAUDE_HOME === 'string' ? env.DSH_CLAUDE_HOME.trim() : ''
+  const windsurfEnv = typeof env.DSH_WINDSURF_HOME === 'string' ? env.DSH_WINDSURF_HOME.trim() : ''
+  const devinEnv = typeof env.DSH_DEVIN_HOME === 'string' ? env.DSH_DEVIN_HOME.trim() : ''
   return {
     dshHome: dshEnv.length > 0 ? resolve(dshEnv) : join(homedir(), '.dsh'),
     agentsHome: agentsEnv.length > 0 ? resolve(agentsEnv) : join(homedir(), '.agents'),
+    claudeHome: claudeEnv.length > 0 ? resolve(claudeEnv) : join(homedir(), '.claude'),
+    windsurfHome:
+      windsurfEnv.length > 0 ? resolve(windsurfEnv) : join(homedir(), '.codeium', 'windsurf'),
+    devinHome: devinEnv.length > 0 ? resolve(devinEnv) : join(homedir(), '.devin'),
   }
 }
 

@@ -293,7 +293,10 @@ test('CRUD persists the store (0600), list masks secrets, detail exposes them, t
   assert.equal(raw.servers[0].enabled, true)
   assert.equal(typeof raw.servers[0].createdAt, 'string')
   assert.equal(typeof raw.servers[0].updatedAt, 'string')
-  assert.equal((await stat(storePath)).mode & 0o777, 0o600)
+  if (process.platform !== 'win32') {
+    // POSIX mode bits: chmod has no POSIX semantics on Windows.
+    assert.equal((await stat(storePath)).mode & 0o777, 0o600)
+  }
 
   // list: no command/url/env/header values anywhere.
   const listed = await mcp.list({ workspace: tmp })
@@ -565,7 +568,10 @@ test('workspace-scope rows use the workspace store and never touch global mounts
   assert.equal(stored.servers[0].serverName, 'repo')
   assert.equal(stored.servers[0].scope, 'workspace')
   assert.deepEqual(stored.servers[0].env, { REPO_TOKEN: 'workspace-secret' })
-  assert.equal((await stat(workspaceStore(workspace))).mode & 0o777, 0o600)
+  if (process.platform !== 'win32') {
+    // POSIX mode bits: chmod has no POSIX semantics on Windows.
+    assert.equal((await stat(workspaceStore(workspace))).mode & 0o777, 0o600)
+  }
 
   // Workspace mutations never remount or dispose the global rows.
   assert.equal(globalMounts[0].disposed, false)

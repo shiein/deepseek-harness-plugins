@@ -34,7 +34,7 @@
 | `host/platform.js` | 跨平台路径/Node/tar/PATH/路径包含（Windows 盘符、大小写） |
 | `host/mirror.js` | 跨平台目录镜像（替代 rsync -a --delete，还原 apply/rollback 用） |
 | `host/core.js` | 路径、原子 JSON、日志、跨进程锁、子进程、遍历/哈希 |
-| `host/quark.js` | CLI 封装；改动前先看 `docs/QUARK-CLI-NOTES.md` 的字段实测 |
+| `host/quark.js` | CLI 封装；改动前先看 `docs/QUARK-CLI-NOTES.md` 的字段实测。CLI 路径按 `core.paths.cliCandidates` 多候选探测（`QUARK_CLI` env → `~/.dsh/skills` → `~/.agents/skills` → `.codeium/windsurf` → `.claude` → `.devin`），缺文件时 call() 直接报错不起子进程 |
 | `host/backup.js` | sync.sh 编排：阶段解析、日志 tail、结果归类 |
 | `host/schedule.js` | 定时器 + fs.watch + configEditor |
 | `host/restore.js` | 两阶段还原引擎（tar + mirror；stage/apply/rollback/finalize） |

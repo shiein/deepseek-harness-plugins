@@ -3,12 +3,15 @@
  *
  * The editable set is fixed: two user-global `AGENTS.md` files, four workspace
  * candidates, plus nested `AGENTS.md` / `CLAUDE.md` files that already exist up to
- * depth 2 under the workspace. Anything else is rejected with `forbidden` before a
- * single byte is read or written, and every candidate is checked against its root
- * with `realpath` so a symlink cannot redirect IO outside the allowed tree.
+ * depth 2 under the workspace. Third-party agent files (e.g. `~/.claude/CLAUDE.md`,
+ * `~/.codeium/windsurf/memories/global_rules.md`) are listed read-only when they
+ * exist: they can be viewed but never written or deleted. Anything else is rejected
+ * with `forbidden` before a single byte is read or written, and every candidate is
+ * checked against its root with `realpath` so a symlink cannot redirect IO outside
+ * the allowed tree.
  */
 
-import { join, relative, resolve, sep } from 'node:path'
+import { basename, join, relative, resolve, sep } from 'node:path'
 import { realpath } from 'node:fs/promises'
 import {
   displayPath,
@@ -25,6 +28,16 @@ import {
 
 /** User-global instruction files: `<dshHome>/AGENTS.md`, `<agentsHome>/AGENTS.md`. */
 const USER_INSTRUCTION_FILES = Object.freeze(['AGENTS.md'])
+
+/**
+ * Third-party agent instruction files, listed read-only (only when they exist).
+ * `home` is a key of `resolveHomes()`; `file` is relative to that home.
+ */
+const READONLY_USER_INSTRUCTION_FILES = Object.freeze([
+  { home: 'claudeHome', file: 'CLAUDE.md' },
+  { home: 'windsurfHome', file: join('memories', 'global_rules.md') },
+  { home: 'devinHome', file: 'AGENTS.md' },
+])
 
 /** Fixed workspace-scope candidates, in display order. */
 const WORKSPACE_INSTRUCTION_FILES = Object.freeze([
@@ -54,7 +67,8 @@ const NESTED_MAX_DEPTH = 2
 /**
  * Create the instruction-file API.
  *
- * @param {{ homes?: { dshHome: string, agentsHome: string } }} [options]
+ * @param {{ homes?: { dshHome: string, agentsHome: string, claudeHome: string,
+ *           windsurfHome: string, devinHome: string } }} [options]
  */
 export function createInstructions(options = {}) {
   const fallbackHomes = resolveHomes()
@@ -67,6 +81,18 @@ export function createInstructions(options = {}) {
       typeof options.homes?.agentsHome === 'string' && options.homes.agentsHome.trim() !== ''
         ? resolve(options.homes.agentsHome)
         : fallbackHomes.agentsHome,
+    claudeHome:
+      typeof options.homes?.claudeHome === 'string' && options.homes.claudeHome.trim() !== ''
+        ? resolve(options.homes.claudeHome)
+        : fallbackHomes.claudeHome,
+    windsurfHome:
+      typeof options.homes?.windsurfHome === 'string' && options.homes.windsurfHome.trim() !== ''
+        ? resolve(options.homes.windsurfHome)
+        : fallbackHomes.windsurfHome,
+    devinHome:
+      typeof options.homes?.devinHome === 'string' && options.homes.devinHome.trim() !== ''
+        ? resolve(options.homes.devinHome)
+        : fallbackHomes.devinHome,
   }
 
   /**
@@ -74,7 +100,7 @@ export function createInstructions(options = {}) {
    *
    * @returns {Promise<Array<{
    *   scope: 'user' | 'workspace', baseRoot: string, path: string, file: string,
-   *   label: string, displayPath: string }>>}
+   *   label: string, displayPath: string, readonly?: boolean }>>}
    */
   async function enumerate(workspace, warnings) {
     const candidates = []
@@ -93,6 +119,26 @@ export function createInstructions(options = {}) {
         const shown = displayPath(path)
         push({ scope: 'user', baseRoot: home, path, file, label: shown, displayPath: shown })
       }
+    }
+
+    // 1b. Third-party agent files — read-only, and only when they already exist
+    // (there is nothing to create here, so absent files would just be noise).
+    for (const item of READONLY_USER_INSTRUCTION_FILES) {
+      const home = homes[item.home]
+      if (typeof home !== 'string' || home === '') continue
+      const path = join(home, item.file)
+      const info = await statIfExists(path)
+      if (info === undefined || !info.isFile()) continue
+      const shown = displayPath(path)
+      push({
+        scope: 'user',
+        baseRoot: home,
+        path,
+        file: basename(item.file),
+        label: shown,
+        displayPath: shown,
+        readonly: true,
+      })
     }
 
     // 2. Fixed workspace candidates.
@@ -206,7 +252,7 @@ export function createInstructions(options = {}) {
       label: candidate.label,
       path: candidate.path,
       displayPath: candidate.displayPath,
-      editable: true,
+      editable: candidate.readonly !== true,
       exists,
       size: exists ? info.size : 0,
       modifiedAt: exists ? info.mtime.toISOString() : null,
@@ -241,6 +287,9 @@ export function createInstructions(options = {}) {
     /** Write (atomically, creating parents) one candidate file. */
     async write(input = {}) {
       const candidate = await resolveCandidate(input)
+      if (candidate.readonly === true) {
+        fail('forbidden', `instruction file is read-only: ${candidate.path}`, 403)
+      }
       await assertCandidateInside(candidate)
       const content = input.content
       if (typeof content !== 'string') fail('bad_request', 'content must be a string', 400)
@@ -268,6 +317,9 @@ export function createInstructions(options = {}) {
     /** Delete one candidate file; 404 when it does not exist. */
     async remove(input = {}) {
       const candidate = await resolveCandidate(input)
+      if (candidate.readonly === true) {
+        fail('forbidden', `instruction file is read-only: ${candidate.path}`, 403)
+      }
       await assertCandidateInside(candidate)
       const info = await statIfExists(candidate.path)
       if (info === undefined) {

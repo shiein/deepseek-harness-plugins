@@ -24,12 +24,18 @@ const root = await mkdtemp(join(tmpdir(), 'agent-assets-it-'))
 const home = join(root, 'home')
 const dshHome = join(home, '.dsh')
 const agentsHome = join(home, '.agents')
+const claudeHome = join(home, '.claude')
+const windsurfHome = join(home, '.codeium', 'windsurf')
+const devinHome = join(home, '.devin')
 const workspace = join(root, 'workspace')
 await mkdir(join(dshHome, 'skills'), { recursive: true })
 await mkdir(join(agentsHome, 'skills'), { recursive: true })
 await mkdir(join(workspace, '.git'), { recursive: true })
 process.env.DSH_HOME = dshHome
 process.env.DSH_AGENTS_HOME = agentsHome
+process.env.DSH_CLAUDE_HOME = claudeHome
+process.env.DSH_WINDSURF_HOME = windsurfHome
+process.env.DSH_DEVIN_HOME = devinHome
 // Substitute the real Harness MCP bridge (which lives in the Electron app.asar) with a fake one.
 process.env.AGENT_ASSETS_MCP_CLIENT_MODULE = fileURLToPath(new URL('./fixtures/fake-mcp-client.mjs', import.meta.url))
 
@@ -48,6 +54,15 @@ await writeFile(join(workspace, '.dsh', 'skills', 'shadowed-skill', 'SKILL.md'),
 // An existing nested instruction file, so discovery is exercised.
 await mkdir(join(workspace, 'packages', 'app'), { recursive: true })
 await writeFile(join(workspace, 'packages', 'app', 'AGENTS.md'), 'nested @app\n', 'utf8')
+// A third-party agent skill + instruction file prove they are listed read-only.
+await mkdir(join(windsurfHome, 'skills', 'foreign-skill'), { recursive: true })
+await writeFile(
+  join(windsurfHome, 'skills', 'foreign-skill', 'SKILL.md'),
+  '---\nname: foreign-skill\ndescription: windsurf copy\n---\n\nforeign\n',
+  'utf8',
+)
+await mkdir(claudeHome, { recursive: true })
+await writeFile(join(claudeHome, 'CLAUDE.md'), '# Claude rules\n', 'utf8')
 
 // ---------------------------------------------------------------------------------------------
 // Fake Cordis context.
@@ -342,7 +357,7 @@ await test('GET /skills merges filesystem roots and bundled service entries', as
   const result = await callRoute({ path: '/skills', query: { workspace } })
   assert.equal(result.status, 200)
   const names = result.json.skills.map((skill) => skill.name).sort()
-  assert.deepEqual(names, ['bundled-skill', 'local-skill', 'shadowed-skill'])
+  assert.deepEqual(names, ['bundled-skill', 'foreign-skill', 'local-skill', 'shadowed-skill'])
   const shadowed = result.json.skills.find((skill) => skill.name === 'shadowed-skill')
   assert.equal(shadowed.scope, 'workspace')
   assert.equal(shadowed.description, 'workspace copy')
@@ -350,7 +365,11 @@ await test('GET /skills merges filesystem roots and bundled service entries', as
   const bundled = result.json.skills.find((skill) => skill.name === 'bundled-skill')
   assert.equal(bundled.scope, 'bundled')
   assert.equal(bundled.editable, false)
-  assert.deepEqual(result.json.counts, { user: 0, workspace: 2, bundled: 1 })
+  const foreign = result.json.skills.find((skill) => skill.name === 'foreign-skill')
+  assert.equal(foreign.scope, 'user')
+  assert.equal(foreign.source, 'user-windsurf')
+  assert.equal(foreign.editable, false)
+  assert.deepEqual(result.json.counts, { user: 1, workspace: 2, bundled: 1 })
 })
 
 await test('POST /skill create writes a user SKILL.md', async () => {
@@ -427,6 +446,22 @@ await test('bundled scope mutations are rejected', async () => {
   assert.equal(result.json.error.code, 'bad_request')
 })
 
+await test('third-party read-only skills refuse update and delete', async () => {
+  const update = await callRoute({
+    path: '/skill',
+    method: 'POST',
+    body: { op: 'update', scope: 'user', name: 'foreign-skill', description: 'x', workspace },
+  })
+  assert.equal(update.status, 403)
+  assert.equal(update.json.error.code, 'forbidden')
+  const deleted = await callRoute({
+    path: '/skill',
+    method: 'POST',
+    body: { op: 'delete', scope: 'user', name: 'foreign-skill', workspace },
+  })
+  assert.equal(deleted.status, 403)
+})
+
 await test('POST /skill delete removes the directory', async () => {
   const result = await callRoute({
     path: '/skill',
@@ -451,6 +486,27 @@ await test('GET /instructions lists fixed + nested candidates', async () => {
   assert.ok(paths.includes(join(workspace, 'packages', 'app', 'AGENTS.md')))
   const missing = result.json.files.find((file) => file.path === join(workspace, 'AGENTS.md'))
   assert.equal(missing.exists, false)
+  const foreign = result.json.files.find((file) => file.path === join(claudeHome, 'CLAUDE.md'))
+  assert.equal(foreign.scope, 'user')
+  assert.equal(foreign.exists, true)
+  assert.equal(foreign.editable, false)
+})
+
+await test('third-party read-only instruction files refuse write and delete', async () => {
+  const target = join(claudeHome, 'CLAUDE.md')
+  const written = await callRoute({
+    path: '/instruction',
+    method: 'POST',
+    body: { op: 'write', scope: 'user', path: target, content: 'x', workspace },
+  })
+  assert.equal(written.status, 403)
+  assert.equal(written.json.error.code, 'forbidden')
+  const deleted = await callRoute({
+    path: '/instruction',
+    method: 'POST',
+    body: { op: 'delete', scope: 'user', path: target, workspace },
+  })
+  assert.equal(deleted.status, 403)
 })
 
 await test('POST /instruction write + GET read + delete round-trip', async () => {
@@ -525,7 +581,10 @@ await test('POST /mcp create mounts a user server and reports connected tools', 
   const store = JSON.parse(await readFile(storeFile, 'utf8'))
   assert.equal(store.servers[0].serverName, 'it-mcp')
   const info = await stat(storeFile)
-  assert.equal(info.mode & 0o777, 0o600)
+  if (process.platform !== 'win32') {
+    // POSIX mode bits: chmod has no POSIX semantics on Windows.
+    assert.equal(info.mode & 0o777, 0o600)
+  }
   assert.ok(mountFibers.length >= 1, 'a mount fiber was created')
 })
 

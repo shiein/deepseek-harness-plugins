@@ -1,10 +1,13 @@
 /**
  * Skill discovery and CRUD for the Agent Assets Host module.
  *
- * Four writable filesystem roots are scanned in Harness precedence order:
- * `project-dsh` > `project-agents` > `user-dsh` > `user-agents`. Read-only
- * provider entries (`bundled` / `runtime` / `custom`) arrive from the live
- * `skills` service through the `serviceSkills` callback supplied by `index.js`.
+ * Writable filesystem roots are scanned in Harness precedence order:
+ * `project-dsh` > `project-agents` > `user-dsh` > `user-agents`. Third-party
+ * agent directories (`user-claude` / `user-windsurf` / `user-devin`, e.g.
+ * `~/.claude/skills`) are scanned last as read-only sources: they are listed
+ * for visibility but never accept writes. Read-only provider entries
+ * (`bundled` / `runtime` / `custom`) arrive from the live `skills` service
+ * through the `serviceSkills` callback supplied by `index.js`.
  *
  * Every mutation re-validates its target: the skill name is kebab-only, the
  * resolved directory must stay inside its scope root, and `realpath` is checked
@@ -36,6 +39,9 @@ const FILESYSTEM_SOURCES = Object.freeze([
   'project-agents',
   'user-dsh',
   'user-agents',
+  'user-claude',
+  'user-windsurf',
+  'user-devin',
 ])
 
 /** Service entries that are already covered by the filesystem scan. */
@@ -46,7 +52,8 @@ const DESCRIPTION_MAX_LENGTH = 1024
 /**
  * Create the skills API.
  *
- * @param {{ homes?: { dshHome: string, agentsHome: string },
+ * @param {{ homes?: { dshHome: string, agentsHome: string, claudeHome: string,
+ *           windsurfHome: string, devinHome: string },
  *           serviceSkills?: (input: { workspace: string }) =>
  *             Promise<ReadonlyArray<{ name: string, description?: string, whenToUse?: string,
  *               source?: string, provider?: string }> | null> }} [options]
@@ -62,6 +69,18 @@ export function createSkills(options = {}) {
       typeof options.homes?.agentsHome === 'string' && options.homes.agentsHome.trim() !== ''
         ? resolve(options.homes.agentsHome)
         : fallbackHomes.agentsHome,
+    claudeHome:
+      typeof options.homes?.claudeHome === 'string' && options.homes.claudeHome.trim() !== ''
+        ? resolve(options.homes.claudeHome)
+        : fallbackHomes.claudeHome,
+    windsurfHome:
+      typeof options.homes?.windsurfHome === 'string' && options.homes.windsurfHome.trim() !== ''
+        ? resolve(options.homes.windsurfHome)
+        : fallbackHomes.windsurfHome,
+    devinHome:
+      typeof options.homes?.devinHome === 'string' && options.homes.devinHome.trim() !== ''
+        ? resolve(options.homes.devinHome)
+        : fallbackHomes.devinHome,
   }
   const serviceSkills = typeof options.serviceSkills === 'function' ? options.serviceSkills : null
 
@@ -76,19 +95,47 @@ export function createSkills(options = {}) {
       { source: 'project-agents', scope: 'workspace', path: join(workspace, '.agents', 'skills') },
       { source: 'user-dsh', scope: 'user', path: join(homes.dshHome, 'skills') },
       { source: 'user-agents', scope: 'user', path: join(homes.agentsHome, 'skills') },
+      {
+        source: 'user-claude',
+        scope: 'user',
+        path: join(homes.claudeHome, 'skills'),
+        readonly: true,
+      },
+      {
+        source: 'user-windsurf',
+        scope: 'user',
+        path: join(homes.windsurfHome, 'skills'),
+        readonly: true,
+      },
+      {
+        source: 'user-devin',
+        scope: 'user',
+        path: join(homes.devinHome, 'skills'),
+        readonly: true,
+      },
     ]
   }
 
   /** Roots writable for one API scope, highest precedence first. */
   function scopeRoots(scope, workspace) {
-    const roots = rootDefinitions(workspace).filter((root) => root.scope === scope)
+    const roots = rootDefinitions(workspace).filter(
+      (root) => root.scope === scope && root.readonly !== true,
+    )
     if (roots.length === 0) fail('bad_request', `unknown skill scope: ${String(scope)}`, 400)
     return roots
   }
 
+  /** Read-only third-party roots for one scope; used to explain mutation refusals. */
+  function readonlyRoots(scope, workspace) {
+    return rootDefinitions(workspace).filter(
+      (root) => root.scope === scope && root.readonly === true,
+    )
+  }
+
   /**
-   * Scan every writable root. Never throws for unreadable/corrupt entries; each
-   * problem is recorded in `warnings` and the remaining skills still list.
+   * Scan every filesystem root (writable and read-only). Never throws for
+   * unreadable/corrupt entries; each problem is recorded in `warnings` and the
+   * remaining skills still list.
    */
   async function scanFilesystem(workspace, warnings) {
     const entries = []
@@ -123,7 +170,7 @@ export function createSkills(options = {}) {
           path: skillFile,
           dir: child.path,
           root: definition.path,
-          editable: true,
+          editable: definition.readonly !== true,
         }
         const skillFileReal = await realPathOrFallback(skillFile)
         if (!isInside(rootReal, skillFileReal)) {
@@ -318,6 +365,7 @@ export function createSkills(options = {}) {
       const workspace = resolveWorkspace(input.workspace)
       const located = await locate(scopeRoots(scope, workspace), name)
       if (located === undefined) {
+        await refuseIfReadonly(scope, workspace, name, 'update')
         fail('not_found', `skill not found: ${scope}/${name}`, 404)
       }
       const { root, directory } = located
@@ -464,6 +512,7 @@ export function createSkills(options = {}) {
       const workspace = resolveWorkspace(input.workspace)
       const located = await locate(scopeRoots(scope, workspace), name)
       if (located === undefined) {
+        await refuseIfReadonly(scope, workspace, name, 'remove')
         fail('not_found', `skill not found: ${scope}/${name}`, 404)
       }
       const { root, directory } = located
@@ -493,6 +542,18 @@ export function createSkills(options = {}) {
       return { root, directory }
     }
     return undefined
+  }
+
+  /** Throw `forbidden` when `name` only exists under a read-only third-party root. */
+  async function refuseIfReadonly(scope, workspace, name, operation) {
+    const foreign = await locate(readonlyRoots(scope, workspace), name)
+    if (foreign !== undefined) {
+      fail(
+        'forbidden',
+        `cannot ${operation} ${name}: ${displayPath(foreign.directory)} is read-only (third-party agent directory)`,
+        403,
+      )
+    }
   }
 
   /** Other copies of `name` that this entry shadows (or is shadowed by). */

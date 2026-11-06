@@ -119,6 +119,7 @@ export function createRoutes(deps) {
     connectionRefresh = (async () => {
       const previous = core.getState().connection;
       const connection = await quark.getUserInfo();
+      connection.cliPath = core.paths.cliPath;
       // 未授权时保留上次已知昵称，便于展示
       if (connection.state !== 'connected' && previous?.nickname) {
         connection.nickname = previous.nickname;
@@ -150,9 +151,10 @@ export function createRoutes(deps) {
         message: '正在检查网盘连接…',
         checkedAt: null,
         stale: true,
+        cliPath: core.paths.cliPath,
       };
     }
-    return { ...connection, stale };
+    return { ...connection, stale, cliPath: core.paths.cliPath };
   }
 
   async function countArchive() {
@@ -570,6 +572,7 @@ export function createRoutes(deps) {
     profileDir: core.paths.profileDir,
     cliPath: core.paths.cliPath,
     cliExists: existsSync(core.paths.cliPath),
+    cliCandidates: core.paths.cliCandidates,
     syncScript: core.paths.syncScript,
     syncScriptExists: existsSync(core.paths.syncScript),
     scopeScriptExists: existsSync(core.paths.scopeScript),
