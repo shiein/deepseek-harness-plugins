@@ -321,9 +321,16 @@ export function apply(ctx, config = {}) {
           const abort = new AbortController();
           const loaded = await mapWithConcurrency(chosen, 4, async (session) => {
             const entry = await reader.getForTimeline(session, abort.signal);
-            return { session, messages: entry.messages };
+            if (entry.error !== undefined) {
+              logger?.warn?.(`[agent-history] transcript read failed for ${session.id}: ${entry.error}`);
+            }
+            return { session, messages: entry.messages, error: entry.error };
           });
-          const timed = buildTimeline(loaded.filter(Boolean), { limit, cursor, order, role, query });
+          const readable = loaded.filter(Boolean);
+          const failedSessions = readable
+            .filter((item) => item.error !== undefined)
+            .map((item) => ({ id: item.session.id, title: item.session.title, error: item.error }));
+          const timed = buildTimeline(readable, { limit, cursor, order, role, query });
           writeJson(response, 200, {
             ok: true,
             events: timed.events,
@@ -334,6 +341,7 @@ export function apply(ctx, config = {}) {
             sessionsTotal: matching.length,
             sessionsIncluded: chosen.length,
             sessions: chosen.map((session) => ({ id: session.id, title: session.title, agentId: session.agentId })),
+            failedSessions,
           });
         } catch (error) {
           writeJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });

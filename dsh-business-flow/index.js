@@ -1,7 +1,7 @@
 /**
  * Business Flow Analyst — Host half.
  *
- * Serves a small JSON API over the Harness web server (`/api/bizflow/*`) so the
+ * Serves a small JSON API over the Harness web server (`/api/dsh-business-flow/*`) so the
  * package's Client half can ask the configured agent to map a project's data
  * business flow and to turn node requirements into precise session prompts.
  * All routes are loopback-only.
@@ -9,7 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
@@ -17,7 +17,7 @@ import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 /** Hard dependency: the browser HTTP carrier that serves the Web GUI this page renders in. */
 export const inject = ['webServer'];
 
-const PREFIX = '/api/bizflow';
+const PREFIX = '/api/dsh-business-flow';
 const MAX_BODY_BYTES = 512 * 1024;
 /** Whole saved history (up to HISTORY_LIMIT graphs) is posted at once. */
 const MAX_HISTORY_BODY_BYTES = 8 * 1024 * 1024;
@@ -48,10 +48,30 @@ const TEXT_EXT = new Set([
   '.properties', '.gradle', '.vue', '.svelte', '.html', '.css', '.scss',
 ]);
 const CANDIDATE_RE = /(controller|service|route|router|handler|api|mapper|dao|repository|schema|model|entity|migration|permission|auth|login|middleware|interceptor|config|index|main|app|readme|package\.json|pom\.xml|build\.gradle)/i;
-const HISTORY_FILE = join(homedir(), '.dsh', 'bizflow', 'history.json');
+const HISTORY_FILE = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'business-flow', 'history.json');
+/** Where the plugin kept its history while it was named `bizflow`; moved to HISTORY_FILE on first use. */
+const LEGACY_HISTORY_FILE = join(homedir(), '.dsh', 'bizflow', 'history.json');
+
+/**
+ * One-time move of the pre-rename history file. Only when the new file does not exist yet, so a
+ * later legacy copy can never overwrite newer records; a failed move is reported, not ignored.
+ */
+function migrateLegacyHistory() {
+  if (existsSync(HISTORY_FILE) || !existsSync(LEGACY_HISTORY_FILE)) return;
+  try {
+    mkdirSync(dirname(HISTORY_FILE), { recursive: true });
+    renameSync(LEGACY_HISTORY_FILE, HISTORY_FILE);
+  } catch (error) {
+    throw bizError(
+      `cannot move the old history ${LEGACY_HISTORY_FILE} to ${HISTORY_FILE}: ${error?.message ?? String(error)}`,
+      500,
+    );
+  }
+}
 
 /** Saved analyses, kept in the DSH home so a new GUI port keeps them. */
 function readHistoryFile() {
+  migrateLegacyHistory();
   let text;
   try {
     text = readFileSync(HISTORY_FILE, 'utf8');
@@ -209,7 +229,7 @@ function resolveProjectPath(value) {
 }
 
 function bizError(message, status = 400) {
-  const error = new Error(`bizflow: ${message}`);
+  const error = new Error(`business-flow: ${message}`);
   error.status = status;
   return error;
 }
@@ -297,6 +317,44 @@ function invalidateAnalysisAgent(agentsByCwd, cwd) {
   }
 }
 
+/** sessionId → tail of the turns queued on that Session by this plugin. */
+const sessionTurnTails = new Map();
+
+/**
+ * Run `task` after every earlier turn this plugin queued on `sessionId` has settled.
+ *
+ * Turn results are read off the Session's shared event stream; two overlapping requests on one
+ * Session would both follow the first turn and return its answer, so turns are strictly serial.
+ */
+function withSessionTurn(sessionId, task) {
+  const previous = sessionTurnTails.get(sessionId) ?? Promise.resolve();
+  const run = previous.then(task, task);
+  const tail = run.then(() => {}, () => {});
+  sessionTurnTails.set(sessionId, tail);
+  tail.then(() => {
+    if (sessionTurnTails.get(sessionId) === tail) sessionTurnTails.delete(sessionId);
+  });
+  return run;
+}
+
+/**
+ * Who submitted a `user/message`: `prompt.requestId` is persisted on the accepted message as
+ * `source.rpcId` ('user-rpc' source). Without it, fall back to the prompt text marker.
+ * @returns {'mine' | 'other' | 'unknown'}
+ */
+function promptOwner(event, requestId, promptMarker) {
+  const message = eventMessage(event);
+  const rpcId = message?.source?.rpcId;
+  if (typeof rpcId === 'string' && rpcId !== '') return rpcId === requestId ? 'mine' : 'other';
+  return messageText(message).replace(/\s+/g, ' ').includes(promptMarker) ? 'mine' : 'unknown';
+}
+
+/** True when a `user/message` carries a prompt correlation id, i.e. ownership is decidable. */
+function hasRpcId(event) {
+  const rpcId = eventMessage(event)?.source?.rpcId;
+  return typeof rpcId === 'string' && rpcId !== '';
+}
+
 /**
  * Run one turn of the configured agent in `cwd` and return the last assistant text.
  *
@@ -307,8 +365,6 @@ function invalidateAnalysisAgent(agentsByCwd, cwd) {
  */
 async function runAgentTurn(ctx, agentsByCwd, cwd, promptText, signal, sessionIdInput) {
   const controller = requireService(ctx, 'sessionController');
-  const timeout = AbortSignal.timeout(ANALYSIS_TIMEOUT_MS);
-  const combined = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
 
   let sessionId = typeof sessionIdInput === 'string' ? sessionIdInput : '';
   if (sessionId === '') {
@@ -318,6 +374,16 @@ async function runAgentTurn(ctx, agentsByCwd, cwd, promptText, signal, sessionId
   if (typeof sessionId !== 'string' || sessionId === '') {
     throw bizError('no usable session for the analysis turn', 502);
   }
+  return withSessionTurn(sessionId, () => runSessionTurn(controller, sessionId, promptText, signal));
+}
+
+/** One serialized prompt → `turn/end` round on `sessionId` (see `withSessionTurn`). */
+async function runSessionTurn(controller, sessionId, promptText, signal) {
+  if (signal?.aborted) throw bizError('analysis timed out or was cancelled', 504);
+  // The timeout starts once this turn owns the Session, not while it waits behind another.
+  const timeout = AbortSignal.timeout(ANALYSIS_TIMEOUT_MS);
+  const combined = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
+  const requestId = randomUUID();
 
   let answer = '';
   let turnEnded = false;
@@ -332,6 +398,15 @@ async function runAgentTurn(ctx, agentsByCwd, cwd, promptText, signal, sessionId
   const snapshotRecords = [];
   let baselineSeq = -1;
   let armed = false;
+  // This call's own user/message has been seen; once true, only events of that turn are taken.
+  let ownSeen = false;
+  // Some user/message carried a correlation id, so a turn/end before our own message is foreign.
+  let rpcVisible = false;
+  const resetTurn = () => {
+    answer = '';
+    sawMessage = false;
+    turnDetail = '';
+  };
 
   const follow = controller.follow(
     { address: { kind: 'session', sessionId } },
@@ -342,14 +417,27 @@ async function runAgentTurn(ctx, agentsByCwd, cwd, promptText, signal, sessionId
       const take = (event) => {
         if (event === undefined || event === null) return;
         if (typeof event.type === 'string') seenTypes.set(event.type, (seenTypes.get(event.type) ?? 0) + 1);
+        if (event.type === 'user/message' && !ownSeen) {
+          if (hasRpcId(event)) rpcVisible = true;
+          const owner = promptOwner(event, requestId, promptMarker);
+          if (owner === 'mine') {
+            // Our turn starts here: drop anything taken from a turn that was still running before it.
+            ownSeen = true;
+            armed = true;
+            resetTurn();
+            return;
+          }
+          if (owner === 'other') {
+            // Another prompt's turn (e.g. a cancelled earlier request still finishing): skip it.
+            armed = false;
+            resetTurn();
+            return;
+          }
+        }
         if (!armed) {
           const seq = typeof event.seq === 'number' ? event.seq : undefined;
-          if (seq !== undefined && baselineSeq >= 0 && seq > baselineSeq) {
-            armed = true;
-          } else if (event.type === 'user/message') {
-            if (messageText(eventMessage(event)).replace(/\s+/g, ' ').includes(promptMarker)) armed = true;
-          }
-          if (!armed) return;
+          if (seq === undefined || baselineSeq < 0 || seq <= baselineSeq) return;
+          armed = true;
         }
         if (event.type === 'assistant/message') {
           const text = messageText(eventMessage(event));
@@ -358,6 +446,12 @@ async function runAgentTurn(ctx, agentsByCwd, cwd, promptText, signal, sessionId
             answer = text;
           }
         } else if (event.type === 'turn/end') {
+          if (rpcVisible && !ownSeen) {
+            // A turn that started before ours ended; keep following for our own turn.
+            armed = false;
+            resetTurn();
+            return;
+          }
           turnEnded = true;
           const reason = event.data?.reason ?? event.reason;
           turnDetail = typeof reason?.kind === 'string' ? reason.kind : 'unknown';
@@ -372,6 +466,7 @@ async function runAgentTurn(ctx, agentsByCwd, cwd, promptText, signal, sessionId
         if (frame.type === 'snapshot' && Array.isArray(frame.records)) {
           for (const record of frame.records) {
             snapshotRecords.push(record);
+            if (record?.event?.type === 'user/message' && hasRpcId(record.event)) rpcVisible = true;
             const seq = record?.event?.seq;
             if (typeof seq === 'number' && seq > baselineSeq) baselineSeq = seq;
           }
@@ -388,9 +483,13 @@ async function runAgentTurn(ctx, agentsByCwd, cwd, promptText, signal, sessionId
         let mine = false;
         for (const record of snapshotRecords) {
           const event = record?.event;
-          if (event?.type === 'user/message'
-            && messageText(eventMessage(event)).replace(/\s+/g, ' ').includes(promptMarker)) {
-            mine = true;
+          if (event?.type === 'user/message') {
+            const owner = promptOwner(event, requestId, promptMarker);
+            if (owner !== 'unknown') mine = owner === 'mine';
+            if (owner === 'mine') {
+              sawMessage = false;
+              answer = '';
+            }
             continue;
           }
           if (!mine || event?.type !== 'assistant/message') continue;
@@ -408,7 +507,7 @@ async function runAgentTurn(ctx, agentsByCwd, cwd, promptText, signal, sessionId
 
   try {
     await controller.prompt({
-      requestId: randomUUID(),
+      requestId,
       sessionId,
       mode: 'queue',
       content: [{ type: 'text', text: promptText }],
@@ -978,7 +1077,7 @@ export function apply(ctx) {
       } catch (error) {
         // A route left behind by an earlier activation still owns this path; the
         // panel keeps working, and the fresh handler takes over after a restart.
-        ctx.logger?.warn?.(`bizflow: route ${PREFIX}${suffix} is already registered`, error);
+        ctx.logger?.warn?.(`business-flow: route ${PREFIX}${suffix} is already registered`, error);
       }
     }
     return () => {
@@ -996,5 +1095,5 @@ export function apply(ctx) {
       }
       agentsByCwd.clear();
     };
-  }, 'bizflow: routes');
+  }, 'business-flow: routes');
 }

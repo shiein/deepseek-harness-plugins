@@ -4,7 +4,7 @@
 
 | 插件 | 包名 | 作用 |
 |---|---|---|
-| [业务流程分析](./bizflow) | `@local/bizflow` | 用默认模型分析本地项目中某项业务的数据流程并绘成拓扑图，可切换全貌 / 调用链 / 数据 / 权限 / 外部视图；选中节点可把粗略需求改写成精准的实现 prompt，并在项目中新建会话 |
+| [业务流程分析](./dsh-business-flow) | `@local/dsh-business-flow` | 用默认模型分析本地项目中某项业务的数据流程并绘成拓扑图，可切换全貌 / 调用链 / 数据 / 权限 / 外部视图；选中节点可把粗略需求改写成精准的实现 prompt，并在项目中新建会话 |
 | [Agent 资产](./dsh-agent-assets) | `@local/dsh-agent-assets` | 统一管理技能（Skills）、MCP 服务和 Agent 提示词文件（AGENTS.md / CLAUDE.md），按用户级 / 工作区级 / 内置分组增删改查 |
 | [Agent 历史对话](./dsh-agent-history) | `@local/dsh-agent-history` | 扫描本机 Claude Code、Codex、DSH、OpenCode、Gemini CLI、Cursor 等二十多种 AI 编程 Agent 的会话，按项目合并成多 Agent 时间轴或按 Agent 浏览，可一键在原 Agent 中继续对话 |
 | [Agent Token 用量](./dsh-agent-usage) | `@local/dsh-agent-usage` | 从本地会话和用量文件统计各 Agent 的 Token 消耗，按 Agent、模型、日期汇总，并按 API 价格估算费用 |
@@ -17,7 +17,7 @@
 
 - 基于 DSH 桌面版 `0.2.2-rc.1`（macOS arm64）开发。插件依赖 DSH 内部服务和 Client 槽位，DSH 升级后可能需要适配。
 - `dsh-agent-history`、`dsh-agent-usage`、`dsh-maintenance-backup` 同时适配 macOS 和 Windows 路径，Windows 上的验证程度见各自 README。
-- `bizflow` 需要 profile 中配置可用的默认模型。
+- `dsh-business-flow` 需要 profile 中配置可用的默认模型。
 - `dsh-maintenance-backup` 需要安装并授权夸克网盘技能（`~/.dsh/skills/quarkclouddrive`）。
 - `dsh-page-preview` 为 TypeScript 工程，依赖锁定 DSH `0.2.1-rc.5` 的 npm 包；安装前先在其目录运行 `npm install && npm run build`（构建产物 `lib/`、`browser/` 不入库）。macOS arm64 实测，Linux 仅在 Docker 中验证，Windows 未实现。
 
@@ -35,6 +35,8 @@
    - 只改了 `client.js`：刷新页面即可。
 
 插件管理器以 `link:` 依赖把目录写入 profile 的 `package.json`，并把包名加入 `dsh.profile.bundles`，因此 DSH 直接运行仓库中的代码。
+
+> 业务流程分析插件原名 `bizflow`（包名 `@local/bizflow`），已改为 `dsh-business-flow`（`@local/dsh-business-flow`），接口前缀改为 `/api/dsh-business-flow/`。已安装旧版的，请在插件管理中卸载 `@local/bizflow`，再从 `dsh-business-flow` 目录重新安装。原来的 `~/.dsh/bizflow/history.json` 会在首次打开历史时自动移到 `~/.dsh/business-flow/history.json`。
 
 ## 目录结构
 

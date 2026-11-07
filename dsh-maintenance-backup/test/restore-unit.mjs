@@ -13,14 +13,17 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -667,6 +670,35 @@ async function main() {
     await engine.ackPending();
   });
 
+  await check('apply 中途失败：marker 已记录安全副本，重启收尾 canRollback=true', async () => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) return; // 依赖 POSIX 只读权限
+    const blocker = join(SYNC_DIR, 'config.sh');
+    const stagedFail = await engine.stage({ name: 'dsh-snap-2026-11-04_120000.tar.gz', scope: 'all', includeSelf: false });
+    chmodSync(blocker, 0o444); // dsh-sync 目标覆盖 config.sh 时 EACCES
+    try {
+      await assert.rejects(
+        () => engine.apply({ stagingId: stagedFail.stagingId, scope: 'all', includeSelf: false }),
+        /还原 dsh-sync 失败/,
+      );
+    } finally {
+      chmodSync(blocker, 0o644);
+    }
+    const pending = await engine.inspectPending();
+    assert.equal(pending.phase, 'applying');
+    assert.ok(pending.safetyPath && existsSync(pending.safetyPath), '安全副本路径应在覆盖前持久化');
+    pending.applyPid = -1;
+    core.writeJson(core.paths.pendingFile, pending);
+    const finalized = await engine.finalizeOnStartup();
+    assert.equal(finalized.result.interrupted, true);
+    assert.equal(finalized.result.canRollback, true);
+    // 用该安全副本回滚到失败前的本机状态，避免影响后续用例
+    const rolled = await engine.rollback();
+    assert.equal(rolled.safetyPath, pending.safetyPath);
+    assert.equal(readSandbox('home/.dsh/profiles/desktop/cordis.patch.yml'), C.localProfile);
+    assert.equal(readSandbox('home/.dsh-sync/config.sh'), C.localSync);
+    await engine.ackPending();
+  });
+
   console.log('\n[6] includeSelf 与 discard');
   await check('includeSelf=true 时 workspace 目标包含维护插件自身', async () => {
     const stagedSelf = await engine.stage({
@@ -920,6 +952,28 @@ async function main() {
     assert.equal(isExcluded('profiles/desktop/cordis.patch.yml'), false);
     rmSync(srcRoot, { recursive: true, force: true });
     rmSync(dstRoot, { recursive: true, force: true });
+  });
+
+  await check('mirrorDirectory：本地同名符号链接不被跟随写穿', async () => {
+    if (process.platform === 'win32') return; // 普通用户无权创建文件符号链接
+    const srcRoot = join(sandbox, 'mirror-link-src');
+    const dstRoot = join(sandbox, 'mirror-link-dst');
+    const outside = join(sandbox, 'mirror-link-outside.txt');
+    rmSync(srcRoot, { recursive: true, force: true });
+    rmSync(dstRoot, { recursive: true, force: true });
+    mkdirSync(srcRoot, { recursive: true });
+    mkdirSync(dstRoot, { recursive: true });
+    writeFileSync(join(srcRoot, 'conf.txt'), 'from-snapshot\n');
+    writeFileSync(outside, 'outside-original\n');
+    symlinkSync(outside, join(dstRoot, 'conf.txt'));
+    const result = await mirrorDirectory({ source: srcRoot, target: dstRoot });
+    assert.equal(result.errors.length, 0);
+    assert.equal(readFileSync(outside, 'utf8'), 'outside-original\n', '目标目录以外的文件不应被覆盖');
+    assert.ok(!lstatSync(join(dstRoot, 'conf.txt')).isSymbolicLink(), '符号链接应被替换为普通文件');
+    assert.equal(readFileSync(join(dstRoot, 'conf.txt'), 'utf8'), 'from-snapshot\n');
+    rmSync(srcRoot, { recursive: true, force: true });
+    rmSync(dstRoot, { recursive: true, force: true });
+    rmSync(outside, { force: true });
   });
 
   await check('DSH_MAINTENANCE_TAR 覆盖 tar：stage 解压 / 安全副本 / rollback 解压都走它', async () => {

@@ -413,7 +413,8 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
   }
 
   /**
-   * Read one store.
+   * Read one store. `failed` means the file exists but could not be read or parsed: callers may
+   * display it as empty, but must never write back on top of it (that would drop the original rows).
    * @returns {Promise<{ path: string, servers: any[], warnings: string[], failed: boolean }>}
    */
   async function readStore(scope, workspaceRoot) {
@@ -432,11 +433,11 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
       parsed = JSON.parse(text)
     } catch {
       warnings.push(`MCP store ${displayPath(path)} is not valid JSON; treated as empty`)
-      return { path, servers: [], warnings, failed: false }
+      return { path, servers: [], warnings, failed: true }
     }
     if (!isPlainObject(parsed) || !Array.isArray(parsed.servers)) {
       warnings.push(`MCP store ${displayPath(path)} does not contain a servers array; treated as empty`)
-      return { path, servers: [], warnings, failed: false }
+      return { path, servers: [], warnings, failed: true }
     }
     const servers = []
     parsed.servers.forEach((row, index) => {
@@ -1013,6 +1014,13 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
     let rowsForScope = []
     await withStoreLock(async () => {
       const store = await readStore(resolved.scope, resolved.workspaceRoot)
+      if (store.failed) {
+        fail(
+          'conflict',
+          `MCP store ${displayPath(store.path)} is unreadable or corrupt; fix or remove it before editing (${store.warnings.join('; ')})`,
+          409,
+        )
+      }
       const servers = [...store.servers]
       const index = servers.findIndex((row) => row.serverName === serverName)
       let nextServerName = serverName

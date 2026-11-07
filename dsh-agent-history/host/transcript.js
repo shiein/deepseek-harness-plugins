@@ -12,6 +12,12 @@ const MAX_CACHED_TRANSCRIPTS = 80;
 const MAX_CACHED_TIMELINES = 400;
 /** Hard ceiling for one cached transcript so a giant session cannot pin memory. */
 const MAX_TRANSCRIPT_CHARS = 2_000_000;
+/**
+ * Total text budget per cache. The count limits alone allow 80 × 2M chars; a few long sessions
+ * should evict older ones instead. The most recent entry is always kept, whatever its size.
+ */
+const MAX_CACHED_TRANSCRIPT_CHARS = 24_000_000;
+const MAX_CACHED_TIMELINE_CHARS = 24_000_000;
 
 export class TranscriptReader {
   /**
@@ -24,6 +30,8 @@ export class TranscriptReader {
     this.cache = new Map();
     /** Timeline reads keep only the readable slice of each session. @type {Map<string, {key: string, messages: any[]}>} */
     this.timelineCache = new Map();
+    this.cacheChars = 0;
+    this.timelineCacheChars = 0;
   }
 
   /** @param {import('./types.js').SessionSummary} session @param {AbortSignal} signal */
@@ -36,23 +44,12 @@ export class TranscriptReader {
       this.cache.set(session.id, cached);
       return cached;
     }
-    let result;
-    try {
-      result = await this.read(session, signal);
-    } catch {
-      result = { supported: true, messages: [] };
-    }
-    const entry = {
-      key,
-      supported: Boolean(result?.supported),
-      messages: limitTranscriptChars(finalizeMessages(result?.messages || [])),
-    };
-    this.cache.set(session.id, entry);
-    while (this.cache.size > MAX_CACHED_TRANSCRIPTS) {
-      const oldest = this.cache.keys().next();
-      if (oldest.done) break;
-      this.cache.delete(oldest.value);
-    }
+    // A failed read propagates and is NOT cached: caching it as an empty transcript would hide the
+    // error and pin the empty result until the session changes.
+    const result = await this.read(session, signal);
+    const messages = limitTranscriptChars(finalizeMessages(result?.messages || []));
+    const entry = { key, supported: Boolean(result?.supported), messages, chars: messageChars(messages) };
+    this.cacheChars = putBounded(this.cache, this.cacheChars, session.id, entry, MAX_CACHED_TRANSCRIPTS, MAX_CACHED_TRANSCRIPT_CHARS);
     return entry;
   }
 
@@ -63,7 +60,9 @@ export class TranscriptReader {
    * @param {import('./types.js').SessionSummary} session
    * @param {AbortSignal} signal
    * @param {number} [maxMessages]
-   * @returns {Promise<{messages: Array<import('./types.js').TranscriptMessage>, truncated: boolean}>}
+   * A failed read returns `error` with no messages and is not cached, so the next request retries;
+   * one unreadable session must not fail the whole merged timeline.
+   * @returns {Promise<{messages: Array<import('./types.js').TranscriptMessage>, truncated: boolean, error?: string}>}
    */
   async getForTimeline(session, signal, maxMessages = 300) {
     const key = `${session.updatedAt}:${maxMessages}`;
@@ -73,22 +72,27 @@ export class TranscriptReader {
       this.timelineCache.set(session.id, cached);
       return { messages: cached.messages, truncated: cached.truncated };
     }
-    const entry = await this.get(session, signal);
+    let entry;
+    try {
+      entry = await this.get(session, signal);
+    } catch (error) {
+      return { messages: [], truncated: false, error: error instanceof Error ? error.message : String(error) };
+    }
     const readable = entry.messages.filter((message) => message.role !== 'system');
     const truncated = readable.length > maxMessages;
     // Keep the tail: the latest work of a very long session is what the merged view reads.
     const sliced = truncated ? readable.slice(readable.length - maxMessages) : readable;
-    this.timelineCache.set(session.id, { key, messages: sliced, truncated });
-    while (this.timelineCache.size > MAX_CACHED_TIMELINES) {
-      const oldest = this.timelineCache.keys().next();
-      if (oldest.done) break;
-      this.timelineCache.delete(oldest.value);
-    }
+    const slice = { key, messages: sliced, truncated, chars: messageChars(sliced) };
+    this.timelineCacheChars = putBounded(
+      this.timelineCache, this.timelineCacheChars, session.id, slice, MAX_CACHED_TIMELINES, MAX_CACHED_TIMELINE_CHARS,
+    );
     return { messages: sliced, truncated };
   }
 
   /** @param {string} sessionId */
   forget(sessionId) {
+    this.cacheChars -= this.cache.get(sessionId)?.chars || 0;
+    this.timelineCacheChars -= this.timelineCache.get(sessionId)?.chars || 0;
     this.cache.delete(sessionId);
     this.timelineCache.delete(sessionId);
   }
@@ -96,7 +100,35 @@ export class TranscriptReader {
   clear() {
     this.cache.clear();
     this.timelineCache.clear();
+    this.cacheChars = 0;
+    this.timelineCacheChars = 0;
   }
+}
+
+/** @param {Array<{text: string}>} messages */
+function messageChars(messages) {
+  let total = 0;
+  for (const message of messages) total += message.text.length;
+  return total;
+}
+
+/**
+ * Insert `entry` as the most recent item of an LRU map, then evict the oldest items until both the
+ * count and the char budget hold (the new entry itself is never evicted). Returns the new char total.
+ * @param {Map<string, {chars: number}>} map
+ */
+function putBounded(map, totalChars, id, entry, maxEntries, maxChars) {
+  let total = totalChars - (map.get(id)?.chars || 0);
+  map.delete(id);
+  map.set(id, entry);
+  total += entry.chars;
+  for (const [oldId, oldEntry] of map) {
+    if (map.size <= 1 || (map.size <= maxEntries && total <= maxChars)) break;
+    if (oldId === id) continue;
+    map.delete(oldId);
+    total -= oldEntry.chars;
+  }
+  return total;
 }
 
 /** Keep one transcript under the memory ceiling, dropping the oldest messages first. @param {any[]} messages */

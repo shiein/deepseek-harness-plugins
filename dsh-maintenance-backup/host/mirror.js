@@ -215,7 +215,9 @@ export async function mirrorDirectory(input) {
     const existing = await lstatSafe(targetAbs);
     try {
       if (existing) {
-        if (info.type === 'file' && existing.isDirectory()) await removePath(targetAbs);
+        // 目标不是普通文件（目录 / 符号链接 / 其他）时先移除：copyFile 会跟随符号链接，
+        // 直接覆盖会把快照内容写到链接指向的、目标目录以外的文件。
+        if (info.type === 'file' && !existing.isFile()) await removePath(targetAbs);
         else if (info.type === 'symlink' && !existing.isSymbolicLink()) await removePath(targetAbs);
       }
       await mkdir(dirname(targetAbs), { recursive: true });

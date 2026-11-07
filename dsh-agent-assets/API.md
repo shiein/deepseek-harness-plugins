@@ -267,6 +267,9 @@ Body: `{ "op": "create" | "update" | "delete" | "toggle", "scope": "user" | "wor
   disposal). Response: `{ "ok": true, "servers": [ ...McpServerView for that scope ] }`.
 - Failure to connect is not a request failure: the row is stored (or kept) and `status.state`
   becomes `error` with a message; only validation/store failures return 4xx/5xx.
+- If the scope store exists but cannot be read, is not valid JSON, or has no `servers` array, every
+  op returns 409 `conflict` and the file is left untouched (`GET /mcp` still lists it as empty with a
+  warning). Fix or remove the file, then retry.
 
 ## Host module interfaces (internal)
 

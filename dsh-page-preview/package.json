@@ -76,15 +76,15 @@
       "default": "./lib/index.js"
     },
     "./client": {
-      "types": "./src/client/index.ts",
+      "types": "./lib/client/index.d.ts",
       "default": "./lib/client.js"
     },
     "./typert": {
-      "types": "./src/client/protocol.ts",
+      "types": "./lib/client/protocol.d.ts",
       "default": "./lib/typert.host.js"
     },
     "./remote": {
-      "types": "./src/client/protocol.ts",
+      "types": "./lib/client/protocol.d.ts",
       "default": "./lib/typert.remote-client.js"
     },
     "./package.json": "./package.json"

@@ -444,17 +444,34 @@ test('invalid stored rows are skipped with a warning while valid rows still list
   assert.equal(listed.warnings.filter((warning) => warning.includes('skipped invalid MCP server entry')).length, 4)
 })
 
-test('a corrupt store is a warning and an empty list, and the next create repairs it', async () => {
+test('a corrupt store is a warning and an empty list, and writes are refused without touching it', async () => {
   const tmp = await makeTmp()
   const homes = { dshHome: join(tmp, 'dsh-home'), agentsHome: join(tmp, 'agents-home') }
   await mkdir(join(homes.dshHome, 'agent-assets'), { recursive: true })
-  await writeFile(userStore(homes), '{ this is not json')
+  const corrupt = '{ "servers": [ { "serverName": "keep-me", }, ] }'
+  await writeFile(userStore(homes), corrupt)
   const { mcp } = await setup({ tmp, homes })
 
   const listed = await mcp.list({ workspace: tmp })
   assert.deepEqual(listed.servers, [])
   assert.ok(listed.warnings.some((warning) => warning.includes('not valid JSON')))
 
+  await assert.rejects(
+    () => mcp.apply({ op: 'create', scope: 'user', server: stdioServer('fresh') }),
+    (error) => error.code === 'conflict' && error.status === 409 && /corrupt/.test(error.message),
+  )
+  assert.equal(await readFile(userStore(homes), 'utf8'), corrupt, 'the original file must stay untouched')
+
+  // A store without a servers array is refused the same way.
+  await writeFile(userStore(homes), '{"version":1}')
+  await assert.rejects(
+    () => mcp.apply({ op: 'create', scope: 'user', server: stdioServer('fresh') }),
+    (error) => error.code === 'conflict',
+  )
+  assert.equal(await readFile(userStore(homes), 'utf8'), '{"version":1}')
+
+  // Once the user fixes (or removes) the file, writes work again.
+  await rm(userStore(homes))
   const created = await mcp.apply({ op: 'create', scope: 'user', server: stdioServer('fresh') })
   assert.equal(created.servers.length, 1)
   const repaired = JSON.parse(await readFile(userStore(homes), 'utf8'))

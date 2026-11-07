@@ -1,5 +1,5 @@
 {
-  "name": "@local/bizflow",
+  "name": "@local/dsh-business-flow",
   "version": "1.0.15",
   "private": true,
   "type": "module",
@@ -10,6 +10,9 @@
     "./icon": "./icon.svg"
   },
   "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg"],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {

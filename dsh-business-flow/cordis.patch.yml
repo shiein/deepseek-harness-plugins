@@ -1,0 +1,5 @@
+# Bundle patch: one Host plugin row that serves the business-flow analysis API through
+# /api/dsh-business-flow/* and one Client module that renders the sidebar entry and page.
+- insert:
+    - id: business-flow
+      name: '@local/dsh-business-flow'

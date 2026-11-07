@@ -1018,6 +1018,10 @@ export function createRestoreEngine({ core, quark, logger, resolveSources, resol
       try {
         // 1) 安全副本
         const safety = await createSafetyCopy({ id, targets: planned, root });
+        // 安全副本完成后、覆盖任何文件前就持久化路径：apply 中途失败或进程被杀时，
+        // 启动收尾仍能据此判定 canRollback。
+        marker.safetyPath = safety.path;
+        core.writeJson(core.paths.pendingFile, marker);
 
         // 2) 逐目标 mirror（纯 Node 目录镜像，替代 rsync；Windows 无 rsync）
         const applied = [];

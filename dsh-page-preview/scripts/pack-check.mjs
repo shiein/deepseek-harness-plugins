@@ -53,6 +53,21 @@ check('required entries', absent.length === 0,
 check('schema dir', paths.some(file => file.startsWith('schema/')),
   paths.filter(file => file.startsWith('schema/')).join(', ') || '无 schema/ 文件')
 
+// 3a'. exports 中每个 types/default 目标都必须在包内（src/ 被排除，types 不能指向源码）
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+const exportTargets = []
+for (const [subpath, target] of Object.entries(pkg.exports ?? {})) {
+  const conditions = typeof target === 'string' ? { default: target } : target
+  for (const [condition, file] of Object.entries(conditions)) {
+    exportTargets.push({ subpath, condition, file: String(file).replace(/^\.\//, '') })
+  }
+}
+const danglingExports = exportTargets.filter(entry => !paths.includes(entry.file))
+check('export targets packed', danglingExports.length === 0,
+  danglingExports.length === 0
+    ? exportTargets.length + ' 个 exports 目标均在清单中'
+    : '不在包内：' + danglingExports.map(entry => `${entry.subpath} ${entry.condition} → ${entry.file}`).join(', '))
+
 // 3b. 不得包含
 const forbidden = [/^(tests|dev|docs)\//, /^src\//, /(^|\/)\.env/]
 const leaked = paths.filter(file => forbidden.some(rule => rule.test(file)))
@@ -60,7 +75,6 @@ check('excluded paths', leaked.length === 0,
   leaked.length === 0 ? 'tests/dev/docs/src/.env* 均不在包内' : '泄漏 ' + leaked.join(', '))
 
 // 4. 元数据与锁定版本
-const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 check('dsh.bundle.patch', pkg.dsh?.bundle?.patch === './cordis.patch.yml',
   JSON.stringify(pkg.dsh?.bundle?.patch))
 check('engines.dsh covers locked ' + LOCKED_DSH,

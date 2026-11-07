@@ -2,7 +2,9 @@
  * OpenAI Codex provider.
  *
  * Codex writes rollout JSONL files under `<CODEX_HOME|~/.codex>/sessions/YYYY/MM/DD/rollout-*.jsonl`
- * plus `<CODEX_HOME>/archived_sessions/*.jsonl`. Each line is one envelope
+ * plus `<CODEX_HOME>/archived_sessions/*.jsonl`; older rollouts may be zstd-compressed
+ * (`*.jsonl.zst` / `*.zstd`, same content). A rollout seen in both forms (or in both directories) is
+ * counted once, by file stem. Each line is one envelope
  * `{timestamp, ordinal, type, payload}`:
  *   - `turn_context` payload.model names the model used for the following turns.
  *   - `event_msg` payload.type === 'token_count' carries
@@ -17,7 +19,7 @@
  * tokens, it does not track subscription quotas.
  */
 
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { addUsage, finalizeCells, mergeCells } from '../cells.js';
 
 export const meta = {
@@ -39,6 +41,8 @@ export async function scan(ctx) {
   /** @type {import('../scanner-types.js').Cell[]} */
   const allCells = [];
 
+  /** Rollout stems already counted: the same rollout must not count twice in two forms/places. */
+  const seenRollouts = new Set();
   const roots = [];
   const configured = process.env.CODEX_HOME || '';
   if (configured) roots.push(configured);
@@ -54,7 +58,16 @@ export async function scan(ctx) {
         sources.push({ label, path: dir, exists: false, files: 0, bytes: 0 });
         continue;
       }
-      const files = await utils.listFilesRecursive(dir, { exts: ['.jsonl'], signal: ctx.signal });
+      const listed = await utils.listFilesRecursive(dir, { exts: ['.jsonl', '.zst', '.zstd'], signal: ctx.signal });
+      // Plain JSONL first, so a rollout that exists both plain and compressed is read uncompressed.
+      listed.sort((a, b) => Number(utils.isZstdPath(a.path)) - Number(utils.isZstdPath(b.path)));
+      const files = [];
+      for (const file of listed) {
+        const stem = rolloutStem(file.path);
+        if (seenRollouts.has(stem)) continue;
+        seenRollouts.add(stem);
+        files.push(file);
+      }
       let bytes = 0;
       for (const file of files) {
         bytes += file.size;
@@ -123,6 +136,11 @@ export async function scan(ctx) {
   }
 
   return { sources, cells: mergeCells(allCells) };
+}
+
+/** `rollout-<ts>-<uuid>` without `.jsonl` / `.jsonl.zst` / `.zstd`. @param {string} path */
+function rolloutStem(path) {
+  return basename(path).replace(/(\.jsonl)?(\.zst|\.zstd)?$/i, '');
 }
 
 /** @param {unknown} value */

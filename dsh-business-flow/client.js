@@ -6,10 +6,10 @@
  * The flow graph is a layered drawing (top-to-bottom, or left-to-right when that reads larger)
  * whose automatic zoom keeps node text legible and scrolls along the long axis when needed.
  * Clicking a node shows its details, including the database tables it reads or writes.
- * Analyses are saved by the Host in ~/.dsh/bizflow/history.json.
+ * Analyses are saved by the Host in ~/.dsh/business-flow/history.json.
  */
 window.__ModuleLoader__.load({
-  id: '@local/bizflow',
+  id: '@local/dsh-business-flow',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
@@ -55,7 +55,7 @@ window.__ModuleLoader__.load({
       edgeAuth: 'auth',
       history: 'History',
       historyEmpty: 'No saved analyses yet',
-      historyHint: 'Saved in ~/.dsh/bizflow/history.json, no limit.',
+      historyHint: 'Saved in ~/.dsh/business-flow/history.json, no limit.',
       historyCount: '{n} records · {p} projects',
       historySearch: 'Search business or project path…',
       historyLoading: 'Loading history…',
@@ -160,7 +160,7 @@ window.__ModuleLoader__.load({
       edgeAuth: '鉴权',
       history: '历史',
       historyEmpty: '还没有保存的分析',
-      historyHint: '保存在 ~/.dsh/bizflow/history.json，不设上限。',
+      historyHint: '保存在 ~/.dsh/business-flow/history.json，不设上限。',
       historyCount: '{n} 条 · {p} 个项目',
       historySearch: '搜索业务或项目路径…',
       historyLoading: '正在读取历史…',
@@ -236,6 +236,7 @@ window.__ModuleLoader__.load({
     const KIND_ORDER = ['entry', 'process', 'data', 'permission', 'external'];
     const EDGE_COLOR = { flow: '#8b949e', data: '#b98000', auth: '#d64545' };
 
+    // Browser cache key of versions before the Host history file; only read to migrate it.
     const STORAGE_KEY = 'bizflow.history.v1';
 
     const ACCENT = 'var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary, #2f6fed))';
@@ -521,7 +522,7 @@ window.__ModuleLoader__.load({
     async function api(path, options) {
       let response;
       try {
-        response = await fetch(`/api/bizflow${path}`, {
+        response = await fetch(`/api/dsh-business-flow${path}`, {
           method: options?.method ?? 'GET',
           headers: { accept: 'application/json', ...(options?.body !== undefined ? { 'content-type': 'application/json' } : {}) },
           credentials: 'same-origin',
@@ -544,7 +545,7 @@ window.__ModuleLoader__.load({
     }
 
     // ------------------------------------------------------------------------------------------
-    // History: the Host file (~/.dsh/bizflow/history.json) is the only source of truth. Entries
+    // History: the Host file (~/.dsh/business-flow/history.json) is the only source of truth. Entries
     // that older versions cached in this browser are uploaded once and the cache is dropped, so a
     // deleted record can never be resurrected from a stale cache.
     // ------------------------------------------------------------------------------------------
@@ -1396,7 +1397,7 @@ window.__ModuleLoader__.load({
     }
 
     function Page(ctx, t) {
-      return function BizflowPage() {
+      return function BusinessFlowPage() {
         const [projectPath, setProjectPath] = useState('');
         const [business, setBusiness] = useState('');
         const [graph, setGraph] = useState(null);
@@ -1952,7 +1953,7 @@ window.__ModuleLoader__.load({
         const lookup = (key) => {
           const locale = localeOf();
           if (locale === undefined) return EN[key] ?? key;
-          const bound = locale.bind('bizflow');
+          const bound = locale.bind('business-flow');
           const value = bound(key);
           if (value !== key) return value;
           // The dictionary lookup fell through (unknown id or late registration):
@@ -1974,7 +1975,7 @@ window.__ModuleLoader__.load({
             const add = (id, dict) => {
               if (typeof id !== 'string' || id === '') return;
               try {
-                disposers.push(locale.register('bizflow', id, dict));
+                disposers.push(locale.register('business-flow', id, dict));
               } catch {
                 /* already registered, or this build rejects the id */
               }
@@ -2005,18 +2006,18 @@ window.__ModuleLoader__.load({
                 }
               }
             };
-          }, 'bizflow locales');
+          }, 'business-flow locales');
         }
 
 
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register(
-            { name: 'sidebar.panellist', id: 'bizflow', order: 60, label: () => t('panelTitle') },
+            { name: 'sidebar.panellist', id: 'business-flow', order: 60, label: () => t('panelTitle') },
             PanelIcon,
           ));
 
         ctx.slots.inject('main', () =>
-          ctx.slots.register({ name: 'main', key: 'bizflow' }, Page(ctx, t)));
+          ctx.slots.register({ name: 'main', key: 'business-flow' }, Page(ctx, t)));
       },
     };
   },

@@ -1,4 +1,4 @@
-# 业务流程分析（BizFlow）— DSH 插件
+# 业务流程分析（dsh-business-flow）— DSH 插件
 
 在 DeepSeek Harness 的左侧栏加一个「业务流程分析」面板：选一个本地项目目录，用自然语言描述一项业务
 （例如「会员下单支付的完整链路」「发票审批流程」），由 profile 里**已配置的默认模型**阅读项目，
@@ -40,6 +40,8 @@
 2. 通过 Harness 的 `agents` 服务为该项目创建一个分析用 Agent（工作目录就是项目根目录，模型取自
    `agentDefaultModel` 的当前选择），用 `sessionController` 提交一轮真实的会话，直到 `turn/end`。
    同一项目复用同一个 Agent，后续细化会延续同一段对话；出错时丢弃，下次重新创建。
+   同一 Session 上的请求按顺序逐轮执行；每轮用提交时的 `requestId`（写入用户消息的
+   `source.rpcId`）认领自己的 turn，不会拿到其他请求或上一轮残留 turn 的回答。
 3. 要求模型只输出一个 JSON 对象；插件从回复中提取并校验节点和连线。如果第一次没有给出节点，会再
    追问一次。单轮最长 8 分钟，关闭面板或断开连接会取消正在进行的那一轮。
 
@@ -48,7 +50,7 @@
 
 ## 安装
 
-这是一个 DSH profile bundle（`cordis.patch.yml` 插入 Host 行 `bizflow`，`package.json#dsh.client`
+这是一个 DSH profile bundle（`cordis.patch.yml` 插入 Host 行 `business-flow`，`package.json#dsh.client`
 声明 Client 模块）。
 
 在 Web GUI 的插件管理里选择「从本地目录安装 bundle」，指向本目录即可。安装后 profile 的
@@ -56,8 +58,8 @@
 
 ```jsonc
 {
-  "dsh": { "profile": { "bundles": ["@local/bizflow"] } },
-  "dependencies": { "@local/bizflow": "link:/path/to/bizflow" }
+  "dsh": { "profile": { "bundles": ["@local/dsh-business-flow"] } },
+  "dependencies": { "@local/dsh-business-flow": "link:/path/to/dsh-business-flow" }
 }
 ```
 
@@ -67,7 +69,7 @@
 
 ## HTTP 接口
 
-全部挂在 `/api/bizflow/` 下，只接受来自本机回环地址的请求（校验连接地址、`Host`、`Origin`/`Referer`
+全部挂在 `/api/dsh-business-flow/` 下，只接受来自本机回环地址的请求（校验连接地址、`Host`、`Origin`/`Referer`
 和跨站 fetch 元数据），其他请求一律返回 403。
 
 | 方法 | 路径 | 说明 |
@@ -83,18 +85,20 @@
 
 ## 数据位置
 
-- 历史记录：`~/.dsh/bizflow/history.json`（原子写入；文件损坏时会拒绝写入，避免覆盖丢失）
+- 历史记录：`$DSH_HOME/business-flow/history.json`（默认 `~/.dsh/business-flow/history.json`；原子写入；文件损坏时会拒绝写入，避免覆盖丢失）
+- 改名前（`bizflow`）的 `~/.dsh/bizflow/history.json` 会在首次读取历史时移动到新位置；新文件已存在时不会覆盖
 - 旧版本存在浏览器 `localStorage` 里的记录，会在首次打开时迁移到上述文件
 
 ## 目录结构
 
 ```
 package.json        # bundle 清单：dsh.bundle.patch + dsh.client
-cordis.patch.yml    # 插入 Host 行 bizflow
+cordis.patch.yml    # 插入 Host 行 business-flow
 index.js            # Host：项目预扫描、Agent 会话、图校验、历史存储、HTTP 路由
 client.js           # Client：左侧栏入口、拓扑图画布、节点细化、历史面板
 locale/zh.json, en.json
 icon.svg
+test/               # node --test：Session 轮次关联（合成事件流）
 ```
 
 ## 已知限制

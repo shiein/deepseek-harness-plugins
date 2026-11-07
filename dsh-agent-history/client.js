@@ -99,6 +99,7 @@ window.__ModuleLoader__.load({
       'session.truncated': '内容较长，仅显示最近 {count} 条',
       'timeline.loaded': '已显示 {shown} / {total} 条',
       'timeline.scope': '合并了最近 {included} / {total} 个会话的消息',
+      'timeline.failed': '{count} 个会话读取失败，未计入：{detail}',
       'timeline.empty': '这个项目还没有可合并的消息',
       'agent.sessions': '{count} 个会话',
       'agent.last': '最近 {time}',
@@ -236,6 +237,7 @@ window.__ModuleLoader__.load({
       'session.truncated': 'Long session: showing the latest {count} messages',
       'timeline.loaded': '{shown} / {total} messages shown',
       'timeline.scope': 'Merged the latest {included} / {total} sessions',
+      'timeline.failed': '{count} sessions could not be read and are left out: {detail}',
       'timeline.empty': 'No messages to merge in this project',
       'agent.sessions': '{count} sessions',
       'agent.last': 'last {time}',
@@ -1008,7 +1010,8 @@ window.__ModuleLoader__.load({
     }
 
     function MessageTimeline(props) {
-      const { events, agents, t, locale, onFocusSession, loading, total, shown, onLoadMore, sessionsTotal, sessionsIncluded, error, filtered } = props;
+      const { events, agents, t, locale, onFocusSession, loading, total, shown, onLoadMore, sessionsTotal, sessionsIncluded, error, filtered, failedSessions } = props;
+      const failed = Array.isArray(failedSessions) ? failedSessions : [];
       if (loading && events.length === 0) {
         return h('div', { className: 'ah-loading' }, h(Spinner), h('span', null, t('state.loading')));
       }
@@ -1049,6 +1052,16 @@ window.__ModuleLoader__.load({
         { className: 'ah-timeline ah-timeline-messages' },
         sessionsTotal > sessionsIncluded
           ? h('div', { className: 'ah-timeline-scope' }, t('timeline.scope', { included: sessionsIncluded, total: sessionsTotal }))
+          : null,
+        failed.length > 0
+          ? h(
+              'div',
+              { className: 'ah-timeline-scope', title: failed.map((item) => `${item.title || item.id}: ${item.error}`).join('\n') },
+              t('timeline.failed', {
+                count: failed.length,
+                detail: failed.slice(0, 2).map((item) => `${item.title || item.id}（${item.error}）`).join('；'),
+              }),
+            )
           : null,
         rows,
         h(
@@ -1701,6 +1714,7 @@ window.__ModuleLoader__.load({
                   onLoadMore: onLoadMoreTimeline,
                   sessionsTotal: timeline?.sessionsTotal || 0,
                   sessionsIncluded: timeline?.sessionsIncluded || 0,
+                  failedSessions: timeline?.failedSessions || [],
                   filtered: messageFilterActive,
                 }),
         ),
@@ -2032,6 +2046,8 @@ window.__ModuleLoader__.load({
               key,
               sessionsTotal: candidates.length,
               sessionsIncluded: included.length,
+              // Every page re-reads the chosen sessions, so the latest page's failures are current.
+              failedSessions: payload.failedSessions || [],
             }));
           } catch (timelineError) {
             if (seq !== timelineSeq.current) return;
