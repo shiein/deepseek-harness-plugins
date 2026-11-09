@@ -150,6 +150,37 @@ async function pruneOldScripts(dir) {
   }
 }
 
+const LAUNCH_CONFIRM_MS = 15_000;
+
+/**
+ * Wait for the launcher process, which exits once the terminal has the request. `open` fails with a
+ * non-zero code for an unknown app; a missing binary only surfaces as an 'error' event.
+ * @param {import('node:child_process').ChildProcess} child
+ * @param {string} label
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+function launcherResult(child, label) {
+  return new Promise((resolve) => {
+    let stderr = '';
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    const timer = setTimeout(() => {
+      child.unref();
+      resolve({ ok: false, error: `${label} did not confirm the launch within ${LAUNCH_CONFIRM_MS / 1000}s` });
+    }, LAUNCH_CONFIRM_MS);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      resolve({ ok: false, error: `cannot run ${label}: ${error.message}` });
+    });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve({ ok: true });
+      else resolve({ ok: false, error: stderr.trim().slice(0, 300) || `${label} exited with code ${code}` });
+    });
+  });
+}
+
 /**
  * Start one launch plan in a native terminal window.
  * @param {LaunchPlan} plan
@@ -179,8 +210,7 @@ export async function launchInTerminal(plan, options) {
         windowsVerbatimArguments: true,
         cwd,
       });
-      child.unref();
-      return { ok: true, display, terminal: 'cmd.exe' };
+      return { ...(await launcherResult(child, 'cmd.exe')), display, terminal: 'cmd.exe' };
     }
 
     await pruneOldScripts(launchDir);
@@ -203,9 +233,8 @@ export async function launchInTerminal(plan, options) {
     const args = terminalApp !== '' && terminalApp !== 'auto'
       ? ['-a', terminalApp, scriptPath]
       : [scriptPath];
-    const child = spawn('open', args, { detached: true, stdio: 'ignore' });
-    child.unref();
-    return { ok: true, display, terminal: terminalApp || 'Terminal' };
+    const child = spawn('open', args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    return { ...(await launcherResult(child, 'open')), display, terminal: terminalApp || 'Terminal' };
   } catch (error) {
     return { ok: false, display, error: error instanceof Error ? error.message : String(error) };
   }

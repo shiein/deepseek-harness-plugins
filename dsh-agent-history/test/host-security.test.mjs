@@ -64,6 +64,33 @@ test('a session id or folder name cannot run commands in the resume script', { s
   assert.equal(existsSync(marker), false, 'the missing-folder message must not expand it either');
 });
 
+test('launch reports what the launcher actually did', { skip: process.platform === 'win32' }, async () => {
+  const plan = { kind: 'cli', command: '/usr/bin/true', args: [], cwd: root, display: 'x' };
+  const withOpen = async (dirName, script) => {
+    const bin = join(root, dirName);
+    mkdirSync(bin);
+    if (script !== undefined) {
+      writeFileSync(join(bin, 'open'), script);
+      chmodSync(join(bin, 'open'), 0o755);
+    }
+    const originalPath = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      return await launchInTerminal(plan, { dataDir: join(root, 'launch-results'), config: {} });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  };
+  const ok = await withOpen('open-ok', '#!/bin/sh\nexit 0\n');
+  assert.equal(ok.ok, true);
+  const refused = await withOpen('open-fail', "#!/bin/sh\necho 'Unable to find application named X' >&2\nexit 1\n");
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /Unable to find application/);
+  const missing = await withOpen('open-missing');
+  assert.equal(missing.ok, false);
+  assert.match(missing.error, /cannot run open/);
+});
+
 test('the copyable command quotes only what needs quoting', { skip: process.platform === 'win32' }, () => {
   const plan = { kind: 'cli', command: 'codex', args: ['resume', 'abc$(id)', '--cd', '/a b'], cwd: '/tmp/x', display: 'x' };
   assert.equal(copyableCommand(plan), "cd '/tmp/x' && codex resume 'abc$(id)' --cd '/a b'");
