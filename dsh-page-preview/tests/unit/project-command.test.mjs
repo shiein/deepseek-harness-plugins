@@ -1,4 +1,5 @@
 /** 公共命令→官方确认接缝→真实 Runner/进程验收（方案 §6.5、§8、§9.2）；合成 Agent 身份/答复，非模型 loop 或原生 UI。 */
+import { executeTool, installApproval } from '../support/execute-tool.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
@@ -47,7 +48,7 @@ async function setup(t) {
   new SystemPrompt(ctx, {})
   const tools = new ToolRuntime(ctx)
   const sessions = new SessionStore(ctx)
-  new ApprovalService(ctx, {})
+  await installApproval(ctx, {})
   const session = sessions.create(SessionId('command-user'), { meta: { cwd: workspace } })
   session.append('turn/start', { turn: 1 })
   const agent = { id: session.id, session, ctx, options: {} }
@@ -64,7 +65,7 @@ async function setup(t) {
       other.append('turn/start', { turn: 1 })
       return { id: other.id, session: other, ctx, options: {} }
     })()
-    return tools.execute({ callId: ToolCallId('command-call-' + ++call), name: 'page_preview_' + name, arguments: args, signal, agent: selected })
+    return executeTool(tools, { callId: ToolCallId('command-call-' + ++call), name: 'page_preview_' + name, arguments: args, signal, agent: selected })
   }
   const invoke = async (name, args = {}, signal = AbortSignal.timeout(10000), ownerSessionId = undefined) => {
     const result = await execute(name, args, signal, ownerSessionId)

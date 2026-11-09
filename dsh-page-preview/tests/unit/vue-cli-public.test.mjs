@@ -1,4 +1,5 @@
 /** 公开 SDK→Registry→只读计划→Root→Vue CLI worker（方案 §6.2、§6.5、§8、§9.2）；回归：vue-cli 注册+controller 放行。 */
+import { executeTool, installApproval } from '../support/execute-tool.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { existsSync } from 'node:fs'
@@ -66,7 +67,7 @@ async function setup(t) {
   new SystemPrompt(ctx, {})
   const tools = new ToolRuntime(ctx)
   const sessions = new SessionStore(ctx)
-  new ApprovalService(ctx, {})
+  await installApproval(ctx, {})
   const session = sessions.create(SessionId('vue-cli-public-user'), { meta: { cwd: fixture.root } })
   session.append('turn/start', { turn: 1 })
   const agent = { id: session.id, session, ctx, options: {} }
@@ -81,7 +82,7 @@ async function setup(t) {
       callId: ToolCallId('vue-cli-public-' + ++call), name: 'page_preview_' + name,
       arguments: args, signal: AbortSignal.timeout(30000), agent,
     }
-    const result = await tools.execute(request)
+    const result = await executeTool(tools, request)
     assert.equal(result.isError, false, 'Actual SDK must return a domain result')
     return result.value
   }

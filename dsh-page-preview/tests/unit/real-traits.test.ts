@@ -5,6 +5,7 @@
  * 基线同时为 R6-1/R6-2/R6-3 的样本提供「先请求登录再初始化」的确定性顺序。
  * 需要 headless Chrome + vue3-self-contained 工具链；重量级测试登记在 scripts/test.mjs。
  */
+import { executeTool, installApproval } from '../support/execute-tool.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { access } from 'node:fs/promises'
@@ -121,7 +122,7 @@ test('real-traits one-round fill: status draft → create → merge+applyTo → 
   new SystemPrompt(ctx, {})
   const tools = new ToolRuntime(ctx)
   const sessions = new SessionStore(ctx)
-  new ApprovalService(ctx, {})
+  await installApproval(ctx, {})
   const session = sessions.create(SessionId('real-traits-e2e'), { meta: { cwd: f.root } })
   session.append('turn/start', { turn: 1 })
   const agent = { id: session.id, session, ctx, options: {} }
@@ -133,7 +134,7 @@ test('real-traits one-round fill: status draft → create → merge+applyTo → 
   registerTools(ctx, registry)
   let call = 0
   const invoke = async (name: string, args: Record<string, unknown> = {}) => {
-    const result = await tools.execute({
+    const result = await executeTool(tools, {
       callId: ToolCallId('real-traits-' + ++call), name: 'page_preview_' + name,
       arguments: args, signal: AbortSignal.timeout(30000), agent: agent as unknown as Agent,
     })

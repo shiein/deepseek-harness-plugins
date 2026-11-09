@@ -41,7 +41,7 @@
 ## 3. 常用命令
 
 ```bash
-npm install            # 依赖锁定在 DSH 0.2.1-rc.5（next 标签）
+npm install            # 依赖锁定在 DSH 0.2.2-rc.1（next 标签）
 npm run typecheck      # tsc --noEmit，必须为 0 错误
 npm test               # node --test，直接运行 .ts（Node ≥ 22.18 / 23.6 原生类型擦除）
 npm run build          # tsc 输出到 lib/，并把 src/browser/ 复制到 browser/
@@ -143,7 +143,7 @@ browser/          → 不 import src 中的任何 TS
 - 改变方案中的产品边界，例如放宽硬约束、修改首版范围或支持矩阵。
 - Phase 0 某个判定项不通过时采用哪种降级方式。
 
-## 10. DSH 事实速查（锁定 `0.2.1-rc.5`；来源为类型定义或文档，尚未实测）
+## 10. DSH 事实速查（依赖已升至 `0.2.2-rc.1`，以下内容核对于 `0.2.1-rc.5`；来源为类型定义或文档，尚未实测）
 
 - 插件导出 `name`、`inject = ['tools']`、`apply(ctx)`；用 `ctx.tools.register(defineTool({...}))` 注册工具；`ctx.effect(() => dispose)` 用于清理。
 - `defineTool` 的参数 DSL 为 `{ type, required: true, description, enum, items, properties, additionalProperties }`；`execute(args, exec)` 中的 `exec.signal` 是取消信号；可声明协作式超时 `timeoutMs`。

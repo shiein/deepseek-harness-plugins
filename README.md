@@ -19,7 +19,7 @@
 - `dsh-agent-history`、`dsh-agent-usage`、`dsh-maintenance-backup` 同时适配 macOS 和 Windows 路径，Windows 上的验证程度见各自 README。
 - `dsh-business-flow` 需要 profile 中配置可用的默认模型。
 - `dsh-maintenance-backup` 需要安装并授权夸克网盘技能（`~/.dsh/skills/quarkclouddrive`）。
-- `dsh-page-preview` 为 TypeScript 工程，依赖锁定 DSH `0.2.1-rc.5` 的 npm 包；安装前先在其目录运行 `npm install && npm run build`（构建产物 `lib/`、`browser/` 不入库）。macOS arm64 实测，Linux 仅在 Docker 中验证，Windows 未实现。
+- `dsh-page-preview` 为 TypeScript 工程，依赖锁定 DSH `0.2.2-rc.1` 的 npm 包；安装前先在其目录运行 `npm install && npm run build`（构建产物 `lib/`、`browser/` 不入库）。macOS arm64 实测，Linux 仅在 Docker 中验证，Windows 未实现。
 
 ## 安装
 

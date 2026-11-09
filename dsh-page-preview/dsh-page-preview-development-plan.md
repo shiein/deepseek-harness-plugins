@@ -179,6 +179,8 @@ flowchart TD
 
 ### 4.1 核对到的宿主机制
 
+2026-11-09 依赖升至 `0.2.2-rc.1`（`cordis ~4.1.0`），与桌面版一致。`src/` 无需改动，类型检查通过；变化在宿主组合：`ToolRuntime.execute` 改为批处理入口，工具执行器（`dsh-tool-executor-native`）和 `ApprovalService` 依赖的 `sessionProjections` 成为独立服务，桌面版自带，测试组合经 `tests/support/execute-tool.ts` 接入官方实现。全量测试通过，桌面版实机待验证。
+
 官方示例使用 `apply(ctx)` 注册能力；需要工具服务时声明 `inject = ['tools']`，通过 `defineTool()` 和 `ctx.tools.register()` 定义工具。`inject` 是依赖声明，不是所有插件都必须拥有的固定字段。实现时依赖锁定版本的类型定义。[DSH Tool API](https://deepseek-harness.github.io/deepseek-harness/en/develop/basic/tool)
 
 `session/event` 与 `tools/result` 属于宿主事件；`turn/*` 等是会话事件类型，不能直接假设存在同名 Cordis 事件。以会话事件中的轮次结束信号触发分析；`turn/end` 的确切载荷、异常结束和重放语义在 Phase 0 对照目标 SDK 验证。[DSH 事件系统](https://deepseek-harness.github.io/deepseek-harness/en/develop/framework/events)

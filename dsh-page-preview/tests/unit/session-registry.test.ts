@@ -1,4 +1,5 @@
 /** 产品 status/stop 经锁定 DSH 工具管线查询真实 Runner（方案 §4.2、§9.2、§15.3）；仅可丢弃样本。 */
+import { executeTool } from '../support/execute-tool.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
@@ -71,7 +72,7 @@ async function setup(
   })
   const plan: PreviewPlan = { projectId: 'site', targetId: 'index', selector: { kind: 'file', path: 'public/index.html' }, scope: 'page', strategy: 'static', adapter: { id: 'static', version: '0.0.0' }, toolchain: {}, requirements: ['mock-only'], process: { kind: 'in-runner' }, readiness: { serviceDeadlineMs: 3000, targetDeadlineMs: 3000 }, capabilities: { scopes: {}, isolatedRender: unknown, scenarioApply: unknown, scenarioReset: unknown, refresh: unknown, captureCurrentView: unknown, runtimeErrors: unknown, readinessAssertion: unknown, network: [] }, fingerprints: { config: fingerprintJson(project) }, missing: [], knownDifferences: [] }
   async function invoke(name: string, args: object) {
-    const result = await tools.execute({ callId: ToolCallId('test-' + name), name: 'page_preview_' + name, arguments: args, signal: AbortSignal.timeout(5000) })
+    const result = await executeTool(tools, { callId: ToolCallId('test-' + name), name: 'page_preview_' + name, arguments: args, signal: AbortSignal.timeout(5000) })
     assert.equal(result.isError, false)
     if (result.isError) throw new Error('Expected a domain result from the actual DSH tool pipeline')
     // 通用 SDK JSON 在此进入测试领域 DTO；这里只恢复静态类型，实际字段继续由下面的断言验证。
@@ -261,7 +262,7 @@ test('missing target, ambiguous application, invalid selector and unknown IDs al
   assert.deepEqual(selection.candidates?.[0]?.selector, { kind: 'registered', id: 'index' })
   assert.equal(selection.preview, undefined)
   assert.equal((await f.open({ projectId: 'unknown', target: { kind: 'file', path: 'index.html' } })).status, 'not_found')
-  const invalid = await f.tools.execute({ callId: ToolCallId('invalid-selector'), name: 'page_preview_open', arguments: { target: { kind: 'file', path: 'public/index.html', id: 'conflicting' } }, signal: AbortSignal.timeout(1000) })
+  const invalid = await executeTool(f.tools, { callId: ToolCallId('invalid-selector'), name: 'page_preview_open', arguments: { target: { kind: 'file', path: 'public/index.html', id: 'conflicting' } }, signal: AbortSignal.timeout(1000) })
   assert.equal(invalid.isError, true)
   assert.equal((await f.open({ target: { kind: 'file', path: 'public/missing.html' } })).status, 'not_found')
   const projects = ['one', 'two'].map(id => ({ id, root: '.', runtime: { adapter: 'static', publicRoot: 'public' }, targets: [{ id: 'same', selector: { kind: 'file', path: 'public/index.html' } }] }))
@@ -569,7 +570,7 @@ test('cancelling a public open wait keeps accepted ownership available for statu
     return actual
   })
   const listener = t.mock.method(f.client, 'onMessage', () => () => {})
-  const result = await f.tools.execute({ callId: ToolCallId('cancel-open'), name: 'page_preview_open', arguments: { projectId: 'site', target: { kind: 'registered', id: 'index' } }, signal: controller.signal })
+  const result = await executeTool(f.tools, { callId: ToolCallId('cancel-open'), name: 'page_preview_open', arguments: { projectId: 'site', target: { kind: 'registered', id: 'index' } }, signal: controller.signal })
   assert.equal(result.isError, true)
   assert.ok(accepted)
   pending.mock.restore()
@@ -620,7 +621,7 @@ test('public open bounded wait still returns the observed state when readiness s
 
 test('tool results render a compact summary and diagnostics carry their previewId', options, async t => {
   const f = await setup(t)
-  const call = (name: string, args: object) => f.tools.execute({ callId: ToolCallId('render-' + name), name: 'page_preview_' + name, arguments: args, signal: AbortSignal.timeout(5000) })
+  const call = (name: string, args: object) => executeTool(f.tools, { callId: ToolCallId('render-' + name), name: 'page_preview_' + name, arguments: args, signal: AbortSignal.timeout(5000) })
   const opened = await call('open', { projectId: 'site', target: { kind: 'registered', id: 'index' } })
   assert.equal(opened.isError, false)
   const raw: unknown = opened.value
@@ -839,7 +840,7 @@ test('unscoped SDK tool calls require an explicit session workspace and never us
   const tools = new ToolRuntime(ctx)
   registerTools(ctx, new SessionRegistry(f.client))
   t.after(() => { ctx.fiber.dispose() })
-  const result = await tools.execute({ callId: ToolCallId('no-agent'), name: 'page_preview_status', arguments: {}, signal: AbortSignal.timeout(1000) })
+  const result = await executeTool(tools, { callId: ToolCallId('no-agent'), name: 'page_preview_status', arguments: {}, signal: AbortSignal.timeout(1000) })
   assert.equal(result.isError, false)
   if (result.isError) throw new Error('Expected a domain error')
   assert.ok(typeof result.value === 'object' && result.value !== null && !Array.isArray(result.value))
@@ -889,7 +890,7 @@ test('unexpected Host errors forward their redacted cause instead of a generic m
   registerTools(second, new SessionRegistry(f.client, async () => {
     throw new RangeError('Maximum call stack size exceeded in /ws/web/js/vendor.js; Authorization: Bearer abc123')
   }, {}))
-  const raw = await tools.execute({ callId: ToolCallId('unexpected'), name: 'page_preview_open',
+  const raw = await executeTool(tools, { callId: ToolCallId('unexpected'), name: 'page_preview_open',
     arguments: { target: { kind: 'file', path: 'public/index.html' } }, signal: AbortSignal.timeout(5000) })
   assert.equal(raw.isError, false)
   if (raw.isError) return
@@ -917,7 +918,7 @@ test('a missing plugin dataDir is reported as plugin configuration with the exac
   registerTools(second, new SessionRegistry(f.client, caller, {
     requestApproval: async () => { throw new Error('must not be asked without a dataDir') },
   }))
-  const raw = await tools.execute({ callId: ToolCallId('no-datadir'), name: 'page_preview_open',
+  const raw = await executeTool(tools, { callId: ToolCallId('no-datadir'), name: 'page_preview_open',
     arguments: { target: { kind: 'file', path: 'public/index.html' } }, signal: AbortSignal.timeout(5000) })
   assert.equal(raw.isError, false)
   if (raw.isError) return

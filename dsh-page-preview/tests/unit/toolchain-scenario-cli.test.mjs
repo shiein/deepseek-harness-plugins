@@ -3,6 +3,7 @@
  *  R5-2 起 navigation 放行但须显式 setup.navigate 绑定（无绑定的带 route 场景做负断言）。
  *  证据级别：HTTP/进程级；webpack dev-middleware 内存包取证，无浏览器侧画面。
  *  能力等级保持 unknown（CLI 非已验证组合），本测试不升级任何能力。 */
+import { executeTool, installApproval } from '../support/execute-tool.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { existsSync } from 'node:fs'
@@ -110,7 +111,7 @@ async function setup(t, spec, fixtureId) {
   new SystemPrompt(ctx, {})
   const tools = new ToolRuntime(ctx)
   const sessions = new SessionStore(ctx)
-  new ApprovalService(ctx, {})
+  await installApproval(ctx, {})
   const session = sessions.create(SessionId('toolchain-e2e-' + fixtureId), { meta: { cwd: fixture.root } })
   session.append('turn/start', { turn: 1 })
   const agent = { id: session.id, session, ctx, options: {} }
@@ -122,7 +123,7 @@ async function setup(t, spec, fixtureId) {
   registerTools(ctx, registry)
   let call = 0
   const invoke = async (name, args = {}) => {
-    const result = await tools.execute({
+    const result = await executeTool(tools, {
       callId: ToolCallId('toolchain-' + fixtureId + '-' + ++call), name: 'page_preview_' + name,
       arguments: args, signal: AbortSignal.timeout(90000), agent,
     })

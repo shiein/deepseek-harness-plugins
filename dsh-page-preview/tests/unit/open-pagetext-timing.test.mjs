@@ -1,4 +1,5 @@
 /** R5-0a（决策 P-A）：setup.install 先 await 动态 import 再挂载时，open 不输出早于挂载信号的 pageText。 */
+import { executeTool, installApproval } from '../support/execute-tool.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { writeFile } from 'node:fs/promises'
@@ -35,7 +36,7 @@ test('open pageText is post-mount only; earlier observations are annotated, neve
   new SystemPrompt(ctx, {})
   const tools = new ToolRuntime(ctx)
   const sessions = new SessionStore(ctx)
-  new ApprovalService(ctx, {})
+  await installApproval(ctx, {})
   const session = sessions.create(SessionId('open-pagetext-user'), { meta: { cwd: fixture.root } })
   session.append('turn/start', { turn: 1 })
   const agent = { id: session.id, session, ctx, options: {} }
@@ -47,7 +48,7 @@ test('open pageText is post-mount only; earlier observations are annotated, neve
   ctx.on('approval/request', async () => 'allowed-once')
   let call = 0
   const invoke = async (name, args = {}) => {
-    const result = await tools.execute({ callId: ToolCallId('open-pagetext-' + ++call), name: 'page_preview_' + name, arguments: args, signal: AbortSignal.timeout(15000), agent })
+    const result = await executeTool(tools, { callId: ToolCallId('open-pagetext-' + ++call), name: 'page_preview_' + name, arguments: args, signal: AbortSignal.timeout(15000), agent })
     assert.equal(result.isError, false, 'SDK must return a domain result')
     return result.value
   }

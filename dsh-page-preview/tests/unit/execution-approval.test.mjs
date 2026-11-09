@@ -1,4 +1,5 @@
 /** 官方 ApprovalService/Session 审计接缝回归（方案 §8）；Agent 身份为最小合成对象，不能代替真实 Agent loop/原生用户 UI 验收。 */
+import { installApproval } from '../support/execute-tool.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
@@ -24,7 +25,7 @@ async function setup(t) {
   const config = { source: { kind: 'repo', file }, project, diagnostics: [] }
   const ctx = new Context()
   const sessions = new SessionStore(ctx)
-  const service = new ApprovalService(ctx, {})
+  const service = await installApproval(ctx, {})
   const session = sessions.create(SessionId('synthetic-approval-user'), { meta: { cwd: workspace } })
   session.append('turn/start', { turn: 1 })
   const controller = new AbortController()

@@ -1,4 +1,5 @@
 /** 公开 SDK→只读计划→Root→Vite worker（方案 §6.2、§6.5、§8、§9.2）；临时样本与合成批准，不调用模型。 */
+import { executeTool, installApproval } from '../support/execute-tool.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { access, readFile, realpath, symlink, writeFile } from 'node:fs/promises'
@@ -40,7 +41,7 @@ async function setup(t) {
   new SystemPrompt(ctx, {})
   const tools = new ToolRuntime(ctx)
   const sessions = new SessionStore(ctx)
-  new ApprovalService(ctx, {})
+  await installApproval(ctx, {})
   const session = sessions.create(SessionId('vue-public-user'), { meta: { cwd: fixture.root } })
   session.append('turn/start', { turn: 1 })
   const agent = { id: session.id, session, ctx, options: {} }
@@ -51,7 +52,7 @@ async function setup(t) {
   registerTools(ctx, registry)
   let call = 0
   const invoke = async (name, args = {}) => {
-    const result = await tools.execute({ callId: ToolCallId('vue-public-' + ++call), name: 'page_preview_' + name, arguments: args, signal: AbortSignal.timeout(15000), agent })
+    const result = await executeTool(tools, { callId: ToolCallId('vue-public-' + ++call), name: 'page_preview_' + name, arguments: args, signal: AbortSignal.timeout(15000), agent })
     assert.equal(result.isError, false, 'Actual SDK must return a domain result')
     return result.value
   }

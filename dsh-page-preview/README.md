@@ -39,7 +39,7 @@
 
 ```bash
 cd dsh-page-preview
-npm install        # 依赖锁定在 DSH 0.2.1-rc.5
+npm install        # 依赖锁定在 DSH 0.2.2-rc.1
 npm run build      # 输出到 lib/，并把 src/browser/ 复制到 browser/
 ```
 

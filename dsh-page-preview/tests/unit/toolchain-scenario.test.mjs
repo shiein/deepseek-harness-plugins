@@ -1,5 +1,6 @@
 /** 真实工具链全链路（方案 §9.1、§9.2、R3-1~R3-5、R6-3）：Vite worker 上
  * 草稿→填表→refresh→merge+applyTo→切场景→影响分析→inputs-changed。 */
+import { executeTool, installApproval } from '../support/execute-tool.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -35,7 +36,7 @@ async function setup(t) {
   new SystemPrompt(ctx, {})
   const tools = new ToolRuntime(ctx)
   const sessions = new SessionStore(ctx)
-  new ApprovalService(ctx, {})
+  await installApproval(ctx, {})
   const session = sessions.create(SessionId('toolchain-e2e'), { meta: { cwd: fixture.root } })
   session.append('turn/start', { turn: 1 })
   const agent = { id: session.id, session, ctx, options: {} }
@@ -48,7 +49,7 @@ async function setup(t) {
   registerTools(ctx, registry)
   let call = 0
   const invoke = async (name, args = {}) => {
-    const result = await tools.execute({
+    const result = await executeTool(tools, {
       callId: ToolCallId('toolchain-' + ++call), name: 'page_preview_' + name,
       arguments: args, signal: AbortSignal.timeout(20000), agent,
     })

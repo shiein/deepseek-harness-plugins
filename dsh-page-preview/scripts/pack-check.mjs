@@ -5,7 +5,7 @@
 //   2. `npm pack --dry-run --json` 取得将打包的文件清单（dry-run 不在仓库内生成 tarball）
 //   3. 必须包含 lib/、browser/、schema/、cordis.patch.yml 与 exports 引用的各入口；
 //      不得包含 tests/、dev/、docs/、src/ 源码与任何 .env* 文件
-//   4. package.json 的 dsh.bundle.patch / engines.dsh / peerDependencies 与锁定的 DSH 0.2.1-rc.5 一致
+//   4. package.json 的 dsh.bundle.patch / engines.dsh / peerDependencies 与锁定的 DSH 0.2.2-rc.1 一致
 //   5. 输出文件数、总大小与上述检查结果；任一失败 exit 1
 // 本脚本不把包装安装到任何 DSH profile（安装需 Aesc 单独授权，见 docs/dsh-e2e-acceptance.md）。
 
@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 import semver from 'semver'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
-const LOCKED_DSH = '0.2.1-rc.5'
+const LOCKED_DSH = '0.2.2-rc.1'
 
 const results = []
 const check = (name, ok, detail) => {
