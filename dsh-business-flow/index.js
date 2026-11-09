@@ -128,6 +128,39 @@ function safeRead(fullPath, maxBytes) {
   }
 }
 
+/** Files that exist to hold secrets or production settings: never excerpted into a prompt. */
+const SECRET_FILE_RE = /(^|\/)(\.env[^/]*|secrets?(\.[^/]*)?|credentials?(\.[^/]*)?)$|[-_.](prod|production)\.(ya?ml|properties|toml|xml)$/i;
+const CONFIG_EXT = new Set(['.yml', '.yaml', '.properties', '.toml', '.xml']);
+const SECRET_KEY = '(?:passw(?:or)?d|passphrase|secret|token|api[-_.]?key|access[-_.]?key|private[-_.]?key|credential)';
+/** Any value of a secret-looking key: config files carry literal values on these lines. */
+const CONFIG_SECRET_RE = new RegExp(`^(\\s*-?\\s*["']?[\\w.-]{0,60}${SECRET_KEY}[\\w.-]{0,40}["']?\\s*[:=]\\s*)\\S.*$`, 'gim');
+const XML_SECRET_RE = new RegExp(`(<[\\w.-]{0,60}${SECRET_KEY}[\\w.-]{0,40}>)[^<]*`, 'gi');
+/** Source code: only quoted literals, so `token = getToken()` stays readable. */
+const QUOTED_SECRET_RE = new RegExp(`(${SECRET_KEY}[\\w.-]{0,40}["']?\\s*[:=]\\s*)(["'\`])[^"'\`\\n]{4,}\\2`, 'gi');
+const URL_PASSWORD_RE = /([a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]+:)[^\s@/'"]+@/gi;
+const PRIVATE_KEY_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
+const TOKEN_SHAPE_RE = /\b(?:sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,})\b/g;
+const EXCERPT_LINE_CHARS = 400;
+
+/** Blank out what looks like a credential before file text reaches the model. */
+function redactSecrets(text, ext) {
+  let out = text
+    .replace(PRIVATE_KEY_RE, '***')
+    .replace(URL_PASSWORD_RE, '$1***@')
+    .replace(TOKEN_SHAPE_RE, '***')
+    .replace(QUOTED_SECRET_RE, '$1"***"');
+  if (CONFIG_EXT.has(ext)) out = out.replace(CONFIG_SECRET_RE, '$1***').replace(XML_SECRET_RE, '$1***');
+  return out;
+}
+
+/** First `maxLines` lines of a file as prompt text, or '' for a file that must not be excerpted. */
+function excerptOf(rel, text, maxLines) {
+  if (SECRET_FILE_RE.test(rel.split(sep).join('/'))) return '';
+  const lines = text.split('\n').slice(0, maxLines)
+    .map((line) => (line.length > EXCERPT_LINE_CHARS ? `${line.slice(0, EXCERPT_LINE_CHARS)}…` : line));
+  return redactSecrets(lines.join('\n'), extname(rel).toLowerCase()).trim();
+}
+
 /** Every regular file under `root`, skipping build/dependency directories. */
 function listProjectFiles(root) {
   const files = [];
@@ -181,7 +214,7 @@ function buildProjectDigest(root) {
     if (parts.length >= 24 || total >= MAX_DIGEST_CHARS) break;
     const text = safeRead(join(absoluteRoot, item.rel), 200_000);
     if (text === undefined) continue;
-    const excerpt = text.split('\n').slice(0, 80).join('\n').trim();
+    const excerpt = excerptOf(item.rel, text, 80);
     if (excerpt === '') continue;
     const block = `--- ${item.rel} ---\n${excerpt}`;
     if (total + block.length > MAX_DIGEST_CHARS) break;
@@ -203,7 +236,7 @@ function buildNodeDigest(root, files) {
     if (full !== absoluteRoot && !full.startsWith(`${absoluteRoot}${sep}`)) continue;
     const text = safeRead(full, 200_000);
     if (text === undefined) continue;
-    const excerpt = text.split('\n').slice(0, 160).join('\n').trim();
+    const excerpt = excerptOf(relative(absoluteRoot, full), text, 160);
     if (excerpt === '') continue;
     const block = `--- ${rel} ---\n${excerpt}`;
     if (total + block.length > MAX_NODE_DIGEST_CHARS) break;

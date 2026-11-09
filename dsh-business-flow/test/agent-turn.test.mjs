@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -14,7 +14,9 @@ import { after, test } from 'node:test';
 import { apply } from '../index.js';
 
 const projectDir = mkdtempSync(join(tmpdir(), 'business-flow-turn-'));
-after(() => rmSync(projectDir, { recursive: true, force: true }));
+const graphJson = JSON.stringify({ business: 'checkout', nodes: [{ id: 'n1', name: 'Order', kind: 'process' }], edges: [] });
+const cleanupDirs = [projectDir];
+after(() => { for (const dir of cleanupDirs) rmSync(dir, { recursive: true, force: true }); });
 
 /**
  * Fake Session: prompts queue up and run one turn at a time
@@ -206,6 +208,50 @@ test('an analysis that cannot be made read-only never starts', async () => {
   assert.equal(agents.disposed, 1);
 });
 
+test('credentials never reach the prompt, while ordinary code and config stay readable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'business-flow-secrets-'));
+  cleanupDirs.push(dir);
+  writeFileSync(join(dir, 'application.yml'), [
+    'server:',
+    '  port: 8080',
+    'spring:',
+    '  datasource:',
+    '    url: jdbc:mysql://root:urlsecret1@db.internal/orders',
+    '    password: yamlsecret1',
+    '  redis:',
+    '    api-key: yamlsecret2',
+  ].join('\n'));
+  writeFileSync(join(dir, 'application-prod.yml'), 'marker: prodfilesecret\n');
+  writeFileSync(join(dir, 'config.xml'), '<db><password>xmlsecret1</password><name>orders</name></db>');
+  writeFileSync(join(dir, 'auth-service.js'), [
+    'const apiKey = "codesecret1";',
+    'const leaked = "sk-abcdefghijklmnopqrstuvwxyz123456";',
+    'const token = getToken();',
+    'export const PEM = `-----BEGIN RSA PRIVATE KEY-----',
+    'pemsecret1',
+    '-----END RSA PRIVATE KEY-----`;',
+  ].join('\n'));
+  const controller = fakeController({ answerFor: () => graphJson });
+  const result = await call(mountPlugin(controller), '/analyze', { projectPath: dir, business: 'orders' });
+  assert.equal(result.status, 200);
+  const prompt = controller.prompts[0].content[0].text;
+  for (const secret of ['urlsecret1', 'yamlsecret1', 'yamlsecret2', 'prodfilesecret', 'xmlsecret1', 'codesecret1', 'abcdefghijklmnop', 'pemsecret1']) {
+    assert.ok(!prompt.includes(secret), secret);
+  }
+  for (const kept of ['port: 8080', 'db.internal/orders', '<name>orders</name>', 'const token = getToken();']) {
+    assert.ok(prompt.includes(kept), kept);
+  }
+  // A node's files are excerpted under the same rules.
+  const draftController = fakeController({ answerFor: () => 'a prompt' });
+  await call(mountPlugin(draftController), '/draft', {
+    projectPath: dir,
+    node: { id: 'n1', name: 'Order', files: ['application-prod.yml', 'application.yml'] },
+    requirement: 'x',
+  });
+  const draftPrompt = draftController.prompts[0].content[0].text;
+  assert.ok(!draftPrompt.includes('prodfilesecret') && !draftPrompt.includes('yamlsecret1'));
+});
+
 test('a failed turn is an error, not an answer built from its mid-work message', async () => {
   const controller = fakeController({ answerFor: () => 'let me check the files first', endReason: { kind: 'error', error: { message: 'model overloaded' } } });
   const result = await call(mountPlugin(controller), '/draft', draftBody('REQ-x anything'));
@@ -213,7 +259,6 @@ test('a failed turn is an error, not an answer built from its mid-work message',
   assert.match(result.body.error.message, /did not finish \(error: model overloaded\)/);
 });
 
-const graphJson = JSON.stringify({ business: 'checkout', nodes: [{ id: 'n1', name: 'Order', kind: 'process' }], edges: [] });
 for (const [label, wrap] of [
   ['a stray unbalanced brace', (json) => `路由写法是 /api/{id 这样。\n${json}`],
   ['prose in balanced braces', (json) => `{说明 ${json} 结束}`],
