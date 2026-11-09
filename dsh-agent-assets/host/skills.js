@@ -399,7 +399,8 @@ export function createSkills(options = {}) {
         body,
       })
       try {
-        await writeTextAtomic(skillFile, text)
+        // assertRealInside has checked where a link points; keep it a link.
+        await writeTextAtomic(skillFile, text, undefined, { followLink: true })
       } catch (error) {
         fail('internal', `cannot write skill file: ${errorMessage(error)}`, 500)
       }

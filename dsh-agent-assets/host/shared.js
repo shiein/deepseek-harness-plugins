@@ -5,7 +5,7 @@
  * Ask the Lead for additions instead of editing this file (one writer per file).
  */
 
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile, readdir } from 'node:fs/promises'
+import { chmod, mkdir, readFile, realpath, rename, rm, stat, writeFile, readdir } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -138,13 +138,28 @@ export async function ensureDir(path) {
   await mkdir(path, { recursive: true })
 }
 
-/** Write a file atomically (temp file in the same directory + rename), optionally with a mode. */
-export async function writeTextAtomic(path, text, mode) {
-  await ensureDir(dirname(path))
-  const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`)
-  await writeFile(temporary, text, 'utf8')
-  if (mode !== undefined) await chmod(temporary, mode)
-  await rename(temporary, path)
+/**
+ * Write a file atomically (temp file in the same directory + rename). Without a `mode` an existing
+ * file keeps its permissions.
+ *
+ * rename replaces a symlink with a regular file, which is the safe default for plugin-owned stores.
+ * `followLink` writes through it instead, so `CLAUDE.md -> AGENTS.md` stays one file; only pass it
+ * after checking that the link's real path is allowed.
+ */
+export async function writeTextAtomic(path, text, mode, { followLink = false } = {}) {
+  const target = followLink ? await realpath(path).catch(() => path) : path
+  await ensureDir(dirname(target))
+  const existing = mode === undefined ? await statIfExists(target) : undefined
+  const finalMode = mode ?? (existing?.isFile() ? existing.mode & 0o777 : undefined)
+  const temporary = join(dirname(target), `.${basename(target)}.${process.pid}.${Date.now()}.tmp`)
+  try {
+    await writeFile(temporary, text, 'utf8')
+    if (finalMode !== undefined) await chmod(temporary, finalMode)
+    await rename(temporary, target)
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {})
+    throw error
+  }
 }
 
 /** Remove a file or directory tree, tolerating absence. */

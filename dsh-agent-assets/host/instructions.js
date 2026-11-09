@@ -298,7 +298,8 @@ export function createInstructions(options = {}) {
         fail('bad_request', 'instruction path is a directory', 400)
       }
       try {
-        await writeTextAtomic(candidate.path, content)
+        // assertCandidateInside has checked where a link points; keep it a link.
+        await writeTextAtomic(candidate.path, content, undefined, { followLink: true })
       } catch (error) {
         fail('internal', `cannot write instruction file: ${errorMessage(error)}`, 500)
       }
