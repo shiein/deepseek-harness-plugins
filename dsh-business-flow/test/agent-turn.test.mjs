@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -250,6 +250,39 @@ test('credentials never reach the prompt, while ordinary code and config stay re
   });
   const draftPrompt = draftController.prompts[0].content[0].text;
   assert.ok(!draftPrompt.includes('prodfilesecret') && !draftPrompt.includes('yamlsecret1'));
+});
+
+/** A project whose only mention of refunds is deep inside one long, badly named file. */
+function refundProject() {
+  const dir = mkdtempSync(join(tmpdir(), 'business-flow-relevance-'));
+  cleanupDirs.push(dir);
+  for (let index = 0; index < 40; index += 1) {
+    writeFileSync(join(dir, `controller-${index}.js`), `export const noise${index} = ${'"x".repeat(3)};\n'.repeat(60)}`);
+  }
+  mkdirSync(join(dir, 'lib', 'a', 'b'), { recursive: true });
+  const filler = Array.from({ length: 500 }, (_, index) => `const filler${index} = ${index};`);
+  filler[400] = 'export function processRefund(order) { return gateway.reverse(order); }';
+  writeFileSync(join(dir, 'lib', 'a', 'b', 'misc.js'), filler.join('\n'));
+  return dir;
+}
+
+test('the file and lines that mention the business lead the digest, even for a Chinese request', async () => {
+  const controller = fakeController({ answerFor: () => graphJson });
+  const result = await call(mountPlugin(controller), '/analyze', { projectPath: refundProject(), business: '退款流程' });
+  assert.equal(result.status, 200);
+  const prompt = controller.prompts[0].content[0].text;
+  assert.ok(prompt.includes('processRefund'), 'the hit at line 401 is excerpted');
+  assert.ok(!prompt.includes('filler200'), 'lines far from the hit are left out');
+  assert.match(prompt, /按业务关键词 .*refund/);
+  const index = prompt.indexOf('项目文件索引');
+  assert.equal(prompt.slice(index).split('\n')[1], 'lib/a/b/misc.js', 'the matching file heads the file index');
+});
+
+test('with no keyword hit the model is told to search', async () => {
+  const controller = fakeController({ answerFor: () => graphJson });
+  const result = await call(mountPlugin(controller), '/analyze', { projectPath: refundProject(), business: 'quantum teleport' });
+  assert.equal(result.status, 200);
+  assert.match(controller.prompts[0].content[0].text, /未命中业务关键词/);
 });
 
 test('a failed turn is an error, not an answer built from its mid-work message', async () => {

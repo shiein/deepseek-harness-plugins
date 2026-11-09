@@ -116,6 +116,33 @@ function isHistoryEntry(entry) {
 
 const MAX_DIGEST_CHARS = 20000;
 const MAX_NODE_DIGEST_CHARS = 26000;
+const MAX_EXCERPT_CHARS = 3000;
+const MAX_PROJECT_FILES = 6000;
+/** How much of the project is searched for the business keywords. */
+const MAX_SCANNED_FILES = 800;
+const MAX_SCANNED_BYTES = 30 * 1024 * 1024;
+const MAX_KEYWORDS = 16;
+const KEYWORD_HITS_CAP = 5;
+const KEYWORD_PATH_SCORE = 10;
+const HEAD_LINES = 12;
+const LINES_BEFORE_HIT = 8;
+const LINES_AFTER_HIT = 12;
+const KEYWORD_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'that', 'this', 'flow', 'process', 'business', 'data', 'feature', 'module', 'system',
+  '业务', '流程', '功能', '模块', '系统', '数据', '相关', '逻辑', '处理',
+]);
+/** Common business terms and how code usually spells them. */
+const BUSINESS_TERMS = [
+  ['订单', ['order']], ['下单', ['order', 'checkout']], ['支付', ['pay', 'payment']], ['付款', ['pay', 'payment']],
+  ['退款', ['refund']], ['售后', ['aftersale', 'refund']], ['发货', ['ship', 'delivery']], ['物流', ['logistics', 'shipping']],
+  ['购物车', ['cart']], ['商品', ['product', 'goods', 'sku']], ['库存', ['stock', 'inventory']], ['优惠', ['coupon', 'discount']],
+  ['促销', ['promotion']], ['会员', ['member', 'vip']], ['用户', ['user']], ['账号', ['account']], ['账户', ['account']],
+  ['登录', ['login', 'signin', 'auth']], ['注册', ['register', 'signup']], ['权限', ['permission', 'role']], ['角色', ['role']],
+  ['菜单', ['menu']], ['租户', ['tenant']], ['审批', ['approval', 'audit']], ['审核', ['audit', 'review']], ['通知', ['notify', 'notification']],
+  ['消息', ['message']], ['上传', ['upload']], ['下载', ['download']], ['导出', ['export']], ['导入', ['import']],
+  ['报表', ['report']], ['统计', ['statistics', 'stat']], ['日志', ['log']], ['配置', ['config', 'setting']], ['定时', ['schedule', 'cron']],
+  ['发票', ['invoice']], ['合同', ['contract']], ['客户', ['customer', 'client']], ['员工', ['employee', 'staff']], ['部门', ['department', 'dept']],
+];
 
 /** Read a text file with a size fence, or `undefined` when it is not usable. */
 function safeRead(fullPath, maxBytes) {
@@ -153,46 +180,106 @@ function redactSecrets(text, ext) {
   return out;
 }
 
-/** First `maxLines` lines of a file as prompt text, or '' for a file that must not be excerpted. */
-function excerptOf(rel, text, maxLines) {
-  if (SECRET_FILE_RE.test(rel.split(sep).join('/'))) return '';
-  const lines = text.split('\n').slice(0, maxLines)
-    .map((line) => (line.length > EXCERPT_LINE_CHARS ? `${line.slice(0, EXCERPT_LINE_CHARS)}…` : line));
-  return redactSecrets(lines.join('\n'), extname(rel).toLowerCase()).trim();
+/** Lines to send for a file with keyword hits: its head plus the code around each hit, in file order. */
+function linesAroundHits(lines, keywords, maxLines) {
+  const keep = new Set(Array.from({ length: Math.min(HEAD_LINES, lines.length) }, (_, index) => index));
+  for (let index = 0; index < lines.length && keep.size < maxLines; index += 1) {
+    const line = lines[index].toLowerCase();
+    if (!keywords.some((keyword) => line.includes(keyword))) continue;
+    const end = Math.min(lines.length, index + LINES_AFTER_HIT + 1);
+    for (let at = Math.max(0, index - LINES_BEFORE_HIT); at < end && keep.size < maxLines; at += 1) keep.add(at);
+  }
+  const chosen = [];
+  let previous = -1;
+  for (const index of [...keep].sort((a, b) => a - b)) {
+    if (index !== previous + 1) chosen.push('…');
+    chosen.push(lines[index]);
+    previous = index;
+  }
+  return chosen;
 }
 
-/** Every regular file under `root`, skipping build/dependency directories. */
+/**
+ * A file as prompt text, or '' for a file that must not be excerpted. With `keywords`, a file that
+ * contains one is excerpted around those lines; otherwise it is its first `maxLines` lines.
+ */
+function excerptOf(rel, text, maxLines, keywords = []) {
+  if (SECRET_FILE_RE.test(rel.split(sep).join('/'))) return '';
+  // Clip first: the redaction patterns must only ever see short lines.
+  const clipped = text.split('\n')
+    .map((line) => (line.length > EXCERPT_LINE_CHARS ? `${line.slice(0, EXCERPT_LINE_CHARS)}…` : line))
+    .join('\n');
+  const lines = redactSecrets(clipped, extname(rel).toLowerCase()).split('\n');
+  const hit = keywords.length > 0 && lines.some((line) => {
+    const lower = line.toLowerCase();
+    return keywords.some((keyword) => lower.includes(keyword));
+  });
+  return (hit ? linesAroundHits(lines, keywords, maxLines) : lines.slice(0, maxLines)).join('\n').trim();
+}
+
+/** Every regular file under `root`, skipping build/dependency directories; breadth first, so a large directory cannot use up the limit. */
 function listProjectFiles(root) {
   const files = [];
-  const visit = (dir, depth) => {
-    if (files.length >= 6000 || depth > 7) return;
+  const queue = [{ dir: root, depth: 0 }];
+  for (let next = 0; next < queue.length && files.length < MAX_PROJECT_FILES; next += 1) {
+    const { dir, depth } = queue[next];
     let entries;
     try {
       entries = readdirSync(dir, { withFileTypes: true });
     } catch {
-      return;
+      continue;
     }
     for (const entry of entries) {
-      if (files.length >= 6000) return;
+      if (files.length >= MAX_PROJECT_FILES) break;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
-        visit(full, depth + 1);
+        if (depth < 7 && !entry.name.startsWith('.') && !SKIP_DIRS.has(entry.name)) queue.push({ dir: full, depth: depth + 1 });
       } else if (entry.isFile()) {
         files.push(full);
       }
     }
-  };
-  visit(root, 0);
+  }
   return files;
 }
 
+/** Search terms from the business description; code is usually English even when the request is not. */
+function businessKeywords(business) {
+  const spaced = business.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+  const found = new Set();
+  for (const word of spaced.match(/[a-z][a-z0-9]{2,}/g) ?? []) {
+    if (!KEYWORD_STOP_WORDS.has(word)) found.add(word);
+  }
+  for (const run of spaced.match(/[一-鿿]{2,}/g) ?? []) {
+    if (!KEYWORD_STOP_WORDS.has(run)) found.add(run);
+    for (const [term, english] of BUSINESS_TERMS) {
+      if (run.includes(term)) for (const word of english) found.add(word);
+    }
+  }
+  return [...found].slice(0, MAX_KEYWORDS);
+}
+
+/** How strongly a file matches, capped per keyword so one repetitive file cannot dominate. */
+function keywordScore(rel, text, keywords) {
+  const path = rel.toLowerCase();
+  const lower = text.toLowerCase();
+  let score = 0;
+  for (const keyword of keywords) {
+    if (path.includes(keyword)) score += KEYWORD_PATH_SCORE;
+    let hits = 0;
+    for (let at = lower.indexOf(keyword); at !== -1 && hits < KEYWORD_HITS_CAP; at = lower.indexOf(keyword, at + keyword.length)) {
+      hits += 1;
+    }
+    score += hits;
+  }
+  return score;
+}
+
 /**
- * Pre-read the project so the model starts with evidence instead of spending
- * many tool round-trips exploring: a file index plus excerpts of likely
- * entry/service/data/permission files.
+ * Pre-read the project so the model starts with evidence instead of spending many tool round-trips
+ * exploring: a file index plus excerpts. Files that mention the business come first and are excerpted
+ * around those lines; general entry/service/data/permission files fill what remains.
  */
-function buildProjectDigest(root) {
+function buildProjectDigest(root, business) {
   const absoluteRoot = resolve(root);
   const absolute = listProjectFiles(absoluteRoot);
   // Forward slashes on every platform: the model and the node `files` lists speak POSIX paths.
@@ -204,24 +291,39 @@ function buildProjectDigest(root) {
       if (CANDIDATE_RE.test(rel)) score += 6;
       score -= rel.split('/').length * 2;
       if (/(^|\/)(readme|package\.json|pom\.xml|build\.gradle|requirements\.txt)$/i.test(rel)) score += 4;
-      return { rel, ext, score };
+      return { rel, ext, score, match: 0 };
     })
     .filter((item) => item.score > -50)
     .sort((a, b) => b.score - a.score);
-  const parts = [];
-  let total = 0;
-  for (const item of ranked) {
-    if (parts.length >= 24 || total >= MAX_DIGEST_CHARS) break;
+  const keywords = businessKeywords(business);
+  const texts = new Map();
+  let scannedBytes = 0;
+  for (const item of ranked.slice(0, MAX_SCANNED_FILES)) {
+    if (scannedBytes >= MAX_SCANNED_BYTES) break;
+    if (SECRET_FILE_RE.test(item.rel)) continue;
     const text = safeRead(join(absoluteRoot, item.rel), 200_000);
     if (text === undefined) continue;
-    const excerpt = excerptOf(item.rel, text, 80);
+    scannedBytes += text.length;
+    texts.set(item.rel, text);
+    item.match = keywordScore(item.rel, text, keywords);
+  }
+  const ordered = [...ranked].sort((a, b) => b.match - a.match || b.score - a.score);
+  const matched = ordered.filter((item) => item.match > 0).length;
+  const parts = [];
+  let total = 0;
+  for (const item of ordered) {
+    if (parts.length >= 24 || total >= MAX_DIGEST_CHARS) break;
+    const text = texts.get(item.rel) ?? safeRead(join(absoluteRoot, item.rel), 200_000);
+    if (text === undefined) continue;
+    const excerpt = clip(excerptOf(item.rel, text, 80, keywords), MAX_EXCERPT_CHARS);
     if (excerpt === '') continue;
     const block = `--- ${item.rel} ---\n${excerpt}`;
-    if (total + block.length > MAX_DIGEST_CHARS) break;
+    if (total + block.length > MAX_DIGEST_CHARS) continue;
     parts.push(block);
     total += block.length;
   }
-  return { tree: rels.slice(0, 400).join('\n'), excerpts: parts.join('\n\n') };
+  const tree = [...new Set([...ordered.map((item) => item.rel), ...rels])].slice(0, 400);
+  return { tree: tree.join('\n'), excerpts: parts.join('\n\n'), keywords, matched };
 }
 
 /** Excerpts of the files the graph associates with one node (fenced to the root). */
@@ -796,6 +898,9 @@ const ANALYZE_PROMPT = (business, digest) => [
   digest.tree === '' ? '(空)' : digest.tree,
   '',
   '关键文件摘录：',
+  digest.matched > 0
+    ? `（按业务关键词 ${digest.keywords.join('、')} 排序，${digest.matched} 个文件命中，摘录围绕命中的代码行，… 表示省略）`
+    : '（项目文件未命中业务关键词，以下只是通用入口文件；请先用工具搜索定位相关代码）',
   digest.excerpts === '' ? '(无可用摘录，请自行用工具少量查看)' : digest.excerpts,
   '',
   '然后回复且仅回复一个 JSON 对象（不要 markdown 代码围栏，不要多余文字）：',
@@ -873,7 +978,7 @@ async function handleAnalyze(ctx, agentsByCwd, body, signal) {
   const sessionIdOverride = typeof body.sessionId === 'string' && body.sessionId !== '' ? body.sessionId : undefined;
   let digest;
   try {
-    digest = buildProjectDigest(projectPath);
+    digest = buildProjectDigest(projectPath, business);
   } catch (error) {
     throw bizError(`cannot read project directory: ${error?.message ?? String(error)}`);
   }
