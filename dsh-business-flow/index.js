@@ -280,6 +280,19 @@ function configuredAgentOptions(ctx) {
 }
 
 /**
+ * Put a new analysis Session under the DSH file sandbox's `read-only` mode (the same `sandbox/mode`
+ * event `setSandboxMode` appends), so "do not modify files" no longer rests on the prompt alone.
+ * Throws rather than run the analysis without it.
+ */
+function makeSessionReadOnly(handle) {
+  const session = handle?.agent?.session;
+  if (typeof session?.append !== 'function') {
+    throw bizError('cannot make the analysis session read-only; it was not started', 503);
+  }
+  session.append('sandbox/mode', { mode: 'read-only' });
+}
+
+/**
  * Resolve one live analysis agent for `cwd`, creating it on first use.
  *
  * `agents.create` publishes a running agent bound to the project directory
@@ -298,6 +311,12 @@ function acquireAnalysisAgent(ctx, agentsByCwd, cwd) {
       meta: { cwd },
       agentOptions: configuredAgentOptions(ctx),
     });
+    try {
+      makeSessionReadOnly(handle);
+    } catch (error) {
+      await handle?.dispose?.();
+      throw error;
+    }
     return { sessionId: handle?.agent?.id ?? sessionId, handle };
   })();
   agentsByCwd.set(cwd, attempt);

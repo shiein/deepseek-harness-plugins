@@ -93,10 +93,25 @@ function fakeController({ withRpcId = true, answerFor, endReason = { kind: 'comp
   };
 }
 
-function mountPlugin(controller) {
+/** Fake `agents` service; `withSession: false` models a handle the sandbox mode cannot be set on. */
+function fakeAgents(log = [], { withSession = true } = {}) {
+  return {
+    disposed: 0,
+    async create({ sessionId }) {
+      const session = { append: (type, data) => log.push({ type, data }) };
+      return {
+        agent: { id: sessionId, ...(withSession ? { session } : {}) },
+        dispose: async () => { this.disposed += 1; },
+      };
+    },
+  };
+}
+
+function mountPlugin(controller, agents = fakeAgents()) {
   const routes = new Map();
+  const services = { sessionController: controller, agents };
   const ctx = {
-    get: (name) => (name === 'sessionController' ? controller : undefined),
+    get: (name) => services[name],
     webServer: {
       register(route) {
         routes.set(route.path, route.handler);
@@ -169,6 +184,27 @@ for (const withRpcId of [true, false]) {
     assert.equal(controller.prompts.length, 3);
   });
 }
+
+test('a new analysis Session is read-only before its first prompt', async () => {
+  const log = [];
+  const controller = fakeController({ answerFor: () => 'ok' });
+  const prompt = controller.prompt.bind(controller);
+  controller.prompt = (request) => { log.push({ type: 'prompt' }); return prompt(request); };
+  const { sessionId: _unused, ...body } = draftBody('REQ-x anything');
+  const result = await call(mountPlugin(controller, fakeAgents(log)), '/draft', body);
+  assert.equal(result.status, 200);
+  assert.deepEqual(log, [{ type: 'sandbox/mode', data: { mode: 'read-only' } }, { type: 'prompt' }]);
+});
+
+test('an analysis that cannot be made read-only never starts', async () => {
+  const controller = fakeController({ answerFor: () => 'ok' });
+  const agents = fakeAgents([], { withSession: false });
+  const { sessionId: _unused, ...body } = draftBody('REQ-x anything');
+  const result = await call(mountPlugin(controller, agents), '/draft', body);
+  assert.equal(result.status, 503);
+  assert.equal(controller.prompts.length, 0);
+  assert.equal(agents.disposed, 1);
+});
 
 test('a failed turn is an error, not an answer built from its mid-work message', async () => {
   const controller = fakeController({ answerFor: () => 'let me check the files first', endReason: { kind: 'error', error: { message: 'model overloaded' } } });
