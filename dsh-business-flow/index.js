@@ -9,10 +9,12 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync,
 } from 'node:fs';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 /** Hard dependency: the browser HTTP carrier that serves the Web GUI this page renders in. */
 export const inject = ['webServer'];
@@ -147,11 +149,11 @@ const BUSINESS_TERMS = [
 ];
 
 /** Read a text file with a size fence, or `undefined` when it is not usable. */
-function safeRead(fullPath, maxBytes) {
+async function safeRead(fullPath, maxBytes) {
   try {
-    const stat = statSync(fullPath);
-    if (!stat.isFile() || stat.size > maxBytes) return undefined;
-    return readFileSync(fullPath, 'utf8');
+    const info = await stat(fullPath);
+    if (!info.isFile() || info.size > maxBytes) return undefined;
+    return await readFile(fullPath, 'utf8');
   } catch {
     return undefined;
   }
@@ -220,14 +222,14 @@ function excerptOf(rel, text, maxLines, keywords = []) {
 }
 
 /** Every regular file under `root`, skipping build/dependency directories; breadth first, so a large directory cannot use up the limit. */
-function listProjectFiles(root) {
+async function listProjectFiles(root) {
   const files = [];
   const queue = [{ dir: root, depth: 0 }];
   for (let next = 0; next < queue.length && files.length < MAX_PROJECT_FILES; next += 1) {
     const { dir, depth } = queue[next];
     let entries;
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      entries = await readdir(dir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -281,9 +283,9 @@ function keywordScore(rel, text, keywords) {
  * exploring: a file index plus excerpts. Files that mention the business come first and are excerpted
  * around those lines; general entry/service/data/permission files fill what remains.
  */
-function buildProjectDigest(root, business) {
+async function buildProjectDigest(root, business) {
   const absoluteRoot = resolve(root);
-  const absolute = listProjectFiles(absoluteRoot);
+  const absolute = await listProjectFiles(absoluteRoot);
   // Forward slashes on every platform: the model and the node `files` lists speak POSIX paths.
   const rels = absolute.map((file) => relative(absoluteRoot, file).split(sep).join('/'));
   const ranked = rels
@@ -303,7 +305,7 @@ function buildProjectDigest(root, business) {
   for (const item of ranked.slice(0, MAX_SCANNED_FILES)) {
     if (scannedBytes >= MAX_SCANNED_BYTES) break;
     if (SECRET_FILE_RE.test(item.rel)) continue;
-    const text = safeRead(join(absoluteRoot, item.rel), 200_000);
+    const text = await safeRead(join(absoluteRoot, item.rel), 200_000);
     if (text === undefined) continue;
     scannedBytes += text.length;
     texts.set(item.rel, text);
@@ -315,7 +317,7 @@ function buildProjectDigest(root, business) {
   let total = 0;
   for (const item of ordered) {
     if (parts.length >= 24 || total >= MAX_DIGEST_CHARS) break;
-    const text = texts.get(item.rel) ?? safeRead(join(absoluteRoot, item.rel), 200_000);
+    const text = texts.get(item.rel) ?? await safeRead(join(absoluteRoot, item.rel), 200_000);
     if (text === undefined) continue;
     const excerpt = clip(excerptOf(item.rel, text, 80, keywords), MAX_EXCERPT_CHARS);
     if (excerpt === '') continue;
@@ -329,7 +331,7 @@ function buildProjectDigest(root, business) {
 }
 
 /** Excerpts of the files the graph associates with one node (fenced to the root). */
-function buildNodeDigest(root, files) {
+async function buildNodeDigest(root, files) {
   const absoluteRoot = resolve(root);
   const parts = [];
   let total = 0;
@@ -338,7 +340,7 @@ function buildNodeDigest(root, files) {
     if (typeof rel !== 'string' || rel === '') continue;
     const full = resolve(absoluteRoot, rel);
     if (full !== absoluteRoot && !full.startsWith(`${absoluteRoot}${sep}`)) continue;
-    const text = safeRead(full, 200_000);
+    const text = await safeRead(full, 200_000);
     if (text === undefined) continue;
     const excerpt = excerptOf(relative(absoluteRoot, full), text, 160);
     if (excerpt === '') continue;
@@ -819,18 +821,18 @@ function identifierMatcher(name) {
  * `foundIn: null` means the name was not seen in any associated file, so the panel can tell
  * an evidenced table from one the model only inferred. Reads stay inside `rootPath`.
  */
-function attachTableEvidence(graph, rootPath) {
+async function attachTableEvidence(graph, rootPath) {
   const absoluteRoot = resolve(rootPath);
   const cache = new Map();
   let reads = 0;
-  const textOf = (rel) => {
+  const textOf = async (rel) => {
     if (cache.has(rel)) return cache.get(rel);
     let text;
     const full = resolve(absoluteRoot, rel);
     const inside = full === absoluteRoot || full.startsWith(`${absoluteRoot}${sep}`);
     if (inside && reads < TABLE_EVIDENCE_FILE_LIMIT) {
       reads += 1;
-      text = safeRead(full, TABLE_EVIDENCE_FILE_BYTES);
+      text = await safeRead(full, TABLE_EVIDENCE_FILE_BYTES);
     }
     cache.set(rel, text);
     return text;
@@ -840,10 +842,16 @@ function attachTableEvidence(graph, rootPath) {
     const order = [...node.files, ...allFiles.filter((file) => !node.files.includes(file))];
     for (const table of node.tables) {
       const matches = identifierMatcher(table.name);
-      table.foundIn = order.find((rel) => {
-        const text = textOf(rel);
-        return text !== undefined && matches(text);
-      }) ?? null;
+      table.foundIn = null;
+      for (const rel of order) {
+        const text = await textOf(rel);
+        if (text !== undefined && matches(text)) {
+          table.foundIn = rel;
+          break;
+        }
+      }
+      // Cached files never reach the event loop on their own; let other requests run between tables.
+      await yieldToEventLoop();
     }
   }
   return graph;
@@ -978,7 +986,7 @@ async function handleAnalyze(ctx, liveSessions, body, signal) {
 
   let digest;
   try {
-    digest = buildProjectDigest(projectPath, business);
+    digest = await buildProjectDigest(projectPath, business);
   } catch (error) {
     throw bizError(`cannot read project directory: ${error?.message ?? String(error)}`);
   }
@@ -1005,7 +1013,7 @@ async function handleAnalyze(ctx, liveSessions, body, signal) {
       502,
     );
   }
-  const graph = attachTableEvidence(normalizeGraph(parsed, projectPath), projectPath);
+  const graph = await attachTableEvidence(normalizeGraph(parsed, projectPath), projectPath);
   return { graph, sessionId: entry.sessionId };
 }
 
@@ -1029,7 +1037,7 @@ async function handleDraft(ctx, liveSessions, body, signal) {
     if (related.length > 0) neighbors = related.slice(0, 12).join('\n');
   }
 
-  const filesDigest = buildNodeDigest(projectPath, node.files);
+  const filesDigest = await buildNodeDigest(projectPath, node.files);
   // Only a Session this plugin started for this project, so it is known to be read-only.
   const known = liveSessions.get(body.sessionId);
   const entry = known?.cwd === projectPath && !known.failed

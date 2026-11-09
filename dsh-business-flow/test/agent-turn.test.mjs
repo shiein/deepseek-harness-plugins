@@ -408,3 +408,28 @@ test('a turn still running from an earlier prompt is skipped when ids are visibl
   const result = await call(routes, '/draft', draftBody('REQ-fresh new requirement'));
   assert.equal(result.body.prompt, 'answer:fresh');
 });
+
+test('reading the project leaves the event loop free, and table evidence still resolves', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'business-flow-async-'));
+  cleanupDirs.push(dir);
+  for (let index = 0; index < 50; index += 1) writeFileSync(join(dir, `f${index}.js`), `export const v = ${index};\n`);
+  writeFileSync(join(dir, 'orders.sql'), 'SELECT id FROM orders;\n');
+  const answer = JSON.stringify({
+    business: 'checkout',
+    nodes: [{ id: 'n1', name: 'Order', kind: 'data', files: ['orders.sql'], tables: [{ name: 'orders', access: 'read' }, { name: 'ghosts', access: 'read' }] }],
+    edges: [],
+  });
+  const controller = fakeController({ answerFor: () => answer });
+  let turns = 0;
+  let running = true;
+  const spin = () => { if (running) { turns += 1; setImmediate(spin); } };
+  setImmediate(spin);
+  const prompt = controller.prompt.bind(controller);
+  let turnsAtPrompt = -1;
+  controller.prompt = (request) => { if (turnsAtPrompt < 0) turnsAtPrompt = turns; return prompt(request); };
+  const result = await call(mountPlugin(controller), '/analyze', { projectPath: dir, business: 'orders' });
+  running = false;
+  assert.equal(result.status, 200);
+  assert.ok(turnsAtPrompt > 0, 'other work ran while the project was read');
+  assert.deepEqual(result.body.graph.nodes[0].tables.map((table) => table.foundIn), ['orders.sql', null]);
+});
