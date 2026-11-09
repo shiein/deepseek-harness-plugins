@@ -45,7 +45,7 @@ function fakeController({ withRpcId = true, answerFor, endReason = { kind: 'comp
       await tick();
       emit('assistant/message', { message: { role: 'assistant', content: [{ type: 'text', text: answerFor(text) }] } });
       await tick();
-      emit('turn/end', { reason: endReason });
+      emit('turn/end', { reason: typeof endReason === 'function' ? endReason(text) : endReason });
     }
     busy = false;
   };
@@ -99,7 +99,9 @@ function fakeController({ withRpcId = true, answerFor, endReason = { kind: 'comp
 function fakeAgents(log = [], { withSession = true } = {}) {
   return {
     disposed: 0,
+    created: [],
     async create({ sessionId }) {
+      this.created.push(sessionId);
       const session = { append: (type, data) => log.push({ type, data }) };
       return {
         agent: { id: sessionId, ...(withSession ? { session } : {}) },
@@ -175,17 +177,77 @@ for (const withRpcId of [true, false]) {
       answerFor: (text) => `answer:${/REQ-(\w+)/.exec(text)?.[1] ?? '?'}`,
     });
     const routes = mountPlugin(controller);
+    const seed = await call(routes, '/draft', draftBody('REQ-seed start the session'));
+    const onSession = (requirement) => ({ ...draftBody(requirement), sessionId: seed.body.sessionId });
     const [first, second, third] = await Promise.all([
-      call(routes, '/draft', draftBody('REQ-alpha add a coupon field')),
-      call(routes, '/draft', draftBody('REQ-beta validate stock')),
-      call(routes, '/draft', draftBody('REQ-gamma audit log')),
+      call(routes, '/draft', onSession('REQ-alpha add a coupon field')),
+      call(routes, '/draft', onSession('REQ-beta validate stock')),
+      call(routes, '/draft', onSession('REQ-gamma audit log')),
     ]);
     assert.equal(first.body.prompt, 'answer:alpha');
     assert.equal(second.body.prompt, 'answer:beta');
     assert.equal(third.body.prompt, 'answer:gamma');
-    assert.equal(controller.prompts.length, 3);
+    assert.equal(controller.prompts.length, 4);
+    assert.equal(new Set(controller.prompts.map((request) => request.sessionId)).size, 1);
   });
 }
+
+const analyzeBody = (projectPath = projectDir) => ({ projectPath, business: 'checkout' });
+
+test('each analysis gets its own Session and its drafts continue there', async () => {
+  const controller = fakeController({ answerFor: () => graphJson });
+  const agents = fakeAgents();
+  const routes = mountPlugin(controller, agents);
+  const first = await call(routes, '/analyze', analyzeBody());
+  const second = await call(routes, '/analyze', analyzeBody());
+  assert.notEqual(first.body.sessionId, second.body.sessionId);
+  const draft = await call(routes, '/draft', { ...draftBody('REQ-x'), sessionId: first.body.sessionId });
+  assert.equal(draft.body.sessionId, first.body.sessionId);
+  assert.equal(agents.created.length, 2, 'the draft reused the analysis Session');
+});
+
+test('a Session id the plugin does not own, or from another project, gets a fresh read-only Session', async () => {
+  const controller = fakeController({ answerFor: () => graphJson });
+  const log = [];
+  const agents = fakeAgents(log);
+  const routes = mountPlugin(controller, agents);
+  const foreign = await call(routes, '/draft', { ...draftBody('REQ-x'), sessionId: 'someone-elses-session' });
+  assert.notEqual(foreign.body.sessionId, 'someone-elses-session');
+  const other = mkdtempSync(join(tmpdir(), 'business-flow-other-'));
+  cleanupDirs.push(other);
+  const moved = await call(routes, '/draft', { ...draftBody('REQ-x'), projectPath: other, sessionId: foreign.body.sessionId });
+  assert.notEqual(moved.body.sessionId, foreign.body.sessionId);
+  assert.equal(log.filter((entry) => entry.type === 'sandbox/mode').length, 2);
+});
+
+test('a failed turn disposes only its own Session', async () => {
+  const controller = fakeController({
+    answerFor: () => graphJson,
+    endReason: (text) => (text.includes('REQ-bad') ? { kind: 'error', error: { message: 'boom' } } : { kind: 'completed' }),
+  });
+  const agents = fakeAgents();
+  const routes = mountPlugin(controller, agents);
+  const healthy = await call(routes, '/analyze', analyzeBody());
+  assert.equal((await call(routes, '/draft', { ...draftBody('REQ-bad') })).status, 502);
+  assert.equal(agents.disposed, 1);
+  const after = await call(routes, '/draft', { ...draftBody('REQ-good'), sessionId: healthy.body.sessionId });
+  assert.equal(after.status, 200);
+  assert.equal(after.body.sessionId, healthy.body.sessionId);
+});
+
+test('idle Sessions beyond the limit are released, oldest first', async () => {
+  const controller = fakeController({ answerFor: () => graphJson });
+  const agents = fakeAgents();
+  const routes = mountPlugin(controller, agents);
+  const first = await call(routes, '/analyze', analyzeBody());
+  for (let index = 0; index < 8; index += 1) await call(routes, '/analyze', analyzeBody());
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(agents.disposed, 1);
+  const created = agents.created.length;
+  const draft = await call(routes, '/draft', { ...draftBody('REQ-x'), sessionId: first.body.sessionId });
+  assert.notEqual(draft.body.sessionId, first.body.sessionId, 'the released Session is gone');
+  assert.equal(agents.created.length, created + 1);
+});
 
 test('a new analysis Session is read-only before its first prompt', async () => {
   const log = [];

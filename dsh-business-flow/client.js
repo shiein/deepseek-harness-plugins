@@ -1423,6 +1423,8 @@ window.__ModuleLoader__.load({
         const [, setLocaleTick] = useState(0);
         const canvasRef = useRef(null);
         const graphRef = useRef(null);
+        /** The live Session of the graph on screen, so its prompt refinements continue there. */
+        const analysisSession = useRef('');
 
         const selected = graph?.nodes.find((n) => n.id === selectedId) ?? null;
         const views = useMemo(() => VIEWS.map((item) => {
@@ -1641,6 +1643,7 @@ window.__ModuleLoader__.load({
             const value = await api('/analyze', { method: 'POST', body: { projectPath: path, business: text } });
             const nextGraph = value.graph ?? null;
             if (nextGraph === null) return;
+            analysisSession.current = value.sessionId ?? '';
             const id = keepId || newEntryId();
             setGraph(nextGraph);
             setCurrentId(id);
@@ -1666,8 +1669,9 @@ window.__ModuleLoader__.load({
           try {
             const value = await api('/draft', {
               method: 'POST',
-              body: { projectPath, business: graph?.business || business, node: selected, graph, requirement },
+              body: { projectPath, business: graph?.business || business, node: selected, graph, requirement, sessionId: analysisSession.current },
             });
+            analysisSession.current = value.sessionId ?? '';
             setPrompt(value.prompt);
           } catch (e) { setError(e.message); }
           finally { setBusy(''); }
@@ -1698,6 +1702,7 @@ window.__ModuleLoader__.load({
         }, [prompt]);
 
         const loadRecord = useCallback((entry) => {
+          analysisSession.current = '';
           setProjectPath(entry.projectPath);
           setBusiness(entry.business || entry.graph.business || '');
           setGraph(entry.graph);

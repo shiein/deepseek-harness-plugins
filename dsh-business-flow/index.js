@@ -22,6 +22,8 @@ const MAX_BODY_BYTES = 512 * 1024;
 /** Whole saved history (up to HISTORY_LIMIT graphs) is posted at once. */
 const MAX_HISTORY_BODY_BYTES = 8 * 1024 * 1024;
 const ANALYSIS_TIMEOUT_MS = 8 * 60 * 1000;
+/** Live analysis agents kept for follow-up drafts; each holds memory until disposed. */
+const MAX_LIVE_SESSIONS = 8;
 
 const NODE_KINDS = new Set(['entry', 'process', 'data', 'permission', 'external']);
 const EDGE_KINDS = new Set(['flow', 'data', 'auth']);
@@ -428,47 +430,42 @@ function makeSessionReadOnly(handle) {
 }
 
 /**
- * Resolve one live analysis agent for `cwd`, creating it on first use.
+ * Start a new analysis Session for `cwd`. Every analysis gets its own, so earlier analyses of the
+ * project neither add to its context nor colour its answer; the prompt refinements of that analysis
+ * continue in it.
  *
  * `agents.create` publishes a running agent bound to the project directory
  * without touching UI navigation (unlike `uiWorkspace.connectWorkspace`, which
- * selects the Session and would pull the user out of this panel). One agent per
- * project is kept so a later prompt refinement continues the same conversation.
+ * selects the Session and would pull the user out of this panel).
  */
-function acquireAnalysisAgent(ctx, agentsByCwd, cwd) {
-  const cached = agentsByCwd.get(cwd);
-  if (cached !== undefined) return cached;
-  const attempt = (async () => {
-    const agents = requireService(ctx, 'agents');
-    const sessionId = randomUUID();
-    const handle = await agents.create({
-      sessionId,
-      meta: { cwd },
-      agentOptions: configuredAgentOptions(ctx),
-    });
-    try {
-      makeSessionReadOnly(handle);
-    } catch (error) {
-      await handle?.dispose?.();
-      throw error;
-    }
-    return { sessionId: handle?.agent?.id ?? sessionId, handle };
-  })();
-  agentsByCwd.set(cwd, attempt);
-  attempt.catch(() => {
-    if (agentsByCwd.get(cwd) === attempt) agentsByCwd.delete(cwd);
+async function createAnalysisSession(ctx, liveSessions, cwd) {
+  const agents = requireService(ctx, 'agents');
+  const sessionId = randomUUID();
+  const handle = await agents.create({
+    sessionId,
+    meta: { cwd },
+    agentOptions: configuredAgentOptions(ctx),
   });
-  return attempt;
+  try {
+    makeSessionReadOnly(handle);
+  } catch (error) {
+    await handle?.dispose?.();
+    throw error;
+  }
+  const entry = { sessionId: handle?.agent?.id ?? sessionId, handle, cwd, inFlight: 0, failed: false };
+  liveSessions.set(entry.sessionId, entry);
+  for (const candidate of liveSessions.values()) {
+    if (liveSessions.size <= MAX_LIVE_SESSIONS) break;
+    if (candidate.inFlight === 0 && candidate !== entry) disposeAnalysisSession(liveSessions, candidate);
+  }
+  return entry;
 }
 
-/** Drop a cached agent so the next attempt starts from a fresh Session. */
-function invalidateAnalysisAgent(agentsByCwd, cwd) {
-  const entry = agentsByCwd.get(cwd);
-  if (entry === undefined) return;
-  agentsByCwd.delete(cwd);
-  if (typeof entry.then === 'function') {
-    entry.then((value) => value?.handle?.dispose?.()).catch(() => { /* already gone */ });
-  }
+function disposeAnalysisSession(liveSessions, entry) {
+  liveSessions.delete(entry.sessionId);
+  Promise.resolve()
+    .then(() => entry.handle?.dispose?.())
+    .catch(() => { /* already gone */ });
 }
 
 /** sessionId → tail of the turns queued on that Session by this plugin. */
@@ -526,18 +523,22 @@ function describeTurnEnd(event) {
  * created (or reused) for the project, `prompt` submits the request, and
  * `follow` streams events until `turn/end`.
  */
-async function runAgentTurn(ctx, agentsByCwd, cwd, promptText, signal, sessionIdInput) {
+async function runAgentTurn(ctx, liveSessions, entry, promptText, signal) {
   const controller = requireService(ctx, 'sessionController');
-
-  let sessionId = typeof sessionIdInput === 'string' ? sessionIdInput : '';
-  if (sessionId === '') {
-    const entry = await acquireAnalysisAgent(ctx, agentsByCwd, cwd);
-    sessionId = entry.sessionId;
+  entry.inFlight += 1;
+  // Most recently used last: eviction walks the map from the oldest.
+  liveSessions.delete(entry.sessionId);
+  liveSessions.set(entry.sessionId, entry);
+  try {
+    return await withSessionTurn(entry.sessionId, () => runSessionTurn(controller, entry.sessionId, promptText, signal));
+  } catch (error) {
+    entry.failed = true;
+    throw error;
+  } finally {
+    entry.inFlight -= 1;
+    // A failed turn may still be running, so stop it, but not under a turn queued behind it.
+    if (entry.failed && entry.inFlight === 0) disposeAnalysisSession(liveSessions, entry);
   }
-  if (typeof sessionId !== 'string' || sessionId === '') {
-    throw bizError('no usable session for the analysis turn', 502);
-  }
-  return withSessionTurn(sessionId, () => runSessionTurn(controller, sessionId, promptText, signal));
 }
 
 /** One serialized prompt → `turn/end` round on `sessionId` (see `withSessionTurn`). */
@@ -970,39 +971,27 @@ const DRAFT_PROMPT = ({ business, node, neighbors, requirement, filesDigest }) =
   '- 全文不超过 400 字。',
 ].filter((part) => part !== '').join('\n');
 
-async function handleAnalyze(ctx, agentsByCwd, body, signal) {
+async function handleAnalyze(ctx, liveSessions, body, signal) {
   const business = typeof body.business === 'string' ? body.business.trim() : '';
   if (business === '') throw bizError('analyze requires a business description');
   const projectPath = resolveProjectPath(body.projectPath);
 
-  const sessionIdOverride = typeof body.sessionId === 'string' && body.sessionId !== '' ? body.sessionId : undefined;
   let digest;
   try {
     digest = buildProjectDigest(projectPath, business);
   } catch (error) {
     throw bizError(`cannot read project directory: ${error?.message ?? String(error)}`);
   }
-  let answer = '';
-  let sessionId = '';
-  try {
-    ({ answer, sessionId } = await runAgentTurn(
-      ctx, agentsByCwd, projectPath, ANALYZE_PROMPT(business, digest), signal, sessionIdOverride,
-    ));
-  } catch (error) {
-    invalidateAnalysisAgent(agentsByCwd, projectPath);
-    throw error;
-  }
+  const entry = await createAnalysisSession(ctx, liveSessions, projectPath);
+  let { answer } = await runAgentTurn(ctx, liveSessions, entry, ANALYZE_PROMPT(business, digest), signal);
   let parsed = pickGraphObject(answer);
   if (!usableGraph(parsed)) {
     // The model sometimes answers with an empty graph when it believes the
     // business is absent; one repair turn asks for the closest real flow.
     let retryAnswer = '';
     try {
-      const retry = await runAgentTurn(
-        ctx, agentsByCwd, projectPath, ANALYZE_REPAIR_PROMPT, signal, sessionId === '' ? undefined : sessionId,
-      );
+      const retry = await runAgentTurn(ctx, liveSessions, entry, ANALYZE_REPAIR_PROMPT, signal);
       retryAnswer = retry.answer;
-      sessionId = retry.sessionId ?? sessionId;
     } catch {
       /* keep the first answer's diagnostics */
     }
@@ -1017,10 +1006,10 @@ async function handleAnalyze(ctx, agentsByCwd, body, signal) {
     );
   }
   const graph = attachTableEvidence(normalizeGraph(parsed, projectPath), projectPath);
-  return { graph, sessionId };
+  return { graph, sessionId: entry.sessionId };
 }
 
-async function handleDraft(ctx, agentsByCwd, body, signal) {
+async function handleDraft(ctx, liveSessions, body, signal) {
   const projectPath = resolveProjectPath(body.projectPath);
   const node = typeof body.node === 'object' && body.node !== null ? body.node : undefined;
   const requirement = typeof body.requirement === 'string' ? body.requirement.trim() : '';
@@ -1040,21 +1029,18 @@ async function handleDraft(ctx, agentsByCwd, body, signal) {
     if (related.length > 0) neighbors = related.slice(0, 12).join('\n');
   }
 
-  const sessionIdOverride = typeof body.sessionId === 'string' && body.sessionId !== '' ? body.sessionId : undefined;
   const filesDigest = buildNodeDigest(projectPath, node.files);
-  let answer = '';
-  try {
-    ({ answer } = await runAgentTurn(
-      ctx, agentsByCwd, projectPath,
-      DRAFT_PROMPT({ business, node, neighbors, requirement, filesDigest }), signal, sessionIdOverride,
-    ));
-  } catch (error) {
-    invalidateAnalysisAgent(agentsByCwd, projectPath);
-    throw error;
-  }
+  // Only a Session this plugin started for this project, so it is known to be read-only.
+  const known = liveSessions.get(body.sessionId);
+  const entry = known?.cwd === projectPath && !known.failed
+    ? known
+    : await createAnalysisSession(ctx, liveSessions, projectPath);
+  const { answer } = await runAgentTurn(
+    ctx, liveSessions, entry, DRAFT_PROMPT({ business, node, neighbors, requirement, filesDigest }), signal,
+  );
   const trimmed = answer.trim();
   if (trimmed === '') throw bizError('agent returned an empty prompt — retry', 502);
-  return { prompt: clip(trimmed, 12000) };
+  return { prompt: clip(trimmed, 12000), sessionId: entry.sessionId };
 }
 
 function handleHistoryGet() {
@@ -1206,14 +1192,14 @@ async function readJsonBody(request, limit = MAX_BODY_BYTES) {
 }
 
 export function apply(ctx) {
-  /** cwd → Promise<{ sessionId, handle }> for the live analysis agent of that project. */
-  const agentsByCwd = new Map();
+  /** sessionId → live analysis Session, oldest use first. */
+  const liveSessions = new Map();
   // One route per path: the carrier keys exact routes by path, so methods are
   // dispatched inside the handler instead of registering the path again.
   const ROUTES = [
     ['/ping', ['GET'], async () => handlePing(ctx)],
-    ['/analyze', ['POST'], async (body, signal) => handleAnalyze(ctx, agentsByCwd, body, signal)],
-    ['/draft', ['POST'], async (body, signal) => handleDraft(ctx, agentsByCwd, body, signal)],
+    ['/analyze', ['POST'], async (body, signal) => handleAnalyze(ctx, liveSessions, body, signal)],
+    ['/draft', ['POST'], async (body, signal) => handleDraft(ctx, liveSessions, body, signal)],
     ['/history', ['GET'], async () => handleHistoryGet()],
     ['/history/save', ['POST'], async (body) => handleHistoryMerge(body), MAX_HISTORY_BODY_BYTES],
     ['/history/upsert', ['POST'], async (body) => handleHistoryUpsert(body)],
@@ -1269,12 +1255,7 @@ export function apply(ctx) {
           /* ignore disposal errors */
         }
       }
-      for (const entry of agentsByCwd.values()) {
-        Promise.resolve(entry)
-          .then((value) => value?.handle?.dispose?.())
-          .catch(() => { /* agent already gone */ });
-      }
-      agentsByCwd.clear();
+      for (const entry of [...liveSessions.values()]) disposeAnalysisSession(liveSessions, entry);
     };
   }, 'business-flow: routes');
 }
