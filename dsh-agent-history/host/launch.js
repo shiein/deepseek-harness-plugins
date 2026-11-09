@@ -13,7 +13,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
@@ -135,12 +135,50 @@ export function windowsLaunchLine(cwd, command, args) {
   return `/d /s /c "start "" /D ${cmdQuote(cwd)} cmd.exe /k "${inner}""`;
 }
 
+/**
+ * Full path of Windows Terminal, or null. lstat, because its `wt.exe` is an app execution alias: a
+ * reparse point that a following stat cannot always open.
+ * @param {Record<string, string|undefined>} [env]
+ */
+export function findWindowsTerminal(env = process.env) {
+  const local = env.LOCALAPPDATA ? join(env.LOCALAPPDATA, 'Microsoft', 'WindowsApps') : '';
+  for (const dir of [...String(env.PATH || env.Path || '').split(';'), local]) {
+    if (dir.trim() === '') continue;
+    const candidate = join(dir.trim(), 'wt.exe');
+    try {
+      lstatSync(candidate);
+      return candidate;
+    } catch {
+      // not in this directory
+    }
+  }
+  return null;
+}
+
+/**
+ * A batch file that resumes the session. wt.exe re-parses and rebuilds its command line, so nested
+ * quoting would not survive it; a script leaves it one plain path to run. `%` is doubled because a
+ * batch file expands it even inside quotes.
+ * @param {string} cwd @param {string} command @param {string[]} args
+ */
+export function windowsResumeScript(cwd, command, args) {
+  const clean = (value) => String(value).replace(/[\r\n]+/g, ' ');
+  const line = [command, ...args].map((value) => cmdQuote(clean(value))).join(' ').replace(/%/g, '%%');
+  return ['@echo off', 'chcp 65001 >nul', `cd /d ${cmdQuote(clean(cwd)).replace(/%/g, '%%')}`, line, ''].join('\r\n');
+}
+
+/** Arguments for wt.exe; `;` separates wt subcommands unless escaped. @param {string} cwd @param {string} script */
+export function windowsTerminalArgs(cwd, script) {
+  const literal = (value) => value.replace(/;/g, '\\;');
+  return ['-d', literal(cwd), 'cmd.exe', '/k', literal(script)];
+}
+
 /** Drop generated resume scripts older than a day so the launch folder does not grow forever. @param {string} dir */
 async function pruneOldScripts(dir) {
   try {
     const cutoff = Date.now() - 86_400_000;
     for (const name of await fs.readdir(dir)) {
-      if (!name.startsWith('resume-') || !name.endsWith('.command')) continue;
+      if (!name.startsWith('resume-') || !(name.endsWith('.command') || name.endsWith('.cmd'))) continue;
       const file = join(dir, name);
       const info = await fs.stat(file).catch(() => null);
       if (info && info.mtimeMs < cutoff) await fs.unlink(file).catch(() => {});
@@ -203,6 +241,19 @@ export async function launchInTerminal(plan, options) {
   try {
     if (platform() === 'win32') {
       const cwd = plan.cwd && existsSync(plan.cwd) ? plan.cwd : homedir();
+      // `start cmd.exe` opens the legacy console host, which agent CLIs such as Devin warn about.
+      const windowsTerminal = config.terminalApp === 'conhost' ? null : findWindowsTerminal();
+      if (windowsTerminal !== null) {
+        await pruneOldScripts(launchDir);
+        const script = join(launchDir, `resume-${sanitize(plan.command)}-${Date.now()}.cmd`);
+        await fs.writeFile(script, windowsResumeScript(cwd, plan.command, plan.args || []), 'utf8');
+        const opened = await launcherResult(
+          spawn(windowsTerminal, windowsTerminalArgs(cwd, script), { detached: true, stdio: 'ignore', cwd }),
+          'wt.exe',
+        );
+        if (opened.ok) return { ok: true, display, terminal: 'Windows Terminal' };
+        // Fall through to cmd.exe: the result then names the terminal that actually opened.
+      }
       const child = spawn(process.env.ComSpec || 'cmd.exe', [windowsLaunchLine(cwd, plan.command, plan.args || [])], {
         detached: true,
         stdio: 'ignore',

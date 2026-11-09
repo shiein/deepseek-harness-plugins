@@ -133,7 +133,7 @@ generation; after a `client.js` update, reload the Web page once.
   name: "@local/dsh-agent-history"
   config:
     dataDir: /Users/me/.dsh/agent-history
-    terminalApp: auto          # macOS: 'auto' | 'Terminal' | 'iTerm' | ...
+    terminalApp: auto          # macOS: 'auto' | 'Terminal' | 'iTerm' | ...; Windows: Windows Terminal when installed, 'conhost' forces cmd.exe
     commands:                  # optional per-agent resume command override
       claude-code: ['claude', '--resume', '{id}']
 ```

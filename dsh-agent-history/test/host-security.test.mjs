@@ -12,7 +12,9 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 
 import { apply } from '../index.js';
-import { copyableCommand, launchInTerminal } from '../host/launch.js';
+import {
+  copyableCommand, findWindowsTerminal, launchInTerminal, windowsResumeScript, windowsTerminalArgs,
+} from '../host/launch.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agent-history-security-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -89,6 +91,29 @@ test('launch reports what the launcher actually did', { skip: process.platform =
   const missing = await withOpen('open-missing');
   assert.equal(missing.ok, false);
   assert.match(missing.error, /cannot run open/);
+});
+
+test('Windows Terminal is found on PATH or under WindowsApps', () => {
+  const apps = join(root, 'wt-apps');
+  mkdirSync(join(apps, 'Microsoft', 'WindowsApps'), { recursive: true });
+  const alias = join(apps, 'Microsoft', 'WindowsApps', 'wt.exe');
+  writeFileSync(alias, '');
+  assert.equal(findWindowsTerminal({ PATH: join(root, 'nowhere'), LOCALAPPDATA: apps }), alias);
+  assert.equal(findWindowsTerminal({ PATH: `${join(root, 'nowhere')};${join(apps, 'Microsoft', 'WindowsApps')}` }), alias);
+  assert.equal(findWindowsTerminal({ PATH: join(root, 'nowhere') }), null);
+});
+
+test('the Windows resume script keeps paths and percent signs literal', () => {
+  const script = windowsResumeScript('C:\\My Work\\100%done', 'devin', ['--resume', 'abc%PATH%']);
+  assert.deepEqual(script.split('\r\n'), [
+    '@echo off',
+    'chcp 65001 >nul',
+    'cd /d "C:\\My Work\\100%%done"',
+    'devin --resume "abc%%PATH%%"',
+    '',
+  ]);
+  assert.ok(!windowsResumeScript('C:\\a', 'devin', ['x\r\necho injected']).includes('\r\necho injected'));
+  assert.deepEqual(windowsTerminalArgs('C:\\a;b', 'C:\\x y\\r.cmd'), ['-d', 'C:\\a\\;b', 'cmd.exe', '/k', 'C:\\x y\\r.cmd']);
 });
 
 test('the copyable command quotes only what needs quoting', { skip: process.platform === 'win32' }, () => {
