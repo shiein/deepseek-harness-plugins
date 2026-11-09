@@ -47,8 +47,9 @@ export class TranscriptReader {
     // A failed read propagates and is NOT cached: caching it as an empty transcript would hide the
     // error and pin the empty result until the session changes.
     const result = await this.read(session, signal);
-    const messages = limitTranscriptChars(finalizeMessages(result?.messages || []));
-    const entry = { key, supported: Boolean(result?.supported), messages, chars: messageChars(messages) };
+    const complete = finalizeMessages(result?.messages || []);
+    const messages = limitTranscriptChars(complete);
+    const entry = { key, supported: Boolean(result?.supported), messages, chars: messageChars(messages), clipped: messages !== complete };
     this.cacheChars = putBounded(this.cache, this.cacheChars, session.id, entry, MAX_CACHED_TRANSCRIPTS, MAX_CACHED_TRANSCRIPT_CHARS);
     return entry;
   }
@@ -79,9 +80,9 @@ export class TranscriptReader {
       return { messages: [], truncated: false, error: error instanceof Error ? error.message : String(error) };
     }
     const readable = entry.messages.filter((message) => message.role !== 'system');
-    const truncated = readable.length > maxMessages;
+    const truncated = readable.length > maxMessages || entry.clipped === true;
     // Keep the tail: the latest work of a very long session is what the merged view reads.
-    const sliced = truncated ? readable.slice(readable.length - maxMessages) : readable;
+    const sliced = readable.length > maxMessages ? readable.slice(readable.length - maxMessages) : readable;
     const slice = { key, messages: sliced, truncated, chars: messageChars(sliced) };
     this.timelineCacheChars = putBounded(
       this.timelineCache, this.timelineCacheChars, session.id, slice, MAX_CACHED_TIMELINES, MAX_CACHED_TIMELINE_CHARS,

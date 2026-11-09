@@ -346,7 +346,7 @@ export function apply(ctx, config = {}) {
             if (entry.error !== undefined) {
               logger?.warn?.(`[agent-history] transcript read failed for ${session.id}: ${entry.error}`);
             }
-            return { session, messages: entry.messages, error: entry.error };
+            return { session, messages: entry.messages, error: entry.error, truncated: entry.truncated === true };
           });
           const readable = loaded.filter(Boolean);
           const failedSessions = readable
@@ -364,6 +364,9 @@ export function apply(ctx, config = {}) {
             sessionsIncluded: chosen.length,
             sessions: chosen.map((session) => ({ id: session.id, title: session.title, agentId: session.agentId })),
             failedSessions,
+            truncatedSessions: readable
+              .filter((item) => item.truncated)
+              .map((item) => ({ id: item.session.id, title: item.session.title })),
           });
         } catch (error) {
           writeJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
