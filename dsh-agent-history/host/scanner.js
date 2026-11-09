@@ -174,7 +174,10 @@ export async function runScan(options) {
     return { agent, sessions: providerSessions };
   });
 
-  sharedCache.prune(activeProviderIds);
+  const failedProviderIds = results
+    .filter((result) => result && (result.agent.status === 'error' || result.agent.status === 'broken'))
+    .map((result) => result.agent.id);
+  sharedCache.prune(activeProviderIds, failedProviderIds);
   await sharedCache.save();
 
   for (const result of results) {

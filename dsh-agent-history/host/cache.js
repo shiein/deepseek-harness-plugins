@@ -127,10 +127,17 @@ export class HistoryCache {
     set.add(filePath);
   }
 
-  /** Drop entries for files the provider no longer reports. @param {string[]} activeProviderIds */
-  prune(activeProviderIds) {
+  /**
+   * Drop entries for files the provider no longer reports. A failed provider reported only part of
+   * its files, so its entries stay: one transient error must not force a full re-parse.
+   * @param {string[]} activeProviderIds
+   * @param {string[]} [failedProviderIds]
+   */
+  prune(activeProviderIds, failedProviderIds = []) {
     const active = new Set(activeProviderIds);
+    const failed = new Set(failedProviderIds);
     for (const id of [...this.providers.keys()]) {
+      if (failed.has(id)) continue;
       if (!active.has(id)) {
         this.providers.delete(id);
         continue;

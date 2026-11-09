@@ -195,10 +195,9 @@ export async function runScan(options) {
   });
 
   // Keep the cache bounded to providers that are actually installed.
-  const installedIds = agents
-    .filter((agent) => agent.status !== 'not-installed' && agent.status !== 'broken')
-    .map((agent) => agent.id);
-  cache.prune(installedIds);
+  const installedIds = agents.filter((agent) => agent.status !== 'not-installed').map((agent) => agent.id);
+  const failedIds = agents.filter((agent) => agent.status === 'error' || agent.status === 'broken').map((agent) => agent.id);
+  cache.prune(installedIds, failedIds);
   await cache.save();
 
   const totalTokens = tuples.reduce((sum, tuple) => sum + tuple[3] + tuple[4] + tuple[5] + tuple[6], 0);

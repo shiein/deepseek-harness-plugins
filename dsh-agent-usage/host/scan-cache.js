@@ -129,12 +129,16 @@ export class ScanCache {
 
   /**
    * Drop cache entries for files the provider no longer reports (deleted sessions), and drop
-   * providers that are not present in this scan.
+   * providers that are not present in this scan. A failed provider reported only part of its files,
+   * so its entries stay: one transient error must not force a full re-parse.
    * @param {string[]} activeProviderIds
+   * @param {string[]} [failedProviderIds]
    */
-  prune(activeProviderIds) {
+  prune(activeProviderIds, failedProviderIds = []) {
     const active = new Set(activeProviderIds);
+    const failed = new Set(failedProviderIds);
     for (const id of [...this.providers.keys()]) {
+      if (failed.has(id)) continue;
       if (!active.has(id)) {
         this.providers.delete(id);
         continue;
