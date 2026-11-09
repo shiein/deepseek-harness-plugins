@@ -57,6 +57,8 @@
 
 `dsh-page-preview` 的结构（`src/` → `lib/`）见其 README。
 
+几个插件共用的 Host 代码只维护一份，放在 `shared/host/`，再由脚本复制到各插件的 `host/`（复制件带 `GENERATED` 标记），这样每个插件目录仍能独立安装。修改时改 `shared/host/`，然后运行 `node scripts/sync-shared.mjs`；各插件的 `npm test` 会检查复制件是否同步。
+
 ## 说明
 
 - 均为个人插件，未发布到 npm；前 5 个使用 `@local/` 作用域。

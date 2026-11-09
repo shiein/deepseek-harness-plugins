@@ -1,5 +1,6 @@
+// GENERATED from shared/host/scan-utils.js. Edit that file, then run: node scripts/sync-shared.mjs
 /**
- * Shared filesystem / parsing helpers for agent-usage providers.
+ * Shared filesystem / parsing helpers for scan providers.
  *
  * Pure Node.js builtins only: this file is loaded by the DSH Host (Node 24) from a profile
  * bundle, so it must not import npm packages and must not keep module-level side effects.
@@ -139,8 +140,15 @@ function extnameLower(name) {
   return index < 0 ? '' : name.slice(index).toLowerCase();
 }
 
+/** True for zstd-compressed JSONL (`*.jsonl.zst` / `*.zstd`), which `readJsonl` decompresses. @param {string} path */
+export function isZstdPath(path) {
+  return /\.(zst|zstd)$/i.test(path);
+}
+
 /**
- * Stream a JSONL file line by line.
+ * Stream a JSONL file line by line. `.zst` / `.zstd` files are decompressed on the fly; they cannot
+ * be resumed from an offset (`startOffset` must be 0) and `bytes` / `endOffset` count decompressed
+ * text, so incremental callers must only pass plain files.
  * @param {string} path
  * @param {(line: string, index: number) => void} onLine
  * @param {{startOffset?: number, signal?: AbortSignal}} [options]
@@ -159,11 +167,27 @@ export async function readJsonl(path, onLine, options = {}) {
     if (text.endsWith('\r')) text = text.slice(0, -1);
     return text;
   };
+  const zstd = isZstdPath(path);
+  if (zstd && startOffset !== 0) throw new Error(`cannot resume a compressed JSONL file from an offset: ${path}`);
+  if (zstd && typeof zlib.createZstdDecompress !== 'function') {
+    throw new Error(`zstd-compressed JSONL needs Node.js ≥ 22.15 (running ${process.version}): ${path}`);
+  }
   await new Promise((resolvePromise, reject) => {
-    const stream = createReadStream(path, { encoding: 'utf8', start: startOffset });
+    const raw = createReadStream(path, zstd ? {} : { encoding: 'utf8', start: startOffset });
+    /** @type {import('node:stream').Readable} */
+    let stream = raw;
+    if (zstd) {
+      raw.on('error', (error) => reject(error));
+      stream = raw.pipe(zlib.createZstdDecompress());
+      stream.setEncoding('utf8');
+    }
+    const destroy = () => {
+      stream.destroy();
+      if (stream !== raw) raw.destroy();
+    };
     stream.on('data', (chunk) => {
       if (signal?.aborted) {
-        stream.destroy();
+        destroy();
         return;
       }
       bytes += Buffer.byteLength(chunk);

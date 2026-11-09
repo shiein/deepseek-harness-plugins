@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { loadProviders } from './providers/index.js';
 import { HistoryCache, cachePathIn } from './cache.js';
 import { makeScanContext } from './context.js';
+import { runWithConcurrency } from './concurrency.js';
 import { mkdirSafe } from './fs-extra.js';
 import { buildProjects, finalizeSession } from './model.js';
 
@@ -267,26 +268,4 @@ async function persistSnapshot(dataDir, snapshot) {
   } catch {
     // A read-only data directory must not fail a scan.
   }
-}
-
-/**
- * Run `worker` over `items` with a fixed concurrency, preserving order.
- * @template T, R
- * @param {T[]} items
- * @param {number} limit
- * @param {(item: T, index: number) => Promise<R>} worker
- * @returns {Promise<R[]>}
- */
-async function runWithConcurrency(items, limit, worker) {
-  /** @type {R[]} */
-  const results = new Array(items.length);
-  let cursor = 0;
-  const runners = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      results[index] = await worker(items[index], index);
-    }
-  });
-  await Promise.all(runners);
-  return results;
 }

@@ -12,6 +12,7 @@ import { estimateCellCost, hasPrice, PRICING_VERSION } from './pricing.js';
 import { ScanCache } from './scan-cache.js';
 import { loadProviders } from './providers/index.js';
 import { makeScanContext } from './context.js';
+import { runWithConcurrency } from './concurrency.js';
 import { mkdirSafe } from './fs-extra.js';
 import fs from 'node:fs/promises';
 
@@ -254,28 +255,6 @@ async function writeSnapshot(dataDir, snapshot) {
   } catch {
     // Persisting is best effort; an in-memory snapshot still serves the UI.
   }
-}
-
-/**
- * Run `task` over `items` with a fixed concurrency.
- * @template T, R
- * @param {T[]} items
- * @param {number} limit
- * @param {(item: T) => Promise<R>} task
- * @returns {Promise<R[]>}
- */
-async function runWithConcurrency(items, limit, task) {
-  /** @type {R[]} */
-  const results = [];
-  let index = 0;
-  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
-    while (index < items.length) {
-      const current = index++;
-      results[current] = await task(items[current]);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }
 
 /** @param {number} value */

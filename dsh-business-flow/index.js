@@ -16,6 +16,8 @@ import { homedir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
+import { isLoopbackRequest } from './host/loopback.js';
+
 /** Hard dependency: the browser HTTP carrier that serves the Web GUI this page renders in. */
 export const inject = ['webServer'];
 
@@ -1124,55 +1126,6 @@ function handlePing(ctx) {
   return { configured, provider, model };
 }
 
-// ----------------------------------------------------------------------------------------------
-// Loopback fence, mirrors the local plugin pattern: requests that did not arrive on a loopback
-// socket with an exact loopback `Host` authority, no cross-site fetch metadata, and an
-// `Origin`/`Referer` that is absent or this very server are refused before any handler runs.
-// The desktop shell forwards the Client's requests without an Origin.
-// ----------------------------------------------------------------------------------------------
-
-function isLoopbackHostname(hostname) {
-  if (typeof hostname !== 'string' || hostname === '') return false;
-  if (hostname === 'localhost' || hostname === '::1' || hostname === '[::1]') return true;
-  return /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){2}$/.test(hostname);
-}
-
-/** True when an `Origin`/`Referer` value is absent or names exactly this server (host and port). */
-function isSameAuthority(value, authority) {
-  if (typeof value !== 'string' || value.trim() === '') return true;
-  try {
-    return new URL(value.trim()).host === authority;
-  } catch {
-    return false;
-  }
-}
-
-function isLoopbackRequest(request) {
-  const address = request.socket?.remoteAddress || '';
-  const loopbackAddress =
-    address === '::1' ||
-    address.startsWith('127.') ||
-    address.startsWith('::ffff:127.') ||
-    address === '::ffff:7f00:1';
-  if (!loopbackAddress) return false;
-  const host = request.headers.host;
-  if (typeof host !== 'string') return false;
-  let parsed;
-  try {
-    parsed = new URL(`http://${host}`);
-  } catch {
-    return false;
-  }
-  if (!isLoopbackHostname(parsed.hostname)) return false;
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false;
-  if (!isSameAuthority(request.headers.origin, parsed.host)) return false;
-  if (!isSameAuthority(request.headers.referer, parsed.host)) return false;
-  // A form or text/plain POST skips the CORS preflight; the Client only ever sends JSON or no body.
-  const type = request.headers['content-type'];
-  if (request.method === 'POST' && type !== undefined && !/^application\/json\s*(;|$)/i.test(type)) return false;
-  return true;
-}
-
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
 
 function writeJson(response, status, body) {
@@ -1232,7 +1185,7 @@ export function apply(ctx) {
         path: `${PREFIX}${suffix}`,
         handler: async (request, response) => {
           try {
-            if (!isLoopbackRequest(request)) {
+            if (!isLoopbackRequest(request, { checkReferer: true })) {
               writeJson(response, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden: loopback-only' } });
               return;
             }

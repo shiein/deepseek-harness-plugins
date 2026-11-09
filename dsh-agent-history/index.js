@@ -20,7 +20,9 @@
 import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { Worker } from 'node:worker_threads';
+import { isLoopbackRequest } from './host/loopback.js';
+import { runScanInWorker } from './host/scan-in-worker.js';
+import { runWithConcurrency } from './host/concurrency.js';
 import { loadSnapshot, readSessionViaProvider } from './host/scanner.js';
 import { TranscriptReader, buildTimeline } from './host/transcript.js';
 import { buildLaunchPlan, copyableCommand, launchInTerminal } from './host/launch.js';
@@ -31,34 +33,6 @@ import { OpenedProjects } from './host/opened-projects.js';
 export const name = 'agent-history';
 
 const SCAN_WORKER_URL = new URL('./host/scan-worker.js', import.meta.url);
-
-/**
- * Run one scan on a worker thread (see host/scan-worker.js for why it must leave the Host thread).
- * Single-session transcript reads stay on the Host thread: they are bounded per session (the
- * largest Devin session reads in ~16 ms).
- * @param {{dataDir: string, config: Record<string, unknown>, onWorker: (worker: Worker|null) => void}} options
- * @returns {Promise<import('./host/scanner.js').Snapshot>}
- */
-function runScanInWorker({ dataDir, config, onWorker }) {
-  return new Promise((resolve, reject) => {
-    // Profile config is plain YAML data; a JSON round-trip drops anything a worker cannot clone.
-    const worker = new Worker(SCAN_WORKER_URL, { workerData: { dataDir, config: JSON.parse(JSON.stringify(config ?? {})) } });
-    onWorker(worker);
-    let settled = false;
-    const settle = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      onWorker(null);
-      fn(value);
-    };
-    worker.once('message', (message) => {
-      if (message?.ok) settle(resolve, message.snapshot);
-      else settle(reject, new Error(`scan worker failed: ${message?.error ?? 'unknown error'}`));
-    });
-    worker.once('error', (error) => settle(reject, error));
-    worker.once('exit', (code) => settle(reject, new Error(`scan worker exited with code ${code} before reporting`)));
-  });
-}
 
 /** Hard dependency: the browser HTTP carrier that serves the Web GUI this page renders in. */
 export const inject = ['webServer'];
@@ -92,55 +66,6 @@ function writeJson(res, status, body) {
   } catch {
     // Socket may already be gone.
   }
-}
-
-/** True only for an exactly spelled loopback hostname; a prefix test would accept `127.0.0.1.evil.example`. */
-function isLoopbackHostname(hostname) {
-  if (typeof hostname !== 'string' || hostname === '') return false;
-  if (hostname === 'localhost' || hostname === '::1' || hostname === '[::1]') return true;
-  return /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){2}$/.test(hostname);
-}
-
-/** True when an `Origin` value is absent or names exactly this server (host and port). */
-function isSameAuthority(value, authority) {
-  if (typeof value !== 'string' || value.trim() === '') return true;
-  try {
-    return new URL(value.trim()).host === authority;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Loopback trust fence: this is a local-machine history view, so only requests from this server's
- * own page, on a loopback socket with an exact loopback Host, are served. A page on another local
- * port is refused too. The desktop shell forwards the Client's requests without an Origin.
- * @param {import('node:http').IncomingMessage} request
- * @returns {boolean}
- */
-function isLoopbackRequest(request) {
-  const address = request.socket?.remoteAddress || '';
-  const loopbackAddress =
-    address === '::1' ||
-    address.startsWith('127.') ||
-    address.startsWith('::ffff:127.') ||
-    address === '::ffff:7f00:1';
-  if (!loopbackAddress) return false;
-  const host = request.headers.host;
-  if (typeof host !== 'string') return false;
-  let parsed;
-  try {
-    parsed = new URL(`http://${host}`);
-  } catch {
-    return false;
-  }
-  if (!isLoopbackHostname(parsed.hostname)) return false;
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false;
-  if (!isSameAuthority(request.headers.origin, parsed.host)) return false;
-  // A form or text/plain POST skips the CORS preflight; the Client only ever sends JSON or no body.
-  const type = request.headers['content-type'];
-  if (request.method === 'POST' && type !== undefined && !/^application\/json\s*(;|$)/i.test(type)) return false;
-  return true;
 }
 
 /** @param {Record<string, unknown>} [config] @returns {string} */
@@ -198,7 +123,7 @@ export function apply(ctx, config = {}) {
   let snapshotLoadAttempted = false;
   /** @type {Promise<{snapshot: import('./host/scanner.js').Snapshot}>|null} */
   let scanning = null;
-  /** @type {Worker|null} */
+  /** @type {import('node:worker_threads').Worker|null} */
   let activeWorker = null;
 
   const logger = typeof ctx.logger?.info === 'function' ? ctx.logger : null;
@@ -248,7 +173,7 @@ export function apply(ctx, config = {}) {
   function ensureScan() {
     if (scanning !== null) return scanning;
     scanning = (async () => {
-      const result = await runScanInWorker({ dataDir, config, onWorker: (worker) => { activeWorker = worker; } });
+      const result = await runScanInWorker(SCAN_WORKER_URL, { dataDir, config, onWorker: (worker) => { activeWorker = worker; } });
       snapshot = result;
       return { snapshot: result };
     })().finally(() => {
@@ -349,7 +274,7 @@ export function apply(ctx, config = {}) {
           : matching;
         try {
           const abort = new AbortController();
-          const loaded = await mapWithConcurrency(chosen, 4, async (session) => {
+          const loaded = await runWithConcurrency(chosen, 4, async (session) => {
             const entry = await reader.getForTimeline(session, abort.signal);
             if (entry.error !== undefined) {
               logger?.warn?.(`[agent-history] transcript read failed for ${session.id}: ${entry.error}`);
@@ -452,26 +377,4 @@ export function apply(ctx, config = {}) {
       for (const dispose of disposers) dispose();
     };
   }, 'agent-history: routes');
-}
-
-/**
- * Run `worker` over `items` with fixed concurrency, preserving order.
- * @template T, R
- * @param {T[]} items
- * @param {number} limit
- * @param {(item: T) => Promise<R>} worker
- * @returns {Promise<R[]>}
- */
-async function mapWithConcurrency(items, limit, worker) {
-  /** @type {R[]} */
-  const results = new Array(items.length);
-  let cursor = 0;
-  const runners = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      results[index] = await worker(items[index]);
-    }
-  });
-  await Promise.all(runners);
-  return results;
 }

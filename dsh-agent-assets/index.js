@@ -30,6 +30,7 @@ import {
 import { createSkills } from './host/skills.js'
 import { createInstructions } from './host/instructions.js'
 import { createMcp } from './host/mcp.js'
+import { isLoopbackRequest } from './host/loopback.js'
 
 /** Cordis plugin name used by Loader diagnostics. */
 export const name = 'agent-assets'
@@ -67,62 +68,6 @@ function ok(response, payload = {}) {
 function failResponse(response, error) {
   const payload = toErrorPayload(error)
   writeJson(response, payload.status, { ok: false, error: { code: payload.code, message: payload.message } })
-}
-
-/**
- * True only for an exactly spelled loopback hostname: `127.0.0.0/8`, `localhost`, or `::1`.
- *
- * A prefix test would accept attacker-controlled names such as `127.0.0.1.evil.example`, so the
- * dotted-quad form is matched as a whole address instead.
- */
-function isLoopbackHostname(hostname) {
-  if (typeof hostname !== 'string' || hostname === '') return false
-  if (hostname === 'localhost' || hostname === '::1' || hostname === '[::1]') return true
-  return /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){2}$/.test(hostname)
-}
-
-/** True when an `Origin`/`Referer` value is absent or names exactly this server (host and port). */
-function isSameAuthority(value, authority) {
-  if (typeof value !== 'string' || value.trim() === '') return true
-  try {
-    return new URL(value.trim()).host === authority
-  } catch {
-    return false
-  }
-}
-
-/**
- * Loopback trust fence: requests that did not arrive on a loopback socket with an exact loopback
- * `Host` authority, no cross-site fetch metadata, and an `Origin`/`Referer` that is absent or this
- * very server are refused before any handler runs. A page on another local port is refused too:
- * this API can start MCP processes. The desktop shell forwards the Client's requests without an Origin.
- */
-function isLoopbackRequest(request) {
-  const address = request.socket?.remoteAddress || ''
-  const loopbackAddress =
-    address === '::1' ||
-    address.startsWith('127.') ||
-    address.startsWith('::ffff:127.') ||
-    address === '::ffff:7f00:1'
-  if (!loopbackAddress) return false
-  const host = request.headers.host
-  if (typeof host !== 'string') return false
-  let parsed
-  try {
-    parsed = new URL(`http://${host}`)
-  } catch {
-    return false
-  }
-  if (!isLoopbackHostname(parsed.hostname)) return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false
-  // A page from another origin cannot read this JSON, but refusing its request also blocks
-  // legacy/form-based cross-site attempts that do not send fetch metadata.
-  if (!isSameAuthority(request.headers.origin, parsed.host)) return false
-  if (!isSameAuthority(request.headers.referer, parsed.host)) return false
-  // A form or text/plain POST skips the CORS preflight; the Client only ever sends JSON or no body.
-  const type = request.headers['content-type']
-  if (request.method === 'POST' && type !== undefined && !/^application\/json\s*(;|$)/i.test(type)) return false
-  return true
 }
 
 /** Read and parse a JSON request body, bounded by {@link MAX_BODY_BYTES}. */
@@ -576,7 +521,7 @@ export function apply(ctx) {
         path: `${PREFIX}${suffix}`,
         handler: async (request, response) => {
           try {
-            if (!isLoopbackRequest(request)) {
+            if (!isLoopbackRequest(request, { checkReferer: true })) {
               writeJson(response, 403, {
                 ok: false,
                 error: { code: 'forbidden', message: 'forbidden: loopback-only' },

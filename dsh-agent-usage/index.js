@@ -14,36 +14,11 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { Worker } from 'node:worker_threads';
+import { isLoopbackRequest } from './host/loopback.js';
+import { runScanInWorker } from './host/scan-in-worker.js';
 import { loadSnapshot } from './host/scanner.js';
 
 const SCAN_WORKER_URL = new URL('./host/scan-worker.js', import.meta.url);
-
-/**
- * Run one scan on a worker thread (see host/scan-worker.js for why it must leave the Host thread).
- * @param {{dataDir: string, config: Record<string, unknown>, onWorker: (worker: Worker|null) => void}} options
- * @returns {Promise<import('./host/scanner.js').Snapshot>}
- */
-function runScanInWorker({ dataDir, config, onWorker }) {
-  return new Promise((resolve, reject) => {
-    // Profile config is plain YAML data; a JSON round-trip drops anything a worker cannot clone.
-    const worker = new Worker(SCAN_WORKER_URL, { workerData: { dataDir, config: JSON.parse(JSON.stringify(config ?? {})) } });
-    onWorker(worker);
-    let settled = false;
-    const settle = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      onWorker(null);
-      fn(value);
-    };
-    worker.once('message', (message) => {
-      if (message?.ok) settle(resolve, message.snapshot);
-      else settle(reject, new Error(`scan worker failed: ${message?.error ?? 'unknown error'}`));
-    });
-    worker.once('error', (error) => settle(reject, error));
-    worker.once('exit', (code) => settle(reject, new Error(`scan worker exited with code ${code} before reporting`)));
-  });
-}
 
 /** Cordis plugin name. */
 export const name = 'agent-usage';
@@ -76,55 +51,6 @@ function writeJson(res, status, body) {
   }
 }
 
-/** True only for an exactly spelled loopback hostname; a prefix test would accept `127.0.0.1.evil.example`. */
-function isLoopbackHostname(hostname) {
-  if (typeof hostname !== 'string' || hostname === '') return false;
-  if (hostname === 'localhost' || hostname === '::1' || hostname === '[::1]') return true;
-  return /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){2}$/.test(hostname);
-}
-
-/** True when an `Origin` value is absent or names exactly this server (host and port). */
-function isSameAuthority(value, authority) {
-  if (typeof value !== 'string' || value.trim() === '') return true;
-  try {
-    return new URL(value.trim()).host === authority;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Loopback trust fence: the dashboard is a local-machine view, so only requests from this server's
- * own page, on a loopback socket with an exact loopback Host, are served. A page on another local
- * port is refused too. The desktop shell forwards the Client's requests without an Origin.
- * @param {import('node:http').IncomingMessage} request
- * @returns {boolean}
- */
-function isLoopbackRequest(request) {
-  const address = request.socket?.remoteAddress || '';
-  const loopbackAddress =
-    address === '::1' ||
-    address.startsWith('127.') ||
-    address.startsWith('::ffff:127.') ||
-    address === '::ffff:7f00:1';
-  if (!loopbackAddress) return false;
-  const host = request.headers.host;
-  if (typeof host !== 'string') return false;
-  let parsed;
-  try {
-    parsed = new URL(`http://${host}`);
-  } catch {
-    return false;
-  }
-  if (!isLoopbackHostname(parsed.hostname)) return false;
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false;
-  if (!isSameAuthority(request.headers.origin, parsed.host)) return false;
-  // A form or text/plain POST skips the CORS preflight; the Client only ever sends JSON or no body.
-  const type = request.headers['content-type'];
-  if (request.method === 'POST' && type !== undefined && !/^application\/json\s*(;|$)/i.test(type)) return false;
-  return true;
-}
-
 /**
  * @param {string} dataDir
  * @returns {string}
@@ -147,7 +73,7 @@ export function apply(ctx, config = {}) {
   let snapshotLoadAttempted = false;
   /** @type {Promise<{snapshot: import('./host/scanner.js').Snapshot}>|null} */
   let scanning = null;
-  /** @type {Worker|null} */
+  /** @type {import('node:worker_threads').Worker|null} */
   let activeWorker = null;
 
   const logger = typeof ctx.logger?.info === 'function' ? ctx.logger : null;
@@ -166,7 +92,7 @@ export function apply(ctx, config = {}) {
   function ensureScan() {
     if (scanning !== null) return scanning;
     scanning = (async () => {
-      const result = await runScanInWorker({ dataDir, config, onWorker: (worker) => { activeWorker = worker; } });
+      const result = await runScanInWorker(SCAN_WORKER_URL, { dataDir, config, onWorker: (worker) => { activeWorker = worker; } });
       snapshot = result;
       return { snapshot: result };
     })().finally(() => {

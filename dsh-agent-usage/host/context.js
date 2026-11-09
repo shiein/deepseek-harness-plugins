@@ -1,13 +1,14 @@
+// GENERATED from shared/host/context.js. Edit that file, then run: node scripts/sync-shared.mjs
 /**
- * Builds the ScanContext handed to every provider. Shared by the scanner and the self-test so
- * both see identical helpers.
+ * Builds the ScanContext handed to every scan provider. Shared by the scanner and the
+ * self-test so both see identical helpers.
  */
 
 import * as utils from './scan-utils.js';
 
 /**
  * @param {Record<string, unknown>} [config]
- * @returns {import('./scanner-types.js').EnvFace}
+ * @returns {Record<string, unknown>}
  */
 export function makeEnv(config = {}) {
   const roots = utils.platformRoots();
@@ -15,9 +16,9 @@ export function makeEnv(config = {}) {
 }
 
 /**
- * @param {{providerId: string, config?: Record<string, unknown>, cache: import('./scanner-types.js').CacheFace,
+ * @param {{providerId: string, config?: Record<string, unknown>, cache: Record<string, Function>,
  *          signal?: AbortSignal, warnings?: string[]}} options
- * @returns {import('./scanner-types.js').ScanContext}
+ * @returns {Record<string, any>} the ScanContext described in CONTRACT.md
  */
 export function makeScanContext(options) {
   const warnings = options.warnings || [];

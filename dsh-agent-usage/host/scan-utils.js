@@ -1,5 +1,6 @@
+// GENERATED from shared/host/scan-utils.js. Edit that file, then run: node scripts/sync-shared.mjs
 /**
- * Shared filesystem / parsing helpers for agent-usage providers.
+ * Shared filesystem / parsing helpers for scan providers.
  *
  * Pure Node.js builtins only: this file is loaded by the DSH Host (Node 24) from a profile
  * bundle, so it must not import npm packages and must not keep module-level side effects.

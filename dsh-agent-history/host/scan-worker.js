@@ -1,8 +1,9 @@
+// GENERATED from shared/host/scan-worker.js. Edit that file, then run: node scripts/sync-shared.mjs
 /**
- * Worker-thread entry for one history scan.
+ * Worker-thread entry for one scan.
  *
- * Several providers (Devin, Cursor, OpenCode, Zed, …) read SQLite stores through the synchronous
- * `node:sqlite` API, which blocks the thread for the whole query. The plugin's Host half shares its
+ * Several providers read multi-GB SQLite stores through the synchronous `node:sqlite` API (a full
+ * Devin pass measured 22 s of uninterrupted event-loop block). The plugin's Host half shares its
  * process with every other DSH plugin and the live agent sessions, so the scan runs here and only
  * the finished snapshot crosses back. One worker per scan; it exits when the scan settles.
  */

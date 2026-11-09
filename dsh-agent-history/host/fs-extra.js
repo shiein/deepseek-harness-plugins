@@ -1,3 +1,4 @@
+// GENERATED from shared/host/fs-extra.js. Edit that file, then run: node scripts/sync-shared.mjs
 /**
  * Small filesystem helpers shared by the scanner and cache (no npm dependencies).
  */

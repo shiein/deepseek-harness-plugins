@@ -1,5 +1,6 @@
+// GENERATED from shared/host/scan-worker.js. Edit that file, then run: node scripts/sync-shared.mjs
 /**
- * Worker-thread entry for one usage scan.
+ * Worker-thread entry for one scan.
  *
  * Several providers read multi-GB SQLite stores through the synchronous `node:sqlite` API (a full
  * Devin pass measured 22 s of uninterrupted event-loop block). The plugin's Host half shares its
