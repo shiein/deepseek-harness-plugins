@@ -20,7 +20,7 @@ after(() => rmSync(projectDir, { recursive: true, force: true }));
  * Fake Session: prompts queue up and run one turn at a time
  * (user/message → assistant/message → turn/end). `answerFor` decides each turn's reply.
  */
-function fakeController({ withRpcId = true, answerFor }) {
+function fakeController({ withRpcId = true, answerFor, endReason = { kind: 'completed' } }) {
   const records = [];
   const bus = new EventEmitter();
   const queue = [];
@@ -43,7 +43,7 @@ function fakeController({ withRpcId = true, answerFor }) {
       await tick();
       emit('assistant/message', { message: { role: 'assistant', content: [{ type: 'text', text: answerFor(text) }] } });
       await tick();
-      emit('turn/end', { reason: { kind: 'completed' } });
+      emit('turn/end', { reason: endReason });
     }
     busy = false;
   };
@@ -169,6 +169,51 @@ for (const withRpcId of [true, false]) {
     assert.equal(controller.prompts.length, 3);
   });
 }
+
+test('a failed turn is an error, not an answer built from its mid-work message', async () => {
+  const controller = fakeController({ answerFor: () => 'let me check the files first', endReason: { kind: 'error', error: { message: 'model overloaded' } } });
+  const result = await call(mountPlugin(controller), '/draft', draftBody('REQ-x anything'));
+  assert.equal(result.status, 502);
+  assert.match(result.body.error.message, /did not finish \(error: model overloaded\)/);
+});
+
+const graphJson = JSON.stringify({ business: 'checkout', nodes: [{ id: 'n1', name: 'Order', kind: 'process' }], edges: [] });
+for (const [label, wrap] of [
+  ['a stray unbalanced brace', (json) => `路由写法是 /api/{id 这样。\n${json}`],
+  ['prose in balanced braces', (json) => `{说明 ${json} 结束}`],
+]) {
+  test(`the graph is still found after ${label} in the model's output`, async () => {
+    const controller = fakeController({ answerFor: () => wrap(graphJson) });
+    const result = await call(mountPlugin(controller), '/analyze', { projectPath: projectDir, sessionId: 'session-shared', business: 'checkout' });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.graph.nodes[0].name, 'Order');
+  });
+}
+
+test('the loopback fence accepts only this server as the request source', async () => {
+  const routes = mountPlugin(fakeController({ answerFor: () => '' }));
+  const statusFor = async (headers, method = 'GET') => {
+    const request = new EventEmitter();
+    request.method = method;
+    request.socket = { remoteAddress: '127.0.0.1' };
+    request.headers = { host: '127.0.0.1:3080', ...headers };
+    request[Symbol.asyncIterator] = async function* chunks() {};
+    let status = 0;
+    const response = new EventEmitter();
+    response.writeHead = (code) => { status = code; return response; };
+    response.end = () => {};
+    await routes.get('/api/dsh-business-flow/ping')(request, response);
+    return status;
+  };
+  assert.equal(await statusFor({}), 200);
+  assert.equal(await statusFor({ origin: 'http://127.0.0.1:3080' }), 200);
+  assert.equal(await statusFor({ origin: 'http://127.0.0.1:5173' }), 403);
+  assert.equal(await statusFor({ referer: 'http://localhost:3080/page' }), 403);
+  assert.equal(await statusFor({ origin: 'null' }), 403);
+  assert.equal(await statusFor({ host: '127.0.0.1.evil.example' }), 403);
+  assert.equal(await statusFor({ 'content-type': 'text/plain' }, 'POST'), 403);
+  assert.equal(await statusFor({ 'content-type': 'application/json; charset=utf-8' }, 'POST'), 405);
+});
 
 test('a turn still running from an earlier prompt is skipped when ids are visible', async () => {
   const controller = fakeController({

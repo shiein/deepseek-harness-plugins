@@ -282,15 +282,23 @@ function readScalar(head, continuation) {
   return unquoteScalar(joined)
 }
 
-/** Strip matching surrounding quotes from a YAML scalar and unescape the basic sequences. */
+/** Double-quoted escapes `quoteScalar` can emit (it uses JSON.stringify). */
+const DOUBLE_QUOTED_ESCAPES = Object.freeze({
+  n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', '"': '"', '\\': '\\', '/': '/',
+})
+
+/**
+ * Strip matching surrounding quotes from a YAML scalar and unescape it. Double-quoted text is
+ * decoded in one left-to-right pass, so the `\n` inside an escaped `\\new` stays literal text.
+ * Escapes outside that table are kept as written.
+ */
 function unquoteScalar(value) {
   const trimmed = value.trim()
   if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
     return trimmed
       .slice(1, -1)
-      .replace(/\\n/g, '\n')
-      .replace(/\\"/g, '"')
-      .replace(/\\\\/g, '\\')
+      .replace(/\\(u[0-9a-fA-F]{4}|[ntrbf"\\/])/g, (_, escape) =>
+        escape.length === 5 ? String.fromCharCode(Number.parseInt(escape.slice(1), 16)) : DOUBLE_QUOTED_ESCAPES[escape])
   }
   if (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2) {
     return trimmed.slice(1, -1).replace(/''/g, "'")

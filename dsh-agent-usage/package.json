@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "description": "Local AI coding-agent token usage dashboard: scans Claude Code, Codex, Cursor, OpenCode, Trae, Qoder, Devin, Pi, DeepSeek Harness and more from local files, and aggregates usage by agent, model and date.",
   "icon": "icon.svg",
   "exports": {

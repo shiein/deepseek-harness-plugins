@@ -19,6 +19,12 @@
  * module load is a permanent, reportable status — never a crash: list/detail keep working with
  * `status.state === 'error'` and `warnings` explaining why nothing is mounted.
  *
+ * Workspace trust: a workspace store travels with its repository, so a stdio row in it is a command a
+ * cloned project could run. A row mounts only when `<dshHome>/agent-assets/mcp-trust.json` records the
+ * hash of its exact connection config. Rows created or edited through this API are trusted as saved;
+ * any other row reports `untrusted` until the user confirms it (`op: 'trust'`), and a changed row
+ * needs confirming again.
+ *
  * Live status is evidence-based, not cached: after a mount, the row counts tool schemas whose name
  * starts with `mcp__<serverName>__` (`ctx.tools.schemas()`). A mount whose connection has not settled
  * reports `connecting`; one that settled with zero tools keeps `connecting` for a short grace window
@@ -26,6 +32,7 @@
  * later successful sync flips the row to `connected` on the next read).
  */
 
+import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 import {
@@ -53,7 +60,7 @@ const STORE_VERSION = 1
 const TRANSPORTS = new Set(['stdio', 'streamable-http'])
 
 /** Supported store mutations. */
-const OPS = new Set(['create', 'update', 'delete', 'toggle'])
+const OPS = new Set(['create', 'update', 'delete', 'toggle', 'trust'])
 
 /** Prefix of every model-facing tool name registered by the MCP client. */
 const TOOL_PREFIX = 'mcp__'
@@ -337,6 +344,11 @@ function toClientConfig(stored) {
   }
 }
 
+/** Hash of what a row would run or connect to; toggling `enabled` does not change it. */
+function trustFingerprint(stored) {
+  return createHash('sha256').update(JSON.stringify(toClientConfig(stored))).digest('hex')
+}
+
 /**
  * Create the MCP manager.
  *
@@ -348,7 +360,7 @@ function toClientConfig(stored) {
  * @returns {{
  *   list: (input: { workspace?: string }) => Promise<{ servers: any[], external: any[], warnings: string[] }>,
  *   detail: (input: { scope: string, workspace?: string, serverName: string }) => Promise<{ server: any }>,
- *   apply: (input: { op: string, scope: string, workspace?: string, server?: any, enabled?: boolean }) => Promise<{ servers: any[] }>,
+ *   apply: (input: { op: string, scope: string, workspace?: string, server?: any, enabled?: boolean, fingerprint?: string }) => Promise<{ servers: any[] }>,
  *   attachAgent: (agent: any) => void,
  *   health: () => { moduleLoaded: boolean, moduleError: string|null, mounted: string[], skippedAgents: number },
  *   dispose: () => Promise<void>,
@@ -376,6 +388,8 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
   const agentMountedNames = new WeakMap()
   /** Agents seen without a usable cwd / matching workspace (health diagnostics only). */
   let skippedAgents = 0
+  /** Workspace rows left unmounted because the user has not confirmed them (health diagnostics only). */
+  let untrustedSkipped = 0
   let disposed = false
 
   /** Best-effort warning sink; the Host logger is optional. */
@@ -457,6 +471,47 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
     const text = `${JSON.stringify({ version: STORE_VERSION, servers }, null, 2)}\n`
     await writeTextAtomic(path, text, 0o600)
     return path
+  }
+
+  const trustStorePath = () => join(resolvedHomes.dshHome, 'agent-assets', 'mcp-trust.json')
+
+  /**
+   * Read the workspace trust records. Maps, not objects: `__proto__` is a legal server name.
+   * `failed` trusts nothing and, like a corrupt store, must never be written over.
+   * @returns {Promise<{ workspaces: Map<string, Map<string, string>>, warnings: string[], failed: boolean }>}
+   */
+  async function readTrust() {
+    const path = trustStorePath()
+    const unusable = (why) => ({
+      workspaces: new Map(),
+      warnings: [`MCP trust file ${displayPath(path)} ${why}; workspace servers are not mounted`],
+      failed: true,
+    })
+    let text
+    try {
+      text = await readTextIfExists(path)
+    } catch (error) {
+      return unusable(`could not be read: ${messageOf(error)}`)
+    }
+    if (text === undefined) return { workspaces: new Map(), warnings: [], failed: false }
+    let parsed
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      return unusable('is not valid JSON')
+    }
+    if (!isPlainObject(parsed) || !isPlainObject(parsed.workspaces)) return unusable('has an unexpected shape')
+    const workspaces = new Map()
+    for (const [root, rows] of Object.entries(parsed.workspaces)) {
+      if (isPlainObject(rows)) workspaces.set(root, new Map(Object.entries(rows).filter(([, hash]) => typeof hash === 'string')))
+    }
+    return { workspaces, warnings: [], failed: false }
+  }
+
+  /** Persist the trust records atomically with mode 0600. */
+  async function writeTrust(workspaces) {
+    const serialized = Object.fromEntries([...workspaces].map(([root, rows]) => [root, Object.fromEntries(rows)]))
+    await writeTextAtomic(trustStorePath(), `${JSON.stringify({ version: STORE_VERSION, workspaces: serialized }, null, 2)}\n`, 0o600)
   }
 
   /** Serialize store mutations (read-modify-write). */
@@ -697,9 +752,11 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
    * @param {any} stored stored row
    * @param {'user'|'workspace'} scope owning scope
    * @param {string[]} globalToolNames precomputed `ctx.tools.schemas()` snapshot for user rows
+   * @param {boolean} [trusted] whether a workspace row may mount
    */
-  function statusFor(stored, scope, globalToolNames) {
+  function statusFor(stored, scope, globalToolNames, trusted = true) {
     if (!stored.enabled) return { state: 'disabled', tools: 0, error: null }
+    if (scope === 'workspace' && !trusted) return { state: 'untrusted', tools: 0, error: null }
     if (clientModuleError !== null) return { state: 'error', tools: 0, error: clientModuleError }
     if (scope === 'workspace') return { state: 'session-scoped', tools: 0, error: null }
     const record = userMounts.get(stored.serverName)
@@ -716,24 +773,33 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
     }
   }
 
-  /** Public row: deliberately never contains command/url/env/headers values. */
-  function viewOf(stored, scope, globalToolNames) {
+  /** `{ trusted, fingerprint }` of a workspace row; user rows are the user's own and carry neither. */
+  function trustOf(stored, scope, trustRows) {
+    if (scope !== 'workspace') return {}
+    const fingerprint = trustFingerprint(stored)
+    return { trusted: trustRows?.get(stored.serverName) === fingerprint, fingerprint }
+  }
+
+  /** Public row: deliberately never contains env/header values; `summary` shows the command or URL. */
+  function viewOf(stored, scope, globalToolNames, trustRows) {
+    const trust = trustOf(stored, scope, trustRows)
     return {
       serverName: stored.serverName,
       scope,
       transport: stored.transport,
       summary: summarizeStored(stored),
       enabled: stored.enabled === true,
-      status: statusFor(stored, scope, globalToolNames),
+      status: statusFor(stored, scope, globalToolNames, trust.trusted),
+      ...trust,
       createdAt: stored.createdAt ?? null,
       updatedAt: stored.updatedAt ?? null,
     }
   }
 
   /** Views for one store snapshot. */
-  function viewsFor(scope, servers, globalToolNames) {
+  function viewsFor(scope, servers, globalToolNames, trustRows) {
     return servers
-      .map((stored) => viewOf(stored, scope, globalToolNames))
+      .map((stored) => viewOf(stored, scope, globalToolNames, trustRows))
       .sort((left, right) => left.serverName.localeCompare(right.serverName))
   }
 
@@ -893,13 +959,21 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
       mountedNames = new Set()
       agentMountedNames.set(agent, mountedNames)
     }
+    const trust = await readTrust()
+    for (const message of trust.warnings) warn(message)
     for (const root of roots) {
       if (disposed) return
       const store = await readStore('workspace', root)
+      const trustRows = trust.workspaces.get(pathKey(root))
       for (const stored of store.servers) {
         if (!stored.enabled) continue
         if (mountedNames.has(stored.serverName)) continue
         if (disposed) return
+        if (trustRows?.get(stored.serverName) !== trustFingerprint(stored)) {
+          untrustedSkipped += 1
+          warn(`workspace MCP server "${stored.serverName}" in ${displayPath(root)} is not trusted yet; not mounted`)
+          continue
+        }
         const record = mountServer(agentCtx, { scope: 'workspace', config: toClientConfig(stored) }, { agent, workspace: root })
         mountedNames.add(stored.serverName)
         agentMounts.push(record)
@@ -966,10 +1040,13 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
           ? { servers: [], warnings: [] }
           : await readStore('workspace', workspaceRoot)
       warnings.push(...workspaceStore.warnings)
+      const trust = await readTrust()
+      warnings.push(...trust.warnings)
+      const trustRows = workspaceRoot === null ? undefined : trust.workspaces.get(pathKey(workspaceRoot))
       const globalToolNames = toolNames(undefined)
       const servers = [
         ...viewsFor('user', user.servers, globalToolNames),
-        ...viewsFor('workspace', workspaceStore.servers, globalToolNames),
+        ...viewsFor('workspace', workspaceStore.servers, globalToolNames, trustRows),
       ]
       if (clientModuleError !== null) warnings.push(`MCP client module unavailable: ${clientModuleError}`)
       for (const record of userMounts.values()) {
@@ -992,11 +1069,16 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
     const stored = store.servers.find((row) => row.serverName === serverName)
     if (stored === undefined) fail('not_found', `MCP server not found: ${serverName}`, 404)
     const globalToolNames = toolNames(undefined)
+    const trustRows = resolved.scope === 'workspace'
+      ? (await readTrust()).workspaces.get(pathKey(resolved.workspaceRoot))
+      : undefined
+    const trust = trustOf(stored, resolved.scope, trustRows)
     return {
       server: {
         ...stored,
         summary: summarizeStored(stored),
-        status: statusFor(stored, resolved.scope, globalToolNames),
+        status: statusFor(stored, resolved.scope, globalToolNames, trust.trusted),
+        ...trust,
       },
     }
   }
@@ -1010,8 +1092,10 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
     const raw = input.server
     if (!isPlainObject(raw)) bad('missing required field: server')
     const serverName = assertServerName(raw.serverName)
+    if (op === 'trust' && resolved.scope !== 'workspace') bad('only workspace-scope servers need trust')
 
     let rowsForScope = []
+    let trustRowsForScope
     await withStoreLock(async () => {
       const store = await readStore(resolved.scope, resolved.workspaceRoot)
       if (store.failed) {
@@ -1020,6 +1104,10 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
           `MCP store ${displayPath(store.path)} is unreadable or corrupt; fix or remove it before editing (${store.warnings.join('; ')})`,
           409,
         )
+      }
+      const trust = resolved.scope === 'workspace' ? await readTrust() : null
+      if (trust?.failed && op !== 'toggle') {
+        fail('conflict', `${trust.warnings.join('; ')}; fix or remove the file before editing`, 409)
       }
       const servers = [...store.servers]
       const index = servers.findIndex((row) => row.serverName === serverName)
@@ -1047,17 +1135,38 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
           servers[index] = { ...servers[index], enabled, updatedAt: now }
           break
         }
+        case 'trust': {
+          if (index < 0) fail('not_found', `MCP server not found: ${serverName}`, 404)
+          // Trust exactly what the user was shown; the file may have changed since.
+          if (input.fingerprint !== trustFingerprint(servers[index])) {
+            fail('conflict', `MCP server "${serverName}" changed since it was shown; review it again`, 409)
+          }
+          break
+        }
         default:
           // OPS was validated above; unreachable.
           bad(`unknown mcp op: ${String(op)}`)
       }
-      await writeStore(resolved.scope, resolved.workspaceRoot, servers)
+      if (op !== 'trust') await writeStore(resolved.scope, resolved.workspaceRoot, servers)
       rowsForScope = servers
+      if (trust === null) return
+      const key = pathKey(resolved.workspaceRoot)
+      if (op !== 'toggle') {
+        // Toggling must not grant anything. Written after the store, so a crash leaves the row untrusted.
+        const rows = new Map(trust.workspaces.get(key) ?? [])
+        const saved = servers.find((row) => row.serverName === serverName)
+        if (saved === undefined) rows.delete(serverName)
+        else rows.set(serverName, trustFingerprint(saved))
+        if (rows.size > 0) trust.workspaces.set(key, rows)
+        else trust.workspaces.delete(key)
+        await writeTrust(trust.workspaces)
+      }
+      trustRowsForScope = trust.workspaces.get(key)
     })
 
     if (resolved.scope === 'user') await scheduleUserMounts({ retry: true })
     const globalToolNames = toolNames(undefined)
-    return { servers: viewsFor(resolved.scope, rowsForScope, globalToolNames) }
+    return { servers: viewsFor(resolved.scope, rowsForScope, globalToolNames, trustRowsForScope) }
   }
 
   /**
@@ -1098,9 +1207,10 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
         moduleError: clientModuleError,
         mounted,
         skippedAgents,
+        untrustedSkipped,
       }
     } catch {
-      return { moduleLoaded: false, moduleError: null, mounted: [], skippedAgents: 0 }
+      return { moduleLoaded: false, moduleError: null, mounted: [], skippedAgents: 0, untrustedSkipped: 0 }
     }
   }
 

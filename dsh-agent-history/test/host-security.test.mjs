@@ -1,0 +1,95 @@
+/**
+ * Resume launcher quoting and the loopback fence.
+ *
+ *   node --test test/
+ */
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, test } from 'node:test';
+
+import { apply } from '../index.js';
+import { copyableCommand, launchInTerminal } from '../host/launch.js';
+
+const root = mkdtempSync(join(tmpdir(), 'agent-history-security-'));
+after(() => rmSync(root, { recursive: true, force: true }));
+
+const posixShell = process.platform !== 'win32' && existsSync('/bin/zsh');
+
+test('a session id or folder name cannot run commands in the resume script', { skip: !posixShell }, async () => {
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'open'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(bin, 'open'), 0o755);
+  const marker = join(root, 'executed');
+  const payload = `$(touch ${marker})`;
+  const cwd = join(root, 'project');
+  mkdirSync(cwd);
+  const plan = {
+    kind: 'cli', command: '/usr/bin/true', args: ['--resume', `abc${payload}\`touch ${marker}\``], cwd,
+    display: `/usr/bin/true --resume abc${payload}\`touch ${marker}\``,
+  };
+  const dataDir = join(root, 'data');
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${bin}:${originalPath}`;
+  try {
+    assert.equal((await launchInTerminal(plan, { dataDir, config: {} })).ok, true);
+  } finally {
+    process.env.PATH = originalPath;
+  }
+  const launchDir = join(dataDir, 'launch');
+  const script = join(launchDir, readdirSync(launchDir).find((name) => name.startsWith('resume-')));
+  const output = execFileSync('/bin/zsh', [script], { encoding: 'utf8' });
+  assert.equal(existsSync(marker), false, 'the payload must stay literal text');
+  assert.ok(output.includes(payload), 'the command line is still shown');
+
+  const missing = { ...plan, cwd: join(root, `gone${payload}`) };
+  process.env.PATH = `${bin}:${originalPath}`;
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await launchInTerminal(missing, { dataDir, config: {} });
+  } finally {
+    process.env.PATH = originalPath;
+  }
+  const newest = readdirSync(launchDir).filter((name) => name.startsWith('resume-')).sort().pop();
+  try {
+    execFileSync('/bin/zsh', [join(launchDir, newest)], { encoding: 'utf8' });
+    assert.fail('a missing folder must exit non-zero');
+  } catch (error) {
+    assert.equal(error.status, 1);
+  }
+  assert.equal(existsSync(marker), false, 'the missing-folder message must not expand it either');
+});
+
+test('the copyable command quotes only what needs quoting', { skip: process.platform === 'win32' }, () => {
+  const plan = { kind: 'cli', command: 'codex', args: ['resume', 'abc$(id)', '--cd', '/a b'], cwd: '/tmp/x', display: 'x' };
+  assert.equal(copyableCommand(plan), "cd '/tmp/x' && codex resume 'abc$(id)' --cd '/a b'");
+});
+
+test('the loopback fence accepts only this server as the request source', async () => {
+  const routes = new Map();
+  apply({
+    webServer: { register: (route) => { routes.set(route.path, route.handler); return () => {}; } },
+    effect: (fn) => { fn(); },
+  }, { dataDir: join(root, 'fence') });
+  const statusFor = async (headers, method = 'GET') => {
+    const request = { method, socket: { remoteAddress: '127.0.0.1' }, headers: { host: '127.0.0.1:3080', ...headers } };
+    let status = 0;
+    const response = new EventEmitter();
+    response.writeHead = (code) => { status = code; };
+    response.end = () => {};
+    await routes.get('/api/dsh-agent-history/health')(request, response);
+    return status;
+  };
+  assert.equal(await statusFor({}), 200);
+  assert.equal(await statusFor({ origin: 'http://127.0.0.1:3080' }), 200);
+  assert.equal(await statusFor({ host: '127.0.0.1.evil.example' }), 403);
+  assert.equal(await statusFor({ origin: 'http://127.0.0.1:5173' }), 403);
+  assert.equal(await statusFor({ origin: 'null' }), 403);
+  assert.equal(await statusFor({ 'sec-fetch-site': 'cross-site' }), 403);
+  assert.equal(await statusFor({ 'content-type': 'text/plain' }, 'POST'), 403);
+  assert.equal(await statusFor({}, 'POST'), 405, 'a bodyless POST (the Client scan) passes the fence');
+});

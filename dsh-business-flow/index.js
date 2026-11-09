@@ -355,6 +355,15 @@ function hasRpcId(event) {
   return typeof rpcId === 'string' && rpcId !== '';
 }
 
+/** Reason of a `turn/end` event: `detail` for diagnostics, `failed` when the turn did not finish its work. */
+function describeTurnEnd(event) {
+  const reason = event.data?.reason ?? event.reason;
+  const kind = typeof reason?.kind === 'string' ? reason.kind : 'unknown';
+  if (kind !== 'error' && kind !== 'aborted') return { detail: kind, failed: false };
+  const failure = reason?.error ?? reason?.reason;
+  return { detail: `${kind}: ${failure?.message ?? failure?.kind ?? 'unknown'}`, failed: true };
+}
+
 /**
  * Run one turn of the configured agent in `cwd` and return the last assistant text.
  *
@@ -388,6 +397,7 @@ async function runSessionTurn(controller, sessionId, promptText, signal) {
   let answer = '';
   let turnEnded = false;
   let turnDetail = '';
+  let turnFailed = false;
   let sawMessage = false;
   const seenTypes = new Map();
   const followError = { value: undefined };
@@ -453,12 +463,7 @@ async function runSessionTurn(controller, sessionId, promptText, signal) {
             return;
           }
           turnEnded = true;
-          const reason = event.data?.reason ?? event.reason;
-          turnDetail = typeof reason?.kind === 'string' ? reason.kind : 'unknown';
-          if (reason?.kind === 'error' || reason?.kind === 'aborted') {
-            const failure = reason?.error ?? reason?.reason;
-            turnDetail += `: ${failure?.message ?? failure?.kind ?? 'unknown'}`;
-          }
+          ({ detail: turnDetail, failed: turnFailed } = describeTurnEnd(event));
         }
       };
       for await (const frame of follow) {
@@ -490,6 +495,10 @@ async function runSessionTurn(controller, sessionId, promptText, signal) {
               sawMessage = false;
               answer = '';
             }
+            continue;
+          }
+          if (mine && event?.type === 'turn/end') {
+            ({ detail: turnDetail, failed: turnFailed } = describeTurnEnd(event));
             continue;
           }
           if (!mine || event?.type !== 'assistant/message') continue;
@@ -533,6 +542,8 @@ async function runSessionTurn(controller, sessionId, promptText, signal) {
       502,
     );
   }
+  // The last message of a failed turn is mid-work text ("let me check…"), not the answer.
+  if (turnFailed) throw bizError(`agent turn did not finish (${turnDetail}) — retry`, 502);
   return { answer, sessionId };
 }
 
@@ -565,13 +576,23 @@ function extractJsonObjects(text) {
         }
       }
     }
-    if (end === -1) break;
-    try {
-      found.push(JSON.parse(text.slice(start, end + 1)));
-    } catch {
-      /* not JSON, keep scanning */
+    let parsed;
+    let isJson = false;
+    if (end !== -1) {
+      try {
+        parsed = JSON.parse(text.slice(start, end + 1));
+        isJson = true;
+      } catch {
+        /* prose in braces; the real object may sit inside it */
+      }
     }
-    from = end + 1;
+    if (isJson) {
+      found.push(parsed);
+      from = end + 1;
+    } else {
+      // A stray `{` in the model's prose must not hide the JSON after it.
+      from = start + 1;
+    }
   }
   return found;
 }
@@ -946,8 +967,9 @@ function handlePing(ctx) {
 
 // ----------------------------------------------------------------------------------------------
 // Loopback fence, mirrors the local plugin pattern: requests that did not arrive on a loopback
-// socket with an exact loopback `Host` authority, no cross-site fetch metadata, and no foreign
-// `Origin`/`Referer` are refused before any handler runs.
+// socket with an exact loopback `Host` authority, no cross-site fetch metadata, and an
+// `Origin`/`Referer` that is absent or this very server are refused before any handler runs.
+// The desktop shell forwards the Client's requests without an Origin.
 // ----------------------------------------------------------------------------------------------
 
 function isLoopbackHostname(hostname) {
@@ -956,12 +978,11 @@ function isLoopbackHostname(hostname) {
   return /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){2}$/.test(hostname);
 }
 
-function isLoopbackSource(value) {
-  if (value === undefined) return true;
+/** True when an `Origin`/`Referer` value is absent or names exactly this server (host and port). */
+function isSameAuthority(value, authority) {
   if (typeof value !== 'string' || value.trim() === '') return true;
-  if (value.trim().toLowerCase() === 'null') return false;
   try {
-    return isLoopbackHostname(new URL(value.trim()).hostname);
+    return new URL(value.trim()).host === authority;
   } catch {
     return false;
   }
@@ -977,16 +998,19 @@ function isLoopbackRequest(request) {
   if (!loopbackAddress) return false;
   const host = request.headers.host;
   if (typeof host !== 'string') return false;
-  let hostname = '';
+  let parsed;
   try {
-    hostname = new URL(`http://${host}`).hostname;
+    parsed = new URL(`http://${host}`);
   } catch {
     return false;
   }
-  if (!isLoopbackHostname(hostname)) return false;
+  if (!isLoopbackHostname(parsed.hostname)) return false;
   if (request.headers['sec-fetch-site'] === 'cross-site') return false;
-  if (!isLoopbackSource(request.headers.origin)) return false;
-  if (!isLoopbackSource(request.headers.referer)) return false;
+  if (!isSameAuthority(request.headers.origin, parsed.host)) return false;
+  if (!isSameAuthority(request.headers.referer, parsed.host)) return false;
+  // A form or text/plain POST skips the CORS preflight; the Client only ever sends JSON or no body.
+  const type = request.headers['content-type'];
+  if (request.method === 'POST' && type !== undefined && !/^application\/json\s*(;|$)/i.test(type)) return false;
   return true;
 }
 

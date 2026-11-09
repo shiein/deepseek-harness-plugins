@@ -126,6 +126,7 @@ test('public Vue open executes reviewed setup/styles only through owned Runner w
 
 test('public Vue default mock-only opens through owned channels while relaxed/invalid options still fail', options, async t => {
   const f = await setup(t)
+  f.ctx.on('approval/request', async () => 'allowed-once') // 夹具的 vite.config.mjs 需要批准。
   delete f.project.runtime.requirements
   await f.save()
   const defaultArgs = { projectId: openArgs.projectId, target: openArgs.target, scope: 'component' }
@@ -315,6 +316,7 @@ test('public Vue setup rejection or changed reviewed bytes never executes the bu
 
 test('an unproven configured Vue target fails its real deadline and cleans the owned service instead of becoming ready', options, async t => {
   const f = await setup(t)
+  f.ctx.on('approval/request', async () => 'allowed-once')
   f.project.targets = [{ id: 'asserted', selector: openArgs.target, scope: 'component', assertions: [{ kind: 'text-present', text: 'Required target proof' }] }]
   f.project.runtime.readiness = { targetDeadlineMs: 200 }
   await f.save()
@@ -330,6 +332,7 @@ test('an unproven configured Vue target fails its real deadline and cleans the o
 
 test('initial Vue scenario preserves props/data fingerprints and serves only declared HTTP fixtures', options, async t => {
   const f = await setup(t)
+  f.ctx.on('approval/request', async () => 'allowed-once')
   f.project.scenarios = { own: { props: { title: 'Initial scene' }, businessPaths: ['/api/**'], http: [
     { method: 'GET', path: '/api/greeting', response: { status: 200, body: { text: 'Fixture greeting' } } },
     { method: 'GET', path: '/api/file', response: { status: 200, headers: { 'Content-Type': 'application/json' }, bodyFile: 'reply.json' } },
@@ -383,6 +386,34 @@ test('initial Vue scenario preserves props/data fingerprints and serves only dec
   const changedEntry = await fetch(new URL('/@id/__x00__dsh-page-preview:entry', new URL(changed.preview.url))).then(response => response.text())
   assert.match(changedEntry, /Changed data under same scenario name/, 'Restarted preview applies the changed scenario data')
   assert.deepEqual(await fixtureFiles(f.appRoot), before)
+})
+
+test('a Vite config runs only after approval, and editing it asks again', options, async t => {
+  const f = await setup(t)
+  const marker = join(f.appRoot, 'config-ran.txt')
+  const source = await readFile(join(f.appRoot, 'vite.config.mjs'), 'utf8')
+  const withMarker = text => source.replace('return vue()',
+    `writeFileSync(${JSON.stringify(marker)}, ${JSON.stringify(text)}); return vue()`)
+  await f.put('vite.config.mjs', withMarker('first'))
+  await f.save()
+  let answer = 'rejected'
+  let questions = 0
+  f.ctx.on('approval/request', async () => { questions++; return answer })
+  const rejected = await f.invoke('open', openArgs)
+  assert.equal(rejected.status, 'needs_configuration')
+  await assert.rejects(access(marker), { code: 'ENOENT' })
+  answer = 'allowed-once'
+  const opened = await f.invoke('open', openArgs)
+  assert.equal(opened.status, 'ok')
+  assert.equal(await readFile(marker, 'utf8'), 'first')
+  assert.equal(questions, 2)
+  assert.equal((await f.invoke('stop', { previewId: opened.preview.previewId })).stopped[0].state, 'stopped')
+  await f.put('vite.config.mjs', withMarker('second'))
+  const reopened = await f.invoke('open', openArgs)
+  assert.equal(questions, 3, 'an edited config is a new execution item')
+  assert.equal(reopened.status, 'ok')
+  assert.equal(await readFile(marker, 'utf8'), 'second')
+  assert.equal((await f.invoke('stop', { previewId: reopened.preview.previewId })).stopped[0].state, 'stopped')
 })
 
 test('Vite config cannot publish a preview after changing previously approved setup bytes', options, async t => {
@@ -551,6 +582,7 @@ test('original Element Plus/Pinia initial scene bindings compile with explicit p
 
 test('owned Worker scripts and child HTML retain controlled responses without publishing arbitrary same-origin business paths', options, async t => {
   const f = await setup(t)
+  f.ctx.on('approval/request', async () => 'allowed-once')
   const network = await prepareVueNetworkFixture(f, f.project)
   try {
     await f.save()
@@ -602,6 +634,7 @@ test('with a sidebar follower, open returns once the sidebar loaded the document
   // 2026-11-03 实机：没有浏览器证据时 Agent 自己开 Chrome 截图验证约 60 秒。这里用真实 Chrome 扮演
   // DSH 侧边栏 Browser（Client auto-open 在预览可达时加载地址），open 应直接带回挂载证据与页面文本。
   const f = await setup(t)
+  f.ctx.on('approval/request', async () => 'allowed-once')
   const release = f.registry.trackFollower('vue-public-user')
   const chrome = await launchChrome(t)
   t.after(async () => { release(); await chrome.close() })
@@ -625,6 +658,7 @@ test('with a sidebar follower, open returns once the sidebar loaded the document
 
 test('without a sidebar follower, open does not wait for browser evidence', options, async t => {
   const f = await setup(t)
+  f.ctx.on('approval/request', async () => 'allowed-once')
   const started = Date.now()
   const opened = await f.invoke('open', openArgs)
   assert.equal(opened.status, 'ok')

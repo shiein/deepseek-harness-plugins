@@ -171,6 +171,13 @@ describe('SKILL.md frontmatter: multi-line scalars', () => {
     assert.equal(parseSkillFile('---\nname: c\ndescription: first\n  second\n---\n').data.description, 'first second')
   })
 
+  it('round-trips descriptions with backslashes and control characters', () => {
+    for (const description of ['path is C:\\new\\table', 'tab\there', 'quote " and \\" mix', 'a: b', 'bell\u0007 end', '\\u0041 stays']) {
+      const rendered = renderSkillFile({ data: { name: 'a', description }, body: 'b' })
+      assert.equal(parseSkillFile(rendered).data.description, description)
+    }
+  })
+
   it('keeps nested unknown keys intact and never leaves orphan continuation lines on save', () => {
     const parsed = parseSkillFile('---\nname: d\ndescription: >\n  old text\n  more\nmetadata:\n  owner: me\n---\nB')
     assert.deepEqual(parsed.extraLines, ['metadata:', '  owner: me'])

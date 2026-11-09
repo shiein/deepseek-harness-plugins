@@ -374,11 +374,12 @@ export function priceFor(model) {
   if (normalized === '') return null;
   const direct = PRICES[normalized];
   if (direct) return direct;
-  // Longest-prefix match handles dated/preview/fast suffixes the alias table missed.
+  // Longest-prefix match handles effort/preview/fast suffixes the alias table missed. The rest must
+  // be a named suffix (`-high`): `gpt-5.7` or `claude-opus-4-9` is another version, so it stays unpriced.
   let best = null;
   let bestLength = 0;
   for (const key of Object.keys(PRICES)) {
-    if (normalized.startsWith(key) && key.length > bestLength) {
+    if (normalized.startsWith(key) && key.length > bestLength && /^-[a-z]/.test(normalized.slice(key.length))) {
       best = PRICES[key];
       bestLength = key.length;
     }

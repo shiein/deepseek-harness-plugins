@@ -33,10 +33,7 @@ export interface ReadonlyBuildConfig {
   mockPlugin?: { mockPath: string } | 'unresolved'
   unresolved: string[]
 }
-export const VITE_CONFIG_NAMES = [
-  'vite.config.ts', 'vite.config.js', 'vite.config.mts',
-  'vite.config.mjs', 'vite.config.cts', 'vite.config.cjs',
-]
+export { VITE_CONFIG_NAMES } from '../../shared/config/fingerprint.ts'
 
 /** 单个配置文件的读取口径；框架差异全部收敛在这一个参数上。 */
 export type BuildConfigFlavor = 'vite' | 'cli'

@@ -93,9 +93,27 @@ function writeJson(res, status, body) {
   }
 }
 
+/** True only for an exactly spelled loopback hostname; a prefix test would accept `127.0.0.1.evil.example`. */
+function isLoopbackHostname(hostname) {
+  if (typeof hostname !== 'string' || hostname === '') return false;
+  if (hostname === 'localhost' || hostname === '::1' || hostname === '[::1]') return true;
+  return /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){2}$/.test(hostname);
+}
+
+/** True when an `Origin` value is absent or names exactly this server (host and port). */
+function isSameAuthority(value, authority) {
+  if (typeof value !== 'string' || value.trim() === '') return true;
+  try {
+    return new URL(value.trim()).host === authority;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Loopback trust fence: this is a local-machine history view, so only requests that arrived on a
- * loopback socket with a loopback Host header are served.
+ * Loopback trust fence: this is a local-machine history view, so only requests from this server's
+ * own page, on a loopback socket with an exact loopback Host, are served. A page on another local
+ * port is refused too. The desktop shell forwards the Client's requests without an Origin.
  * @param {import('node:http').IncomingMessage} request
  * @returns {boolean}
  */
@@ -109,14 +127,18 @@ function isLoopbackRequest(request) {
   if (!loopbackAddress) return false;
   const host = request.headers.host;
   if (typeof host !== 'string') return false;
-  let hostname = '';
+  let parsed;
   try {
-    hostname = new URL(`http://${host}`).hostname;
+    parsed = new URL(`http://${host}`);
   } catch {
     return false;
   }
-  if (!(hostname === 'localhost' || hostname === '::1' || hostname === '[::1]' || hostname.startsWith('127.'))) return false;
+  if (!isLoopbackHostname(parsed.hostname)) return false;
   if (request.headers['sec-fetch-site'] === 'cross-site') return false;
+  if (!isSameAuthority(request.headers.origin, parsed.host)) return false;
+  // A form or text/plain POST skips the CORS preflight; the Client only ever sends JSON or no body.
+  const type = request.headers['content-type'];
+  if (request.method === 'POST' && type !== undefined && !/^application\/json\s*(;|$)/i.test(type)) return false;
   return true;
 }
 

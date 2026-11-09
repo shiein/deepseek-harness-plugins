@@ -5,7 +5,9 @@ import { test } from 'node:test'
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { collectExecutionItems, fingerprintExecutionItems } from '../../src/shared/config/fingerprint.ts'
+import {
+  collectExecutionItems, executionComponentHashes, fingerprintExecutionItems, requiresExecutionApproval, runsProjectBuildConfig,
+} from '../../src/shared/config/fingerprint.ts'
 import type { ProjectConfig } from '../../src/shared/config/schema.ts'
 
 async function setup(t: { after(callback: () => Promise<void>): void }) {
@@ -21,6 +23,35 @@ async function setup(t: { after(callback: () => Promise<void>): void }) {
   const hash = async (value: ProjectConfig = project) => fingerprintExecutionItems(await collectExecutionItems(app, value))
   return { root, app, text, project, hash }
 }
+
+test('a project build configuration is part of the fingerprint and never executed', async t => {
+  const { app, project, hash } = await setup(t)
+  const before = await hash()
+  assert.equal((await collectExecutionItems(app, project)).bindings.buildConfig, undefined, 'absent keeps old fingerprints')
+  await writeFile(join(app, 'vite.config.ts'), "throw new Error('must never execute during fingerprinting')\n")
+  const withConfig = await hash()
+  assert.notEqual(withConfig, before)
+  const items = await collectExecutionItems(app, project)
+  assert.deepEqual(items.bindings.buildConfig, ['vite.config.ts'])
+  assert.ok(Object.hasOwn(executionComponentHashes(items), 'build-config:vite.config.ts'))
+  await writeFile(join(app, 'vite.config.ts'), 'export default { plugins: [] }\n')
+  assert.notEqual(await hash(), withConfig, 'an edited config needs approving again')
+  await writeFile(join(app, 'vue.config.js'), 'module.exports = {}\n')
+  assert.deepEqual((await collectExecutionItems(app, project)).bindings.buildConfig, ['vite.config.ts', 'vue.config.js'])
+})
+
+test('only the isolated path requires approval for a build configuration alone', async t => {
+  const { app } = await setup(t)
+  const project: ProjectConfig = { id: 'plain', root: 'app', runtime: {} }
+  const without = await collectExecutionItems(app, project)
+  assert.equal(runsProjectBuildConfig('isolated', without), false)
+  await writeFile(join(app, 'vite.config.js'), 'export default {}\n')
+  const items = await collectExecutionItems(app, project)
+  assert.equal(runsProjectBuildConfig('isolated', items), true)
+  for (const strategy of ['static', 'attach', 'project'] as const) assert.equal(runsProjectBuildConfig(strategy, items), false)
+  assert.equal(requiresExecutionApproval(project), false)
+  assert.equal(requiresExecutionApproval(project, undefined, runsProjectBuildConfig('isolated', items)), true)
+})
 
 test('execution items preserve explicit command/env and hash module bytes without executing them', async t => {
   const { app, text, project } = await setup(t)

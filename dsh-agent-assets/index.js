@@ -81,13 +81,11 @@ function isLoopbackHostname(hostname) {
   return /^127\.(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){2}$/.test(hostname)
 }
 
-/** True when an `Origin`/`Referer` value is absent or points at a loopback hostname. */
-function isLoopbackSource(value) {
-  if (value === undefined) return true
+/** True when an `Origin`/`Referer` value is absent or names exactly this server (host and port). */
+function isSameAuthority(value, authority) {
   if (typeof value !== 'string' || value.trim() === '') return true
-  if (value.trim().toLowerCase() === 'null') return false
   try {
-    return isLoopbackHostname(new URL(value.trim()).hostname)
+    return new URL(value.trim()).host === authority
   } catch {
     return false
   }
@@ -95,8 +93,9 @@ function isLoopbackSource(value) {
 
 /**
  * Loopback trust fence: requests that did not arrive on a loopback socket with an exact loopback
- * `Host` authority, no cross-site fetch metadata, and no foreign `Origin`/`Referer` are refused
- * before any handler runs.
+ * `Host` authority, no cross-site fetch metadata, and an `Origin`/`Referer` that is absent or this
+ * very server are refused before any handler runs. A page on another local port is refused too:
+ * this API can start MCP processes. The desktop shell forwards the Client's requests without an Origin.
  */
 function isLoopbackRequest(request) {
   const address = request.socket?.remoteAddress || ''
@@ -108,18 +107,21 @@ function isLoopbackRequest(request) {
   if (!loopbackAddress) return false
   const host = request.headers.host
   if (typeof host !== 'string') return false
-  let hostname = ''
+  let parsed
   try {
-    hostname = new URL(`http://${host}`).hostname
+    parsed = new URL(`http://${host}`)
   } catch {
     return false
   }
-  if (!isLoopbackHostname(hostname)) return false
+  if (!isLoopbackHostname(parsed.hostname)) return false
   if (request.headers['sec-fetch-site'] === 'cross-site') return false
   // A page from another origin cannot read this JSON, but refusing its request also blocks
   // legacy/form-based cross-site attempts that do not send fetch metadata.
-  if (!isLoopbackSource(request.headers.origin)) return false
-  if (!isLoopbackSource(request.headers.referer)) return false
+  if (!isSameAuthority(request.headers.origin, parsed.host)) return false
+  if (!isSameAuthority(request.headers.referer, parsed.host)) return false
+  // A form or text/plain POST skips the CORS preflight; the Client only ever sends JSON or no body.
+  const type = request.headers['content-type']
+  if (request.method === 'POST' && type !== undefined && !/^application\/json\s*(;|$)/i.test(type)) return false
   return true
 }
 
@@ -523,6 +525,14 @@ export function apply(ctx) {
           throw new AssetsError('bad_request', 'missing required field: enabled (boolean)', 400)
         }
         const result = await mcp.apply({ op, scope, workspace, server, enabled })
+        return result
+      }
+      if (op === 'trust') {
+        const server = body.server
+        if (server === null || typeof server !== 'object' || Array.isArray(server)) {
+          throw new AssetsError('bad_request', 'missing required field: server', 400)
+        }
+        const result = await mcp.apply({ op, scope, workspace, server, fingerprint: requireString(body, 'fingerprint') })
         return result
       }
       if (op === 'create' || op === 'update' || op === 'delete') {

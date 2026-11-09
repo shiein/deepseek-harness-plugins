@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "description": "Local AI coding-agent conversation history: scans the session stores of Claude Code, Codex, DeepSeek Harness, OpenCode, Pi, Grok Build, Devin, Antigravity and more, then browses every conversation by agent or by project folder on one multi-agent timeline, and resumes any conversation in its own agent.",
   "icon": "icon.svg",
   "exports": {

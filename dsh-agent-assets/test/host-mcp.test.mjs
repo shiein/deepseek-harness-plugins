@@ -609,6 +609,103 @@ test('workspace-scope rows use the workspace store and never touch global mounts
   assert.equal(detail.server.status.state, 'session-scoped')
 })
 
+/** Confirm every workspace row of `workspace`, as the panel's trust button does. */
+async function trustAll(mcp, workspace) {
+  const { servers } = await mcp.list({ workspace })
+  for (const server of servers.filter((row) => row.scope === 'workspace')) {
+    await mcp.apply({
+      op: 'trust', scope: 'workspace', workspace, server: { serverName: server.serverName }, fingerprint: server.fingerprint,
+    })
+  }
+}
+
+test('a workspace store that arrived with a repository does not run until the user trusts it', async () => {
+  const tmp = await makeTmp()
+  const workspace = join(tmp, 'cloned')
+  await mkdir(join(workspace, '.dsh', 'agent-assets'), { recursive: true })
+  const write = (row) => writeFile(workspaceStore(workspace), JSON.stringify({ version: 1, servers: [row] }))
+  await write(stdioServer('evil', { command: 'node', args: ['run.js'] }))
+  const { mcp, harness } = await setup({ tmp })
+  const mountsOf = (id) => harness.mounts.filter((mount) => mount.label === `agent:${id}`)
+
+  mcp.attachAgent(createAgent(harness, 'before', join(workspace, 'src')))
+  await flush(20)
+  assert.equal(mountsOf('before').length, 0, 'an untrusted row must not start')
+  assert.equal(mcp.health().untrustedSkipped, 1)
+  const [row] = (await mcp.list({ workspace })).servers.filter((server) => server.scope === 'workspace')
+  assert.equal(row.status.state, 'untrusted')
+  assert.equal(row.trusted, false)
+
+  // Toggling is not consent.
+  await mcp.apply({ op: 'toggle', scope: 'workspace', workspace, server: { serverName: 'evil' }, enabled: false })
+  await mcp.apply({ op: 'toggle', scope: 'workspace', workspace, server: { serverName: 'evil' }, enabled: true })
+  mcp.attachAgent(createAgent(harness, 'toggled', workspace))
+  await flush(20)
+  assert.equal(mountsOf('toggled').length, 0)
+
+  // Trust binds to what was shown: the row changed after the list above.
+  await write(stdioServer('evil', { command: 'node', args: ['other.js'] }))
+  await assert.rejects(
+    mcp.apply({ op: 'trust', scope: 'workspace', workspace, server: { serverName: 'evil' }, fingerprint: row.fingerprint }),
+    (error) => error.code === 'conflict',
+  )
+
+  await trustAll(mcp, workspace)
+  mcp.attachAgent(createAgent(harness, 'trusted', workspace))
+  await waitFor(() => mountsOf('trusted').length === 1, { label: 'trusted mount' })
+
+  // A later edit on disk needs confirming again.
+  await write(stdioServer('evil', { command: 'node', args: ['changed.js'] }))
+  mcp.attachAgent(createAgent(harness, 'edited', workspace))
+  await flush(20)
+  assert.equal(mountsOf('edited').length, 0)
+})
+
+test('rows saved through the panel are trusted as saved, and trust is per workspace', async () => {
+  const tmp = await makeTmp()
+  const first = join(tmp, 'first')
+  const second = join(tmp, 'second')
+  await mkdir(join(second, '.dsh', 'agent-assets'), { recursive: true })
+  await writeFile(workspaceStore(second), JSON.stringify({ version: 1, servers: [stdioServer('repo', { command: 'node', args: ['x.js'] })] }))
+  const { mcp, harness, homes } = await setup({ tmp })
+  const created = await mcp.apply({
+    op: 'create', scope: 'workspace', workspace: first, server: stdioServer('repo', { command: 'node', args: ['x.js'] }),
+  })
+  assert.equal(created.servers[0].trusted, true)
+  assert.equal(created.servers[0].status.state, 'session-scoped')
+  mcp.attachAgent(createAgent(harness, 'one', first))
+  await waitFor(() => harness.mounts.some((mount) => mount.label === 'agent:one'), { label: 'first workspace mount' })
+  mcp.attachAgent(createAgent(harness, 'two', second))
+  await flush(20)
+  assert.equal(harness.mounts.filter((mount) => mount.label === 'agent:two').length, 0)
+
+  await mcp.apply({ op: 'delete', scope: 'workspace', workspace: first, server: { serverName: 'repo' } })
+  const trustFile = JSON.parse(await readFile(join(homes.dshHome, 'agent-assets', 'mcp-trust.json'), 'utf8'))
+  assert.deepEqual(trustFile.workspaces, {}, 'deleting a row forgets its trust')
+})
+
+test('a corrupt trust file trusts nothing and is never written over', async () => {
+  const tmp = await makeTmp()
+  const homes = { dshHome: join(tmp, 'home', '.dsh'), agentsHome: join(tmp, 'home', '.agents') }
+  const workspace = join(tmp, 'ws')
+  await mkdir(join(workspace, '.dsh', 'agent-assets'), { recursive: true })
+  await mkdir(join(homes.dshHome, 'agent-assets'), { recursive: true })
+  await writeFile(workspaceStore(workspace), JSON.stringify({ version: 1, servers: [stdioServer('repo', { command: 'node', args: ['x.js'] })] }))
+  const trustPath = join(homes.dshHome, 'agent-assets', 'mcp-trust.json')
+  await writeFile(trustPath, '{broken')
+  const { mcp, harness } = await setup({ tmp, homes })
+  mcp.attachAgent(createAgent(harness, 'a', workspace))
+  await flush(20)
+  assert.equal(harness.mounts.filter((mount) => mount.label === 'agent:a').length, 0)
+  const listed = await mcp.list({ workspace })
+  assert.ok(listed.warnings.some((message) => /trust file/.test(message)))
+  await assert.rejects(
+    mcp.apply({ op: 'create', scope: 'workspace', workspace, server: stdioServer('other', { command: 'node' }) }),
+    (error) => error.code === 'conflict',
+  )
+  assert.equal(await readFile(trustPath, 'utf8'), '{broken')
+})
+
 test('attachAgent mounts enabled workspace rows only into Sessions whose cwd is inside that workspace', async () => {
   const tmp = await makeTmp()
   const workspace = join(tmp, 'ws')
@@ -624,6 +721,7 @@ test('attachAgent mounts enabled workspace rows only into Sessions whose cwd is 
     }),
   )
   const { mcp, harness } = await setup({ tmp })
+  await trustAll(mcp, workspace)
 
   const inside = createAgent(harness, 'a1', join(workspace, 'src'))
   const outside = createAgent(harness, 'a2', join(tmp, 'elsewhere'))
@@ -669,6 +767,7 @@ test('the user store is never mistaken for a workspace store of the home directo
   const workspace = join(home, 'project')
   await mkdir(join(workspace, '.dsh', 'agent-assets'), { recursive: true })
   await writeFile(workspaceStore(workspace), JSON.stringify({ version: 1, servers: [stdioServer('ws-server')] }))
+  await trustAll(mcp, workspace)
   mcp.attachAgent(createAgent(harness, 'ws-agent', workspace))
   await waitFor(() => harness.mounts.some((mount) => mount.label === 'agent:ws-agent'), { label: 'workspace mount below home' })
   const wsMounts = harness.mounts.filter((mount) => mount.label === 'agent:ws-agent')

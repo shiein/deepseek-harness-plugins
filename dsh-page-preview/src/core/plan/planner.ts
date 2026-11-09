@@ -13,6 +13,7 @@ import {
   collectExecutionItems,
   executionFingerprint,
   requiresExecutionApproval,
+  runsProjectBuildConfig,
 } from '../../shared/config/fingerprint.ts'
 import { resolveProjectPath } from '../../shared/config/paths.ts'
 import type { AppProfile } from '../../shared/profile.ts'
@@ -135,8 +136,9 @@ export async function buildPlan(input: PlanInput): Promise<PlanOutcome> {
   }
   // 自动生成的 setup 与配置执行项同审：其摘要并入执行指纹（§0.3 第 10 条）。
   const generated = plan.generatedSetup?.hash
-  if (requiresExecutionApproval(config.project, generated)) {
-    const fingerprint = executionFingerprint(await collectExecutionItems(appRoot, config.project), generated)
+  const items = await collectExecutionItems(appRoot, config.project)
+  if (requiresExecutionApproval(config.project, generated, runsProjectBuildConfig(plan.strategy, items))) {
+    const fingerprint = executionFingerprint(items, generated)
     if (!await input.approvals?.isApproved(input.workspaceRoot, config.project.id, fingerprint)) return missing(DiagnosticCode.configChangedNeedsApproval, 'Execution items require a user-approved fingerprint before starting', plan)
     return { kind: 'plan', plan, executionFingerprint: fingerprint,
       ...(outcome.diagnostics?.length ? { diagnostics: outcome.diagnostics } : {}) }

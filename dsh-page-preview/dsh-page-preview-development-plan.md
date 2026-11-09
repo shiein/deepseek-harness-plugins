@@ -789,7 +789,7 @@ capability 表中的“运行错误采集”“目标就绪断言”“浏览器
 - scenarios.<name>.businessPaths 为可选字符串数组，声明该场景的同源业务 HTTP 路径范围，语法为完整路径、整段 *、末尾 **。当前 Vue HTTP fixtures 要求非空显式范围；不从 API 名或同源推断，不改变默认 requirements。文件 response 的字节进入场景指纹，场景选择/HTTP/初始化能力仍由适配器预检，不因 schema 通过就宣称已执行或可重置。
 - scenarios.<name>.envelope（R6-1）为可选场景级响应包装模板 `{ template }`：模板是 JSON 值，其中恰好一处字符串等于 `__DSH_PREVIEW_DATA__`（`ENVELOPE_DATA_TOKEN`，与 `FIXTURE_PLACEHOLDER` 不同），代表该场景所有 http fixture 的 `response.body` 应被展开的位置；零处或多处、非 JSON 值、超深/超大模板均为 `config_invalid`。声明后 fixture 的 `response.body` 只写 data；`bodyFile`、204/205/304 与单条 `envelope: false` 的 fixture 原样跳过展开。envelope 是纯数据变换，不执行项目代码、不属于执行项；未命中请求行为不变。
 - 项目配置描述代码和路径，不保存生产凭据。导出配置不会自动修改业务源码或启动脚本。
-- **执行项指纹：**对每个项目的 `command`、`env`、`setup`、handler 路径（以及其文件内容哈希）计算指纹，并在插件数据目录记录已获批准的指纹。仓库配置被拉取或修改后指纹变化时，返回 `config_changed_needs_approval` 并展示差异，不静默执行新命令。这一条补充 13.1 的“超范围执行才请求确认”。
+- **执行项指纹：**对每个项目的 `command`、`env`、`setup`、handler 路径（以及其文件内容哈希）和应用根下的构建配置 `vite.config.*`、`vue.config.*`（会作为 Node 代码加载；isolated 路径下即使没有其他执行项也需批准，2026-11-09）计算指纹，并在插件数据目录记录已获批准的指纹。仓库配置被拉取或修改后指纹变化时，返回 `config_changed_needs_approval` 并展示差异，不静默执行新命令。这一条补充 13.1 的“超范围执行才请求确认”。
 
 2026-10-31 执行项收集实现：只读命令/显式 env 和已核对范围的 setup/handler 原始字节，记录内容 SHA-256；不导入模块、不读取 `.env*`。指纹同时绑定声明路径、规范文件位置、各场景 handler 归属及命令实际 cwd，避免交换 handler 或改变链接目标后仍因文件集合相同而复用批准。内部 ExecutionItems 为 version 1；JSON 项目协议版本不变，尚无批准记录需要迁移。收集与哈希已回归，批准存储/用户确认入口及执行前校验尚未实现，本轮不写批准记录。
 

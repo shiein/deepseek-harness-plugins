@@ -1,8 +1,9 @@
 /** Vue 构建入口/别名的静态读取（方案 §6.5、§6.9）；机制在 adapters/shared/readonly-config.ts，这里只定宿主口径。 */
 import type { ReadonlyBuildConfig } from '../shared/readonly-config.ts'
 import { readBuildConfig, VITE_CONFIG_NAMES } from '../shared/readonly-config.ts'
+import { CLI_CONFIG_NAMES } from '../../shared/config/fingerprint.ts'
 
-export const CLI_CONFIG_NAMES = ['vue.config.js', 'vue.config.cjs', 'vue.config.mjs', 'vue.config.ts']
+export { CLI_CONFIG_NAMES }
 
 export type { ConfigAlias, ReadonlyBuildConfig } from '../shared/readonly-config.ts'
 export { unwrap, property, VITE_CONFIG_NAMES } from '../shared/readonly-config.ts'

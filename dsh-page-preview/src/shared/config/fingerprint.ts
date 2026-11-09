@@ -6,10 +6,18 @@
 
 import { createHash } from 'node:crypto'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, join } from 'node:path'
 import { resolveProjectPath } from './paths.ts'
 import type { ProjectConfig } from './schema.ts'
+import type { Strategy } from '../contracts.ts'
 import { fingerprintJson } from '../fingerprint.ts'
+
+/** 项目构建器会作为 Node 代码加载的配置文件名（应用根下）；adapters 的只读解析共用同一份清单。 */
+export const VITE_CONFIG_NAMES = [
+  'vite.config.ts', 'vite.config.js', 'vite.config.mts',
+  'vite.config.mjs', 'vite.config.cts', 'vite.config.cjs',
+]
+export const CLI_CONFIG_NAMES = ['vue.config.js', 'vue.config.cjs', 'vue.config.mjs', 'vue.config.ts']
 
 export interface ExecutionItems {
   version: 2
@@ -23,6 +31,8 @@ export interface ExecutionItems {
     cwd?: string
     setup?: { path: string; resolved: string }
     handlers: Record<string, { path: string; resolved: string }>
+    /** 应用根下实际存在的构建配置文件名；无配置时省略，既有指纹不变。 */
+    buildConfig?: string[]
   }
 }
 
@@ -55,6 +65,21 @@ export async function collectExecutionItems(appRoot: string, project: ProjectCon
     if (scenario.handlers !== undefined) handlers.push([name, await module(scenario.handlers)])
   }
   items.bindings.handlers = Object.fromEntries(handlers)
+  // 构建配置在 Runner 中作为 Node 代码执行（方案 §13），改动后必须重新批准；只哈希字节，不加载。
+  const buildConfig: string[] = []
+  for (const name of [...VITE_CONFIG_NAMES, ...CLI_CONFIG_NAMES]) {
+    const file = join(root, name)
+    let bytes: Buffer
+    try {
+      bytes = await readFile(file)
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) continue
+      throw error
+    }
+    items.files[file] = createHash('sha256').update(bytes).digest('hex')
+    buildConfig.push(name)
+  }
+  if (buildConfig.length) items.bindings.buildConfig = buildConfig
   return items
 }
 
@@ -67,11 +92,18 @@ export function executionFingerprint(items: ExecutionItems, generatedSetupHash?:
   return generatedSetupHash === undefined ? base : fingerprintJson({ items: base, generatedSetup: generatedSetupHash })
 }
 
-/** 配置执行项或自动生成的 setup 存在时，运行前需要执行批准。 */
-export function requiresExecutionApproval(project: ProjectConfig, generatedSetupHash?: string): boolean {
+/** 隔离路径由 Runner 启动项目构建器并加载其配置；static/attach 不加载，project 已由 command 触发批准。 */
+export function runsProjectBuildConfig(strategy: Strategy, items: ExecutionItems): boolean {
+  return strategy === 'isolated' && items.bindings.buildConfig !== undefined
+}
+
+/** 配置执行项、自动生成的 setup 或会被加载的构建配置存在时，运行前需要执行批准。 */
+export function requiresExecutionApproval(
+  project: ProjectConfig, generatedSetupHash?: string, buildConfigRuns = false,
+): boolean {
   const runtime = project.runtime
   return Boolean(runtime.command || runtime.env !== undefined || runtime.setup || generatedSetupHash !== undefined
-    || Object.values(project.scenarios ?? {}).some(value => value.handlers))
+    || buildConfigRuns || Object.values(project.scenarios ?? {}).some(value => value.handlers))
 }
 
 /** 差异只包含组件标签和哈希，环境值、命令参数及模块原文不进入提示/日志。 */
@@ -85,6 +117,10 @@ export function executionComponentHashes(items: ExecutionItems, generatedSetupHa
     fingerprintJson({ binding: items.bindings.setup, content: items.files[items.bindings.setup.resolved] })])
   for (const [name, binding] of Object.entries(items.bindings.handlers))
     hashes.push(['handler:' + name, fingerprintJson({ binding, content: items.files[binding.resolved] })])
+  for (const name of items.bindings.buildConfig ?? []) {
+    const content = items.files[join(items.bindings.appRoot, name)]
+    hashes.push(['build-config:' + name, fingerprintJson({ name, content })])
+  }
   if (generatedSetupHash !== undefined) hashes.push(['generated-setup', generatedSetupHash])
   return Object.fromEntries(hashes)
 }

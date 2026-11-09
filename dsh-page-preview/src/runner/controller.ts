@@ -4,7 +4,9 @@ import { realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ConfigLoadError } from '../shared/config/loader.ts'
 import type { EffectiveProjectConfig } from '../shared/config/loader.ts'
-import { collectExecutionItems, executionFingerprint, requiresExecutionApproval } from '../shared/config/fingerprint.ts'
+import {
+  collectExecutionItems, executionFingerprint, requiresExecutionApproval, runsProjectBuildConfig,
+} from '../shared/config/fingerprint.ts'
 import { loadWorkspaceProjects } from '../shared/config/projects.ts'
 import { ProjectReadError } from '../shared/profile.ts'
 import { resolveProjectPath } from '../shared/config/paths.ts'
@@ -78,7 +80,7 @@ export class RunnerController {
         const { config, profile } = selected
         startProject = config.project
         const runtime = config.project.runtime
-        await this.verifyApproval(config, message.approval, message.plan.generatedSetup?.hash)
+        await this.verifyApproval(config, message.plan, message.approval)
         if (fingerprintJson(config.project) !== message.plan.fingerprints.config) throw problem(DiagnosticCode.configInvalid, 'config', 'Configuration changed; create a new plan before starting')
         const adapter = getAdapter(message.plan.adapter.id)
         const processKind = message.plan.strategy === 'attach' ? 'attach' : message.plan.strategy === 'project' ? 'managed' : 'in-runner'
@@ -169,11 +171,13 @@ export class RunnerController {
    * Runner 只核对它与当前执行项指纹一致（文件/配置此刻未变），不读取任何持久记录。
    */
   private async verifyApproval(
-    config: EffectiveProjectConfig, approval?: { fingerprint: string }, generatedSetupHash?: string,
+    config: EffectiveProjectConfig, plan: PreviewPlan, approval?: { fingerprint: string },
   ): Promise<void> {
-    if (!requiresExecutionApproval(config.project, generatedSetupHash)) return
+    const generatedSetupHash = plan.generatedSetup?.hash
     const appRoot = await resolveProjectPath(this.workspaceRoot, config.project.root)
-    const fingerprint = executionFingerprint(await collectExecutionItems(appRoot, config.project), generatedSetupHash)
+    const items = await collectExecutionItems(appRoot, config.project)
+    if (!requiresExecutionApproval(config.project, generatedSetupHash, runsProjectBuildConfig(plan.strategy, items))) return
+    const fingerprint = executionFingerprint(items, generatedSetupHash)
     if (approval?.fingerprint !== fingerprint) {
       throw problem(DiagnosticCode.configChangedNeedsApproval, 'config',
         'Execution items have no matching user-approved fingerprint')
@@ -184,7 +188,7 @@ export class RunnerController {
   ): Promise<void> {
     const selected = (await loadWorkspaceProjects(this.workspaceRoot, configFile, { dataDir: this.dataDir })).find(value => value.config.project.id === plan.projectId)
     if (!selected) throw problem(DiagnosticCode.configInvalid, 'config', 'Configured project disappeared before execution')
-    await this.verifyApproval(selected.config, approval, plan.generatedSetup?.hash)
+    await this.verifyApproval(selected.config, plan, approval)
     if (fingerprintJson(selected.config.project) !== plan.fingerprints.config) throw problem(DiagnosticCode.configInvalid, 'config', 'Configuration changed before execution; create a fresh plan')
   }
   /** 无法归属到单个会话的命令失败的脱敏来源：全部存活会话密钥并集，加 start 目标项目的 env 值。 */

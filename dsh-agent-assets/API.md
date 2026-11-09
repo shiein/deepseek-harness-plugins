@@ -247,7 +247,8 @@ are string→string maps.
 
 `status.state` is one of `connected` (user-scope mounts report live tool count), `connecting`,
 `disabled`, `error`, `session-scoped` (workspace-scope servers mount inside each matching Session, so
-they have no process-wide status). `env`/`headers` values are never included in list responses.
+they have no process-wide status), `untrusted` (a workspace-scope row the user has not confirmed; it is
+not mounted). Workspace rows also carry `trusted` and `fingerprint`. `env`/`headers` values are never included in list responses.
 `external` lists MCP client rows already declared by installed bundles (read-only, for honesty —
 `configurable: false`).
 
@@ -259,8 +260,13 @@ Missing → 404.
 
 ### POST /mcp
 
-Body: `{ "op": "create" | "update" | "delete" | "toggle", "scope": "user" | "workspace",
-"workspace": "/abs", "server": McpStored, "enabled": true | false }`
+Body: `{ "op": "create" | "update" | "delete" | "toggle" | "trust", "scope": "user" | "workspace",
+"workspace": "/abs", "server": McpStored, "enabled": true | false, "fingerprint": "…" }`
+
+- A workspace store travels with its repository, so a workspace row mounts only when
+  `<dshHome>/agent-assets/mcp-trust.json` records the hash of its connection config. `create` and
+  `update` trust the row as saved; `toggle` grants nothing. `trust` confirms an existing row and needs
+  the `fingerprint` from the list or detail response; a row that changed since returns 409 `conflict`.
 
 - `create`/`update`/`delete`/`toggle` mutate the scope store and immediately remount user-scope
   servers; workspace-scope changes apply to new Sessions (existing Sessions keep their mount until

@@ -126,6 +126,9 @@ window.__ModuleLoader__.load({
       'mcp.status.disabled': '已禁用',
       'mcp.status.error': '错误',
       'mcp.status.sessionScoped': '会话级',
+      'mcp.status.untrusted': '待信任',
+      'mcp.trust.note': '这条配置不是在此面板中创建的，确认命令和参数可信后，新会话才会启动它。',
+      'mcp.trust.action': '信任此配置',
       'mcp.status.unknown': '未知',
       'mcp.status.tools': '{label} · {count} 个工具',
       'mcp.external.note': '另有 {count} 个由已安装 Bundle 提供的 MCP 配置（只读）',
@@ -261,6 +264,7 @@ window.__ModuleLoader__.load({
       'toast.mcp.updated': 'MCP 服务「{name}」已保存',
       'toast.mcp.deleted': 'MCP 服务「{name}」已删除',
       'toast.mcp.enabled': '已启用「{name}」',
+      'toast.mcp.trusted': '已信任「{name}」，新会话会启动它',
       'toast.mcp.disabled': '已禁用「{name}」',
       'toast.failed': '操作失败',
 
@@ -357,6 +361,9 @@ window.__ModuleLoader__.load({
       'mcp.status.disabled': 'Disabled',
       'mcp.status.error': 'Error',
       'mcp.status.sessionScoped': 'Session-scoped',
+      'mcp.status.untrusted': 'Needs trust',
+      'mcp.trust.note': 'This entry was not created in this panel. New sessions start it only after you confirm its command and arguments are safe.',
+      'mcp.trust.action': 'Trust this entry',
       'mcp.status.unknown': 'Unknown',
       'mcp.status.tools': '{label} · {count} tools',
       'mcp.external.note': '{count} more MCP config(s) are provided by installed bundles (read-only)',
@@ -492,6 +499,7 @@ window.__ModuleLoader__.load({
       'toast.mcp.updated': 'MCP server "{name}" saved',
       'toast.mcp.deleted': 'MCP server "{name}" deleted',
       'toast.mcp.enabled': '"{name}" enabled',
+      'toast.mcp.trusted': '"{name}" trusted; new sessions will start it',
       'toast.mcp.disabled': '"{name}" disabled',
       'toast.failed': 'Operation failed',
 
@@ -875,7 +883,9 @@ window.__ModuleLoader__.load({
                 ? 'mcp.status.error'
                 : state === 'session-scoped'
                   ? 'mcp.status.sessionScoped'
-                  : 'mcp.status.unknown',
+                  : state === 'untrusted'
+                    ? 'mcp.status.untrusted'
+                    : 'mcp.status.unknown',
       );
       if (state === 'connected') return t('mcp.status.tools', { label, count: Number(status?.tools) || 0 });
       return label;
@@ -883,7 +893,7 @@ window.__ModuleLoader__.load({
 
     function mcpStatusTone(state) {
       if (state === 'connected') return 'ok';
-      if (state === 'connecting' || state === 'session-scoped') return 'warn';
+      if (state === 'connecting' || state === 'session-scoped' || state === 'untrusted') return 'warn';
       if (state === 'error') return 'error';
       return 'muted';
     }
@@ -1885,7 +1895,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function DetailDialog({ t, locale, dialog, onClose, onRetry, onEdit, onDelete, onToggle, isToggling }) {
+    function DetailDialog({ t, locale, dialog, onClose, onRetry, onEdit, onDelete, onToggle, isToggling, onTrust }) {
       const [showSecrets, setShowSecrets] = useState(false);
       const tab = dialog.tab;
       const target = dialog.target || {};
@@ -2031,6 +2041,19 @@ window.__ModuleLoader__.load({
               mcpStatusLabel(t, status),
             ),
           ),
+          server.trusted === false
+            ? h(
+                'div',
+                { className: 'aa-note aa-note-warn' },
+                h(IconAlert, { size: 12 }),
+                h('span', null, t('mcp.trust.note')),
+                h(
+                  'button',
+                  { type: 'button', className: 'aa-btn aa-btn-sm', onClick: () => onTrust(server) },
+                  t('mcp.trust.action'),
+                ),
+              )
+            : null,
           h(
             MetaGrid,
             null,
@@ -3349,6 +3372,31 @@ window.__ModuleLoader__.load({
         [loadTab, pushToast, t],
       );
 
+      const trustMcp = useCallback(
+        async (server) => {
+          try {
+            await requestJson('/mcp', {
+              method: 'POST',
+              body: withWorkspace(
+                {
+                  op: 'trust',
+                  scope: server.scope,
+                  server: { serverName: server.serverName },
+                  fingerprint: server.fingerprint,
+                },
+                workspaceRef.current,
+              ),
+            });
+            pushToast({ kind: 'success', message: t('toast.mcp.trusted', { name: server.serverName }) });
+            setDialog(null);
+            loadTab('mcp', workspaceRef.current);
+          } catch (error) {
+            pushToast({ kind: 'error', message: t('toast.failed'), detail: describeApiError(t, errorInfo(error)) });
+          }
+        },
+        [loadTab, pushToast, t],
+      );
+
       const handleConfirmDelete = useCallback(async () => {
         const pending = confirm;
         if (!pending) return;
@@ -3925,6 +3973,7 @@ window.__ModuleLoader__.load({
               onDelete: (target) => setConfirm({ tab: dialog.tab, target }),
               onToggle: toggleMcp,
               isToggling: Boolean(toggling[`${toggleServer.scope}:${toggleServer.serverName}`]),
+              onTrust: trustMcp,
             }),
           );
         }

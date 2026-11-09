@@ -28,7 +28,7 @@
 
 ## 安全与数据边界
 
-- **会执行代码的配置项要先经用户审批**：项目命令、环境变量、setup、handlers、自动生成的 setup 都计入执行指纹，变化后需要重新审批。
+- **会执行代码的配置项要先经用户审批**：项目命令、环境变量、setup、handlers、自动生成的 setup、应用根下的 `vite.config.*` / `vue.config.*` 都计入执行指纹，变化后需要重新审批。构建配置 import 的其他文件不在指纹内。
 - **默认只用 Mock**：没有命中 fixture 的业务请求返回 `unmatched_request`（404），不会转发到真实后端；`status` 会给出按 method、origin、path 聚合的未命中列表和 fixture 草稿，填入真实数据后即可使用。
 - **不改目标项目**：不修改业务源码、`package.json`、锁文件和构建配置，也不代为安装依赖；`.env*` 不读不写。
 - 项目自带的 Mock（vite-plugin-mock、mockjs、msw）只做只读识别，不执行。

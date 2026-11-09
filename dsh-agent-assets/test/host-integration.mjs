@@ -314,7 +314,7 @@ await test('a spoofed loopback-looking Host is refused', async () => {
   assert.equal(plain.status, 200, 'an exact loopback Host still passes')
 })
 
-await test('foreign Origin or Referer is refused, loopback source passes', async () => {
+await test('foreign Origin or Referer is refused, only this server passes', async () => {
   const foreignOrigin = await callRoute({ path: '/health', headers: { origin: 'https://evil.example' } })
   assert.equal(foreignOrigin.status, 403)
   const foreignReferer = await callRoute({ path: '/health', headers: { referer: 'https://evil.example/page' } })
@@ -323,8 +323,22 @@ await test('foreign Origin or Referer is refused, loopback source passes', async
   assert.equal(opaqueOrigin.status, 403)
   const sameOrigin = await callRoute({ path: '/health', headers: { origin: 'http://127.0.0.1:49536' } })
   assert.equal(sameOrigin.status, 200)
-  const localhostOrigin = await callRoute({ path: '/health', headers: { origin: 'http://localhost:49536' } })
-  assert.equal(localhostOrigin.status, 200)
+  const otherPort = await callRoute({ path: '/health', headers: { origin: 'http://127.0.0.1:5173' } })
+  assert.equal(otherPort.status, 403, 'a page on another local port is not this server')
+  const otherPortReferer = await callRoute({ path: '/health', headers: { referer: 'http://127.0.0.1:5173/x' } })
+  assert.equal(otherPortReferer.status, 403)
+  const otherName = await callRoute({ path: '/health', headers: { origin: 'http://localhost:49536' } })
+  assert.equal(otherName.status, 403, 'localhost and 127.0.0.1 are different origins')
+  const sameName = await callRoute({
+    path: '/health',
+    headers: { host: 'localhost:49536', origin: 'http://localhost:49536' },
+  })
+  assert.equal(sameName.status, 200)
+})
+
+await test('a POST that skips the CORS preflight is refused', async () => {
+  const plain = await callRoute({ path: '/mcp', method: 'POST', body: {}, headers: { 'content-type': 'text/plain' } })
+  assert.equal(plain.status, 403)
 })
 
 await test('GET /health reports identity and homes', async () => {

@@ -27,7 +27,9 @@ import type { ScenarioUpdate } from '../shared/scenario-update.ts'
 import { DiagnosticCode, RunnerSessionError } from '../shared/errors.ts'
 import { loadWorkspaceProjects } from '../shared/config/projects.ts'
 import { resolveProjectPath } from '../shared/config/paths.ts'
-import { collectExecutionItems, executionFingerprint, requiresExecutionApproval } from '../shared/config/fingerprint.ts'
+import {
+  collectExecutionItems, executionFingerprint, requiresExecutionApproval, runsProjectBuildConfig,
+} from '../shared/config/fingerprint.ts'
 import { fingerprintJson } from '../shared/fingerprint.ts'
 import { inspectScenarioFixtures } from '../scenario/preflight.ts'
 
@@ -54,10 +56,11 @@ export async function prepareScenarioUpdate(input: ScenarioReloadInput): Promise
   if (!selected) throw problem(DiagnosticCode.configInvalid, 'Configured project disappeared before scenario update')
   const { config } = selected
   const appRoot = await resolveProjectPath(input.workspaceRoot, config.project.root)
-  // 执行项不变：与 start 同一指纹算法；handlers/setup/command/env/generatedSetup 任一变化即拒绝。
-  if (requiresExecutionApproval(config.project, input.plan.generatedSetup?.hash)) {
-    const fingerprint = executionFingerprint(
-      await collectExecutionItems(appRoot, config.project), input.plan.generatedSetup?.hash)
+  // 执行项不变：与 start 同一指纹算法；handlers/setup/command/env/构建配置/generatedSetup 任一变化即拒绝。
+  const items = await collectExecutionItems(appRoot, config.project)
+  const generatedHash = input.plan.generatedSetup?.hash
+  if (requiresExecutionApproval(config.project, generatedHash, runsProjectBuildConfig(input.plan.strategy, items))) {
+    const fingerprint = executionFingerprint(items, generatedHash)
     if (input.approval?.fingerprint !== fingerprint) {
       throw problem(DiagnosticCode.configChangedNeedsApproval,
         'Execution items changed since approval; open a new preview and ask the user to approve again')
