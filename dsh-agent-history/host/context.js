@@ -21,11 +21,20 @@ export function makeEnv(config = {}) {
  */
 export function makeScanContext(options) {
   const warnings = options.warnings || [];
+  /** Distinct failed queries: a store whose format changed must not look like an empty one. */
+  const queryFailures = [];
+  const querySqlite = (db, sql, params) => utils.querySqlite(db, sql, params, (error) => {
+    const message = `SQLite query failed: ${error instanceof Error ? error.message : String(error)}`;
+    if (queryFailures.includes(message)) return;
+    queryFailures.push(message);
+    warnings.push(message);
+  });
   return {
     providerId: options.providerId,
     signal: options.signal || new AbortController().signal,
     env: makeEnv(options.config),
-    utils,
+    utils: { ...utils, querySqlite },
+    queryFailures,
     cache: options.cache,
     warn(message) {
       if (typeof message === 'string' && message.trim() !== '') warnings.push(message.trim());

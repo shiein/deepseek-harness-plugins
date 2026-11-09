@@ -108,6 +108,7 @@ export async function runScan(options) {
     let sources = [];
     let errorMessage;
     let status = 'ok';
+    let queryFailures = [];
 
     if (provider.error || typeof provider.scan !== 'function') {
       status = 'broken';
@@ -126,6 +127,7 @@ export async function runScan(options) {
             peek: (filePath) => cache.peek(providerId, filePath),
           },
         });
+        queryFailures = context.queryFailures;
         const result = await provider.scan(context);
         providerCells = Array.isArray(result?.cells) ? result.cells : [];
         sources = Array.isArray(result?.sources) ? result.sources.filter(Boolean) : [];
@@ -162,6 +164,10 @@ export async function runScan(options) {
     }
 
     const exists = sources.some((source) => source.exists);
+    if (status === 'ok' && merged.length === 0 && queryFailures.length > 0) {
+      status = 'error';
+      errorMessage = queryFailures[0];
+    }
     if (status === 'ok') {
       if (merged.length > 0) status = 'ok';
       else if (exists) status = 'empty';

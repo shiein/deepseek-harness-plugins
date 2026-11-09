@@ -349,13 +349,15 @@ export async function openSqliteDatabase(path, options = {}) {
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {string} sql
  * @param {unknown[]} [params]
+ * @param {(error: unknown) => void} [onError] told about a failed query, which reads as no rows
  * @returns {Record<string, unknown>[]}
  */
-export function querySqlite(db, sql, params = []) {
+export function querySqlite(db, sql, params = [], onError) {
   try {
     const statement = db.prepare(sql);
     return statement.all(...params);
-  } catch {
+  } catch (error) {
+    onError?.(error);
     return [];
   }
 }

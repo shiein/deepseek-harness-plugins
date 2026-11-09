@@ -144,6 +144,10 @@ export async function runScan(options) {
         if (providerSessions.length === 0) {
           const installed = sources.some((source) => source.exists);
           status = installed ? 'empty' : 'not-installed';
+          if (context.queryFailures.length > 0) {
+            status = 'error';
+            errorMessage = context.queryFailures[0];
+          }
         }
       } catch (error) {
         status = 'error';
@@ -236,7 +240,9 @@ export async function readSessionViaProvider(dataDir, config, session, signal) {
   }
   const context = makeScanContext({ providerId: session.agentId, config, cache: nullCache(), signal, warnings: [] });
   const result = await provider.readMessages(context, session);
-  return { supported: true, messages: Array.isArray(result?.messages) ? result.messages : [] };
+  const messages = Array.isArray(result?.messages) ? result.messages : [];
+  if (messages.length === 0 && context.queryFailures.length > 0) throw new Error(context.queryFailures[0]);
+  return { supported: true, messages };
 }
 
 /** Cache face for read-only contexts (providers may check but never rely on it there). */
