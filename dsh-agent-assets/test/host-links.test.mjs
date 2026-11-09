@@ -61,6 +61,16 @@ test('updating a linked SKILL.md keeps the link', { skip: process.platform === '
   assert.ok(root)
 })
 
+test('a skill with a multi-line description can be updated without resending it', async () => {
+  const { workspace, homes } = await workspaceFixture()
+  const dir = join(homes.dshHome, 'skills', 'block')
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'SKILL.md'), '---\nname: block\ndescription: |\n  first line\n  second line\n---\nold body\n')
+  const { skill } = await createSkills({ homes }).update({ scope: 'user', workspace, name: 'block', body: 'new body' })
+  assert.equal(skill.description, 'first line second line')
+  assert.match(await readFile(join(dir, 'SKILL.md'), 'utf8'), /new body/)
+})
+
 test('an existing file keeps its mode; an explicit mode still wins', { skip: process.platform === 'win32' }, async () => {
   const { root } = await workspaceFixture()
   const file = join(root, 'f.md')

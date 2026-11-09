@@ -12,6 +12,21 @@ const session = { id: 's1', updatedAt: 1 };
 const messages = (count, text = 'hello') => Array.from({ length: count }, (_, index) => ({ role: 'user', ts: index + 1, text: `${text} ${index}` }));
 const readerOf = (list) => new TranscriptReader({ read: async () => ({ supported: true, messages: list }) });
 
+test('a session still being written re-reads when its source changes, and only then', async () => {
+  let reads = 0;
+  let version = 'v1';
+  const reader = new TranscriptReader({
+    read: async () => { reads += 1; return { supported: true, messages: messages(reads) }; },
+    version: async () => version,
+  });
+  const signal = new AbortController().signal;
+  assert.equal((await reader.get(session, signal)).messages.length, 1);
+  assert.equal((await reader.get(session, signal)).messages.length, 1, 'unchanged source stays cached');
+  version = 'v2';
+  assert.equal((await reader.get(session, signal)).messages.length, 2);
+  assert.equal(reads, 2);
+});
+
 test('a short session is not marked truncated', async () => {
   const result = await readerOf(messages(10)).getForTimeline(session, new AbortController().signal);
   assert.equal(result.truncated, false);

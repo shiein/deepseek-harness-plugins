@@ -433,3 +433,27 @@ test('reading the project leaves the event loop free, and table evidence still r
   assert.ok(turnsAtPrompt > 0, 'other work ran while the project was read');
   assert.deepEqual(result.body.graph.nodes[0].tables.map((table) => table.foundIn), ['orders.sql', null]);
 });
+
+test('edges never point at nodes dropped by the 40-node limit', async () => {
+  const nodes = Array.from({ length: 45 }, (_, index) => ({ id: `n${index}`, name: `Node ${index}`, kind: 'process' }));
+  const edges = [{ from: 'n0', to: 'n1' }, { from: 'n0', to: 'n44' }, { from: 'n44', to: 'n1' }];
+  const controller = fakeController({ answerFor: () => JSON.stringify({ business: 'b', nodes, edges }) });
+  const result = await call(mountPlugin(controller), '/analyze', analyzeBody());
+  assert.equal(result.body.graph.nodes.length, 40);
+  assert.deepEqual(result.body.graph.edges.map((edge) => [edge.from, edge.to]), [['n0', 'n1']]);
+});
+
+test('a table is "not checked" rather than "not found" when the read limit cut the search short', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'business-flow-limit-'));
+  cleanupDirs.push(dir);
+  const nodes = Array.from({ length: 7 }, (_, group) => {
+    const files = Array.from({ length: 12 }, (_, index) => `g${group}-${index}.js`);
+    for (const file of files) writeFileSync(join(dir, file), 'export const x = 1;\n');
+    return { id: `n${group}`, name: `N${group}`, kind: 'data', files, tables: [] };
+  });
+  nodes[0].tables = [{ name: 'ghosts', access: 'read' }];
+  const controller = fakeController({ answerFor: () => JSON.stringify({ business: 'b', nodes, edges: [] }) });
+  const result = await call(mountPlugin(controller), '/analyze', { projectPath: dir, business: 'b' });
+  assert.equal(result.body.graph.nodes[0].tables[0].foundIn, null);
+  assert.equal(result.body.graph.nodes[0].tables[0].unchecked, true);
+});

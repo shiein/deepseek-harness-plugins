@@ -26,6 +26,11 @@ export class TranscriptReader {
    */
   constructor(options) {
     this.read = options.read;
+    /**
+     * Current version of a session's source. The snapshot's `updatedAt` only changes on a scan,
+     * so without this a session that is still being written would show its old transcript.
+     */
+    this.version = options.version;
     /** @type {Map<string, {key: string, supported: boolean, messages: Array<import('./types.js').TranscriptMessage>}>} */
     this.cache = new Map();
     /** Timeline reads keep only the readable slice of each session. @type {Map<string, {key: string, messages: any[]}>} */
@@ -34,9 +39,14 @@ export class TranscriptReader {
     this.timelineCacheChars = 0;
   }
 
+  /** @param {import('./types.js').SessionSummary} session */
+  async keyOf(session) {
+    return `${session.updatedAt}:${this.version === undefined ? '' : await this.version(session)}`;
+  }
+
   /** @param {import('./types.js').SessionSummary} session @param {AbortSignal} signal */
   async get(session, signal) {
-    const key = `${session.updatedAt}`;
+    const key = await this.keyOf(session);
     const cached = this.cache.get(session.id);
     if (cached && cached.key === key) {
       // Refresh recency without re-reading the transcript.
@@ -66,7 +76,7 @@ export class TranscriptReader {
    * @returns {Promise<{messages: Array<import('./types.js').TranscriptMessage>, truncated: boolean, error?: string}>}
    */
   async getForTimeline(session, signal, maxMessages = 300) {
-    const key = `${session.updatedAt}:${maxMessages}`;
+    const key = `${await this.keyOf(session)}:${maxMessages}`;
     const cached = this.timelineCache.get(session.id);
     if (cached && cached.key === key) {
       this.timelineCache.delete(session.id);
@@ -96,13 +106,6 @@ export class TranscriptReader {
     this.timelineCacheChars -= this.timelineCache.get(sessionId)?.chars || 0;
     this.cache.delete(sessionId);
     this.timelineCache.delete(sessionId);
-  }
-
-  clear() {
-    this.cache.clear();
-    this.timelineCache.clear();
-    this.cacheChars = 0;
-    this.timelineCacheChars = 0;
   }
 }
 

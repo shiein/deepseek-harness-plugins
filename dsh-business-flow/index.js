@@ -21,7 +21,7 @@ export const inject = ['webServer'];
 
 const PREFIX = '/api/dsh-business-flow';
 const MAX_BODY_BYTES = 512 * 1024;
-/** Whole saved history (up to HISTORY_LIMIT graphs) is posted at once. */
+/** Older clients post their whole saved history at once. */
 const MAX_HISTORY_BODY_BYTES = 8 * 1024 * 1024;
 const ANALYSIS_TIMEOUT_MS = 8 * 60 * 1000;
 /** Live analysis agents kept for follow-up drafts; each holds memory until disposed. */
@@ -74,6 +74,16 @@ function migrateLegacyHistory() {
 }
 
 /** Saved analyses, kept in the DSH home so a new GUI port keeps them. */
+/** Records the current code cannot read; kept on disk so a later write does not destroy them. */
+function unreadableHistoryEntries() {
+  try {
+    const parsed = JSON.parse(readFileSync(HISTORY_FILE, 'utf8'));
+    return Array.isArray(parsed) ? parsed.filter((entry) => !isHistoryEntry(entry)) : [];
+  } catch {
+    return [];
+  }
+}
+
 function readHistoryFile() {
   migrateLegacyHistory();
   let text;
@@ -91,24 +101,21 @@ function readHistoryFile() {
     throw bizError(`history file is not valid JSON, fix or move it first: ${HISTORY_FILE}`, 500);
   }
   if (!Array.isArray(parsed)) throw bizError(`history file is not a list: ${HISTORY_FILE}`, 500);
-  return parsed.filter((entry) => (
-    entry && typeof entry.id === 'string'
-    && typeof entry.projectPath === 'string'
-    && entry.graph && Array.isArray(entry.graph.nodes)
-  ));
+  return parsed.filter(isHistoryEntry);
 }
 
 /** History is unbounded by design (the user decides what to delete); newest first on disk. */
-function writeHistoryFile(entries) {
+function writeHistoryFile(entries, { keepUnreadable = true } = {}) {
   const sorted = [...entries].sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
+  const unreadable = keepUnreadable ? unreadableHistoryEntries() : [];
   try {
     mkdirSync(dirname(HISTORY_FILE), { recursive: true });
     const temporary = `${HISTORY_FILE}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify(sorted), 'utf8');
+    writeFileSync(temporary, JSON.stringify([...sorted, ...unreadable]), 'utf8');
     renameSync(temporary, HISTORY_FILE);
     return sorted;
-  } catch {
-    return undefined;
+  } catch (error) {
+    throw bizError(`cannot write the history file: ${error?.message ?? String(error)}`, 500);
   }
 }
 
@@ -824,6 +831,8 @@ function identifierMatcher(name) {
 async function attachTableEvidence(graph, rootPath) {
   const absoluteRoot = resolve(rootPath);
   const cache = new Map();
+  /** Files skipped because of the read limit: "not found" would claim more than was checked. */
+  const overLimit = new Set();
   let reads = 0;
   const textOf = async (rel) => {
     if (cache.has(rel)) return cache.get(rel);
@@ -833,6 +842,8 @@ async function attachTableEvidence(graph, rootPath) {
     if (inside && reads < TABLE_EVIDENCE_FILE_LIMIT) {
       reads += 1;
       text = await safeRead(full, TABLE_EVIDENCE_FILE_BYTES);
+    } else if (inside) {
+      overLimit.add(rel);
     }
     cache.set(rel, text);
     return text;
@@ -850,6 +861,7 @@ async function attachTableEvidence(graph, rootPath) {
           break;
         }
       }
+      if (table.foundIn === null && order.some((rel) => overLimit.has(rel))) table.unchecked = true;
       // Cached files never reach the event loop on their own; let other requests run between tables.
       await yieldToEventLoop();
     }
@@ -889,11 +901,13 @@ function normalizeGraph(value, rootPath) {
     });
   }
   if (nodes.length === 0) throw bizError('model returned an empty graph', 502);
+  const keptNodes = nodes.slice(0, 40);
+  const keptIds = new Set(keptNodes.map((node) => node.id));
   return {
     business: typeof value.business === 'string' && value.business !== '' ? value.business : '',
     rootPath,
-    nodes: nodes.slice(0, 40),
-    edges: edges.slice(0, 80),
+    nodes: keptNodes,
+    edges: edges.filter((edge) => keptIds.has(edge.from) && keptIds.has(edge.to)).slice(0, 80),
   };
 }
 
@@ -1068,9 +1082,7 @@ function handleHistoryMerge(body) {
     const existing = byId.get(entry.id);
     if (existing === undefined || (Number(entry.at) || 0) >= (Number(existing.at) || 0)) byId.set(entry.id, entry);
   }
-  const stored = writeHistoryFile([...byId.values()]);
-  if (stored === undefined) throw bizError('cannot write the history file', 500);
-  return { entries: stored };
+  return { entries: writeHistoryFile([...byId.values()]) };
 }
 
 /** Insert or replace one entry; `replaceSameRun` also drops older records of the same project + business. */
@@ -1079,9 +1091,7 @@ function handleHistoryUpsert(body) {
   if (!isHistoryEntry(entry)) throw bizError('history upsert requires a valid entry');
   const sameRun = (other) => other.projectPath === entry.projectPath && (other.business ?? '') === (entry.business ?? '');
   const rest = readHistoryFile().filter((other) => other.id !== entry.id && !(body.replaceSameRun === true && sameRun(other)));
-  const stored = writeHistoryFile([{ ...entry, at: Number(entry.at) || Date.now() }, ...rest]);
-  if (stored === undefined) throw bizError('cannot write the history file', 500);
-  return { entries: stored };
+  return { entries: writeHistoryFile([{ ...entry, at: Number(entry.at) || Date.now() }, ...rest]) };
 }
 
 /** Delete by ids, by project folder, or everything (`all: true`). */
@@ -1093,9 +1103,7 @@ function handleHistoryDelete(body) {
   }
   const kept = body.all === true ? [] : readHistoryFile().filter((entry) => !(
     (ids !== null && ids.has(entry.id)) || (project !== null && entry.projectPath === project)));
-  const stored = writeHistoryFile(kept);
-  if (stored === undefined) throw bizError('cannot write the history file', 500);
-  return { entries: stored };
+  return { entries: writeHistoryFile(kept, { keepUnreadable: body.all !== true }) };
 }
 
 function handlePing(ctx) {

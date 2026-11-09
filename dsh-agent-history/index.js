@@ -17,6 +17,7 @@
  * sidebar entry, the grouped conversation browser and the launch buttons.
  */
 
+import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -223,6 +224,14 @@ export function apply(ctx, config = {}) {
 
   const reader = new TranscriptReader({
     read: (session, signal) => readSessionViaProvider(dataDir, config, session, signal),
+    version: async (session) => {
+      try {
+        const info = await stat(session.sourcePath);
+        return `${info.size}:${info.mtimeMs}`;
+      } catch {
+        return ''; // sourcePath is display text for some agents; the snapshot's updatedAt still applies
+      }
+    },
   });
 
   /** Load the last persisted snapshot once (never scans). */
@@ -241,7 +250,6 @@ export function apply(ctx, config = {}) {
     scanning = (async () => {
       const result = await runScanInWorker({ dataDir, config, onWorker: (worker) => { activeWorker = worker; } });
       snapshot = result;
-      reader.clear();
       return { snapshot: result };
     })().finally(() => {
       scanning = null;

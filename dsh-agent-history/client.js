@@ -1019,7 +1019,40 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'ah-loading' }, h(Spinner), h('span', null, t('state.loading')));
       }
       if (error) return h('div', { className: 'ah-empty-inline is-error' }, error);
-      if (events.length === 0) return h('div', { className: 'ah-empty-inline' }, filtered ? t('timeline.noMatch') : t('timeline.empty'));
+      // Shown with an empty list too: "no messages" alone would hide that every session failed to read.
+      const notices = [
+        sessionsTotal > sessionsIncluded
+          ? h('div', { className: 'ah-timeline-scope' }, t('timeline.scope', { included: sessionsIncluded, total: sessionsTotal }))
+          : null,
+        failed.length > 0
+          ? h(
+              'div',
+              { className: 'ah-timeline-scope', title: failed.map((item) => `${item.title || item.id}: ${item.error}`).join('\n') },
+              t('timeline.failed', {
+                count: failed.length,
+                detail: failed.slice(0, 2).map((item) => `${item.title || item.id}（${item.error}）`).join('；'),
+              }),
+            )
+          : null,
+        truncated.length > 0
+          ? h(
+              'div',
+              { className: 'ah-timeline-scope', title: truncated.map((item) => item.title || item.id).join('\n') },
+              t('timeline.truncated', {
+                count: truncated.length,
+                detail: truncated.slice(0, 2).map((item) => item.title || item.id).join('；'),
+              }),
+            )
+          : null,
+      ];
+      if (events.length === 0) {
+        return h(
+          'div',
+          { className: 'ah-timeline ah-timeline-messages' },
+          ...notices,
+          h('div', { className: 'ah-empty-inline' }, filtered ? t('timeline.noMatch') : t('timeline.empty')),
+        );
+      }
       let lastDay = '';
       const rows = [];
       for (const event of events) {
@@ -1053,29 +1086,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'ah-timeline ah-timeline-messages' },
-        sessionsTotal > sessionsIncluded
-          ? h('div', { className: 'ah-timeline-scope' }, t('timeline.scope', { included: sessionsIncluded, total: sessionsTotal }))
-          : null,
-        failed.length > 0
-          ? h(
-              'div',
-              { className: 'ah-timeline-scope', title: failed.map((item) => `${item.title || item.id}: ${item.error}`).join('\n') },
-              t('timeline.failed', {
-                count: failed.length,
-                detail: failed.slice(0, 2).map((item) => `${item.title || item.id}（${item.error}）`).join('；'),
-              }),
-            )
-          : null,
-        truncated.length > 0
-          ? h(
-              'div',
-              { className: 'ah-timeline-scope', title: truncated.map((item) => item.title || item.id).join('\n') },
-              t('timeline.truncated', {
-                count: truncated.length,
-                detail: truncated.slice(0, 2).map((item) => item.title || item.id).join('；'),
-              }),
-            )
-          : null,
+        ...notices,
         rows,
         h(
           'div',

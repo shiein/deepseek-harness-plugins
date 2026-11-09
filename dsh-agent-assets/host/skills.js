@@ -384,7 +384,7 @@ export function createSkills(options = {}) {
           : parseSkillFile(raw)
       const description =
         input.description === undefined
-          ? assertDescription(typeof parsed.data.description === 'string' ? parsed.data.description : '')
+          ? assertDescription(flattenDescription(parsed.data.description))
           : assertDescription(input.description)
       const existingWhenToUse =
         typeof parsed.data.whenToUse === 'string' && parsed.data.whenToUse.trim() !== ''
@@ -586,6 +586,11 @@ function rejectBundledMutation(scope, operation) {
   if (scope === 'bundled') {
     fail('bad_request', `cannot ${operation} bundled skills: the scope is read-only`, 400)
   }
+}
+
+/** One line from a stored description: YAML block scalars may span several, which is valid on disk. */
+function flattenDescription(value) {
+  return typeof value === 'string' ? value.replace(/\s*[\r\n]+\s*/g, ' ').trim() : ''
 }
 
 /** Validate a skill description (non-empty, single line, bounded). */

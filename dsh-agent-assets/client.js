@@ -2309,7 +2309,9 @@ window.__ModuleLoader__.load({
       const initial = dialog.initial || null;
       const [scope, setScope] = useState(mode === 'create' ? (workspace ? 'workspace' : 'user') : target?.scope || 'workspace');
       const [name, setName] = useState(mode === 'create' ? '' : String(initial?.name || target?.name || ''));
-      const [description, setDescription] = useState(String(initial?.description || ''));
+      // A stored description may span lines (YAML block scalar); the field and the API take one line.
+      const initialDescription = String(initial?.description || '').replace(/\s*[\r\n]+\s*/g, ' ').trim();
+      const [description, setDescription] = useState(initialDescription);
       const [whenToUse, setWhenToUse] = useState(String(initial?.whenToUse || ''));
       const [body, setBody] = useState(String(initial?.body || ''));
       const [saving, setSaving] = useState(false);
@@ -2336,7 +2338,7 @@ window.__ModuleLoader__.load({
       const dirty =
         mode === 'create'
           ? Boolean(trimmedName || descriptionTrimmed || whenToUse.trim() || body)
-          : description !== String(initial?.description || '') ||
+          : description !== initialDescription ||
             whenToUse !== String(initial?.whenToUse || '') ||
             body !== String(initial?.body || '');
       const canSave = !nameError && !descriptionError && (mode === 'create' ? dirty : true);
