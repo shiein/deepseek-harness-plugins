@@ -37,7 +37,10 @@ export async function executeTool(tools: ToolRuntime, call: SingleToolCall) {
 }
 
 /** 官方审批服务及其依赖的会话投影；根 Context 上直接构造，需要显式完成初始化。 */
-export async function installApproval(ctx: Context, config: { policy?: 'ask' | 'never' } = {}): Promise<ApprovalService> {
+export async function installApproval(
+  ctx: Context,
+  config: { policy?: 'ask' | 'never' } = {},
+): Promise<ApprovalService> {
   const projections = new SessionProjectionRegistry(ctx)
   await (projections as unknown as Record<symbol, () => Promise<void>>)[Service.init]?.()
   const approval = new ApprovalService(ctx, config as never)
