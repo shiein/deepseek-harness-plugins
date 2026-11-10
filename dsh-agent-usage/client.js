@@ -31,6 +31,7 @@ window.__ModuleLoader__.load({
       'page.title': 'Agent 用量',
       'page.subtitle': '本机 AI 编程 Agent 的 Token 消耗 · 仅手动刷新时扫描',
       'action.refresh': '刷新',
+      'action.exportCsv': '导出 CSV',
       'action.refreshing': '扫描中',
       'action.scanNow': '扫描本机用量',
       'action.retry': '重试',
@@ -114,6 +115,7 @@ window.__ModuleLoader__.load({
       'page.title': 'Agent Usage',
       'page.subtitle': 'Token usage of local coding agents · scan only on refresh',
       'action.refresh': 'Refresh',
+      'action.exportCsv': 'Export CSV',
       'action.refreshing': 'Scanning',
       'action.scanNow': 'Scan this machine',
       'action.retry': 'Retry',
@@ -930,6 +932,34 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** RFC 4180 CSV of a table view: raw numbers (tokens, USD), not the abbreviated display values. */
+    function rowsCsv(rows, nameLabel, t) {
+      const cell = (value) => {
+        const text = String(value ?? '');
+        return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+      };
+      const header = [nameLabel, t('table.col.total'), t('table.col.input'), t('table.col.output'),
+        t('table.col.cacheRead'), t('table.col.cacheWrite'), t('table.col.messages'), `${t('table.col.cost')} (USD)`];
+      const lines = [header.map(cell).join(',')];
+      for (const row of rows) {
+        lines.push([row.label, row.tokens, row.input, row.output, row.cacheRead, row.cacheWrite, row.messages,
+          Math.round(row.cost * 10000) / 10000].map(cell).join(','));
+      }
+      // BOM so Excel opens UTF-8 (Chinese agent names) correctly.
+      return `\uFEFF${lines.join('\r\n')}\r\n`;
+    }
+
+    function downloadCsv(name, text) {
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
     function TableTab({ rows, kind, t, locale }) {
       const [fillRef, fillSize] = useMeasuredSize();
       const [page, setPage] = useState(0);
@@ -958,6 +988,16 @@ window.__ModuleLoader__.load({
             { className: 'au-card-title' },
             kind === 'date' ? t('tab.date') : kind === 'model' ? t('tab.model') : t('tab.agent'),
             h('span', { className: 'au-card-meta' }, rows.length),
+          ),
+          h('span', { className: 'au-spacer' }),
+          rows.length === 0 ? null : h(
+            'button',
+            {
+              type: 'button',
+              className: 'au-btn au-btn-ghost au-btn-sm',
+              onClick: () => downloadCsv(`agent-usage-${kind}.csv`, rowsCsv(rows, nameLabel, t)),
+            },
+            t('action.exportCsv'),
           ),
           h(Pager, {
             page: safePage,
@@ -1539,6 +1579,10 @@ html[data-platform=darwin] .au-header { min-height: max(40px, calc(var(--dsh-fra
 .au-rank-col { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .au-card { min-width: 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); padding: 9px 12px 10px; overflow: hidden; }
 .au-card-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 22px; margin-bottom: 5px; }
+.au-spacer { flex: 1; }
+.au-btn-sm { padding: 2px 9px; font-size: 11.5px; min-height: 0; }
+.au-btn-ghost { background: transparent; border-color: transparent; }
+.au-btn-ghost:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.05)); }
 .au-card-title { display: flex; align-items: baseline; gap: 7px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .au-card-meta { font-size: 10.5px; font-weight: 500; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); font-variant-numeric: tabular-nums; }
 .au-trend-card { padding-bottom: 5px; }
