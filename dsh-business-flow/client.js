@@ -136,6 +136,16 @@ window.__ModuleLoader__.load({
       updateHint: 'Re-analyze this project and business and update this history record',
       fullscreen: 'Full screen',
       exportMenu: 'Export',
+      retry: 'Retry',
+      errNetwork: 'Could not reach the plugin service. Check that DeepSeek Harness is running, then retry.',
+      errTimeout: 'The analysis took too long and was stopped. Retry, or describe a narrower business.',
+      errUnavailable: 'A Harness service this needs is not available in this profile.',
+      errModel: 'The model did not return a usable result. Retry; if it keeps failing, try another default model.',
+      errTooLarge: 'The request is too large.',
+      errForbidden: 'The plugin refused a request that did not come from this window.',
+      errNoProject: 'The project folder no longer exists. Choose it again.',
+      errRequest: 'The request was not accepted.',
+      errHost: 'The plugin hit an internal error.',
       openFile: 'Open (macOS: in the text editor; Windows/Linux: show in the file manager)',
       openFileFail: 'Could not open the file',
       diffCompare: 'Compare',
@@ -265,6 +275,16 @@ window.__ModuleLoader__.load({
       updateHint: '用当前项目与业务重新分析，并更新这条历史记录',
       fullscreen: '全屏',
       exportMenu: '导出',
+      retry: '重试',
+      errNetwork: '连不上插件服务。请确认 DeepSeek Harness 正在运行，然后重试。',
+      errTimeout: '分析时间过长，已停止。可以重试，或把业务描述得更具体一些。',
+      errUnavailable: '当前 profile 缺少这个功能需要的 Harness 服务。',
+      errModel: '模型没有返回可用的结果。可以重试；如果一直失败，换一个默认模型试试。',
+      errTooLarge: '请求内容太大。',
+      errForbidden: '插件拒绝了不是来自本窗口的请求。',
+      errNoProject: '项目目录已经不存在，请重新选择。',
+      errRequest: '请求没有被接受。',
+      errHost: '插件内部出错。',
       openFile: '打开（macOS 用文本编辑器打开；Windows / Linux 在文件管理器中显示）',
       openFileFail: '无法打开文件',
       diffCompare: '对比',
@@ -541,6 +561,11 @@ window.__ModuleLoader__.load({
         background: var(--dsw-alias-bg-base, #fff); padding: 10px; }
       .bf-prompt-box:focus { outline: 2px solid color-mix(in srgb, var(--bf-accent) 30%, transparent); outline-offset: -1px;
         border-color: var(--bf-accent); }
+      .bf-error-main { display: flex; align-items: center; gap: 8px; }
+      .bf-error-text { flex: 1; min-width: 0; }
+      .bf-error .bf-icon-btn { color: inherit; }
+      .bf-error-detail { margin-top: 4px; font-size: 11px; opacity: .8; overflow-wrap: anywhere;
+        font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace); }
       .bf-prompt-hint { font-size: 11px; color: var(--dsw-alias-label-tertiary, #8b949e); }
       .bf-actions { display: flex; gap: 8px; }
       .bf-actions .bf-btn { flex: 1; }
@@ -698,7 +723,7 @@ window.__ModuleLoader__.load({
         });
       } catch (error) {
         if (error?.name === 'AbortError') throw error;
-        throw new Error(error?.message ?? 'network request failed');
+        throw Object.assign(new Error(error?.message ?? 'network request failed'), { status: 0 });
       }
       let payload = null;
       try {
@@ -707,7 +732,7 @@ window.__ModuleLoader__.load({
         payload = null;
       }
       if (!response.ok || !payload || payload.ok !== true) {
-        throw new Error(payload?.error?.message ?? `HTTP ${response.status}`);
+        throw Object.assign(new Error(payload?.error?.message ?? `HTTP ${response.status}`), { status: response.status });
       }
       return payload;
     }
@@ -717,6 +742,25 @@ window.__ModuleLoader__.load({
     // that older versions cached in this browser are uploaded once and the cache is dropped, so a
     // deleted record can never be resurrected from a stale cache.
     // ------------------------------------------------------------------------------------------
+
+    /**
+     * What a failed analysis or draft means for the user, in their language; the Host's original text
+     * stays available as the detail (it names files, models and Session events).
+     */
+    function friendlyError(error, t) {
+      if (error?.name === 'AbortError') return t('cancelled');
+      const message = String(error?.message ?? '');
+      switch (error?.status) {
+        case 0: return t('errNetwork');
+        case 504: return t('errTimeout');
+        case 503: return t('errUnavailable');
+        case 502: return t('errModel');
+        case 413: return t('errTooLarge');
+        case 403: return t('errForbidden');
+        case 400: return /project (directory does not exist|path is not a directory)/.test(message) ? t('errNoProject') : t('errRequest');
+        default: return error?.status >= 500 ? t('errHost') : message;
+      }
+    }
 
     function validEntry(entry) {
       return Boolean(entry && typeof entry.id === 'string'
@@ -1806,7 +1850,23 @@ window.__ModuleLoader__.load({
         /** The prompt card stays while the user edits, even if they clear the text. */
         const [promptShown, setPromptShown] = usePersisted('promptShown', false);
         const [busy, setBusy] = usePersisted('busy', '');
-        const [error, setError] = usePersisted('error', '');
+        const [error, setErrorText] = usePersisted('error', '');
+        /** Host text behind a translated error, and how to retry the failed action (if it can be). */
+        const [errorDetail, setErrorDetail] = usePersisted('errorDetail', '');
+        const [errorRetry, setErrorRetry] = usePersisted('errorRetry', null);
+        const setError = useCallback((message) => {
+          setErrorText(message);
+          setErrorDetail('');
+          setErrorRetry(null);
+        }, []);
+        /** Show a failed request in the user's language, keep the original text, and offer retry. */
+        const failWith = useCallback((failure, retry) => {
+          const friendly = friendlyError(failure, t);
+          const original = String(failure?.message ?? '');
+          setErrorText(friendly);
+          setErrorDetail(failure?.name === 'AbortError' || original === friendly ? '' : original);
+          setErrorRetry(failure?.name === 'AbortError' || !retry ? null : () => retry);
+        }, []);
         /** Model check: `ok` with the provider/model, `nomodel`, `fail`, or '' while unknown. */
         const [status, setStatus] = useState({ state: '', text: '' });
         const [copied, setCopied] = useState(false);
@@ -2149,7 +2209,7 @@ window.__ModuleLoader__.load({
             setPromptShown(false);
             setZoomTouched(false);
             await remember({ id, at: Date.now(), projectPath: path, business: text, graph: nextGraph });
-          } catch (e) { setError(e?.name === 'AbortError' ? t('cancelled') : e.message); }
+          } catch (e) { failWith(e, () => runAnalysis(path, text, keepId)); }
           finally {
             if (runControl.current === controller) runControl.current = null;
             setBusy('');
@@ -2187,7 +2247,7 @@ window.__ModuleLoader__.load({
             if (selectedRef.current !== nodeId || shownGraphRef.current !== graphAtRequest) return;
             setPrompt(value.prompt);
             setPromptShown(true);
-          } catch (e) { setError(e?.name === 'AbortError' ? t('cancelled') : e.message); }
+          } catch (e) { failWith(e, () => draft()); }
           finally {
             if (runControl.current === controller) runControl.current = null;
             setBusy('');
@@ -2411,7 +2471,15 @@ window.__ModuleLoader__.load({
                     className: 'bf-btn bf-btn-primary bf-btn-ask', onClick: analyze, disabled: analyzeDisabled,
                   }, t('analyze'))),
               busy === 'analyze' || busy === 'update' ? h('div', { className: 'bf-progress' }) : null,
-              error !== '' ? h('div', { className: 'bf-error' }, error) : null,
+              error !== '' ? h('div', { className: 'bf-error', role: 'alert' },
+                h('div', { className: 'bf-error-main' },
+                  h('span', { className: 'bf-error-text' }, error),
+                  errorRetry ? h('button', {
+                    className: 'bf-btn bf-btn-sm', disabled: busy !== '',
+                    onClick: () => { const retry = errorRetry; setError(''); retry(); },
+                  }, t('retry')) : null,
+                  h('button', { className: 'bf-icon-btn', title: t('close'), 'aria-label': t('close'), onClick: () => setError('') }, '×')),
+                errorDetail ? h('div', { className: 'bf-error-detail' }, errorDetail) : null) : null,
               h('div', { className: `bf-graph${fullscreen === 'native' ? ' is-native' : ''}`, ref: graphRef },
                 graph !== null ? h('div', { className: 'bf-toolbar' },
                   h('div', { className: 'bf-views', role: 'tablist', 'aria-label': t('viewSwitch') },
