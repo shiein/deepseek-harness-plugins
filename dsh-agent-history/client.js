@@ -29,6 +29,7 @@ window.__ModuleLoader__.load({
       projects: '/api/dsh-agent-history/projects',
       projectsOpen: '/api/dsh-agent-history/projects/open',
       projectsRemove: '/api/dsh-agent-history/projects/remove',
+      search: '/api/dsh-agent-history/search',
     };
 
     // ---------------------------------------------------------------------------------------
@@ -99,6 +100,14 @@ window.__ModuleLoader__.load({
       'session.truncated': '内容较长，仅显示最近 {count} 条',
       'timeline.loaded': '已显示 {shown} / {total} 条',
       'session.loadedCount': '已显示 {shown} / {total} 个会话',
+      'search.placeholder': '搜索全部会话…',
+      'search.none': '没有找到匹配的会话',
+      'search.partial': '消息全文只搜到最近 {searched} / {total} 个会话（超时），标题与预览已全部搜索',
+      'search.scope': '标题、预览、目录覆盖全部会话；消息全文覆盖最近 {total} 个会话',
+      'search.where.title': '标题',
+      'search.where.preview': '预览',
+      'search.where.folder': '目录',
+      'search.where.message': '消息',
       'action.exportMarkdown': '导出 Markdown',
       'export.agent': 'Agent',
       'export.project': '项目',
@@ -245,6 +254,14 @@ window.__ModuleLoader__.load({
       'session.truncated': 'Long session: showing the latest {count} messages',
       'timeline.loaded': '{shown} / {total} messages shown',
       'session.loadedCount': '{shown} / {total} sessions shown',
+      'search.placeholder': 'Search all conversations…',
+      'search.none': 'No conversation matches',
+      'search.partial': 'Message text searched in the {searched} / {total} most recent sessions only (time limit); titles and previews cover all',
+      'search.scope': 'Titles, previews and folders cover every session; message text covers the {total} most recent',
+      'search.where.title': 'title',
+      'search.where.preview': 'preview',
+      'search.where.folder': 'folder',
+      'search.where.message': 'message',
       'action.exportMarkdown': 'Export Markdown',
       'export.agent': 'Agent',
       'export.project': 'Project',
@@ -1784,6 +1801,80 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** Search across every session (header box); results open the session in its project. */
+    function GlobalSearch(props) {
+      const { t, locale, agents, onPick } = props;
+      const [query, setQuery] = useState('');
+      const [open, setOpen] = useState(false);
+      const [result, setResult] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState('');
+      const seq = useRef(0);
+      const boxRef = useRef(null);
+      useEffect(() => {
+        const text = query.trim();
+        if (text.length < 2) { setResult(null); setLoading(false); return undefined; }
+        const id = (seq.current += 1);
+        setLoading(true);
+        const timer = setTimeout(async () => {
+          try {
+            const payload = await requestJson(`${API.search}?q=${encodeURIComponent(text)}`);
+            if (seq.current !== id) return;
+            setResult(payload);
+            setError('');
+          } catch (searchError) {
+            if (seq.current === id) setError(searchError instanceof Error ? searchError.message : String(searchError));
+          } finally {
+            if (seq.current === id) setLoading(false);
+          }
+        }, 400);
+        return () => clearTimeout(timer);
+      }, [query]);
+      useEffect(() => {
+        if (!open) return undefined;
+        const onDown = (event) => { if (boxRef.current && !boxRef.current.contains(event.target)) setOpen(false); };
+        const onKey = (event) => { if (event.key === 'Escape') setOpen(false); };
+        document.addEventListener('mousedown', onDown);
+        window.addEventListener('keydown', onKey);
+        return () => { document.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); };
+      }, [open]);
+      const hits = result?.hits || [];
+      const where = (hit) => t(`search.where.${hit.where}`);
+      return h(
+        'div',
+        { className: 'ah-global-search', ref: boxRef },
+        h('div', { className: 'ah-search' },
+          h(IconSearch),
+          h('input', {
+            type: 'search', value: query, placeholder: t('search.placeholder'), 'aria-label': t('search.placeholder'),
+            onChange: (event) => { setQuery(event.target.value); setOpen(true); },
+            onFocus: () => setOpen(true),
+          })),
+        open && query.trim().length >= 2
+          ? h('div', { className: 'ah-search-pop', role: 'listbox', 'aria-label': t('search.placeholder') },
+            loading && !result ? h('div', { className: 'ah-search-note' }, h(Spinner), t('state.loading')) : null,
+            error ? h('div', { className: 'ah-search-note is-error' }, error) : null,
+            result && hits.length === 0 && !loading ? h('div', { className: 'ah-search-note' }, t('search.none')) : null,
+            hits.map((hit) => {
+              const agent = agents.get(hit.agentId);
+              return h('button', {
+                key: hit.sessionId, type: 'button', role: 'option', className: 'ah-search-hit',
+                onClick: () => { setOpen(false); onPick(hit); },
+              },
+                h('div', { className: 'ah-search-hit-head' },
+                  h(AgentBadge, { agent, fallback: hit.agentId, compact: true }),
+                  h('span', { className: 'ah-search-hit-title' }, hit.title),
+                  h('span', { className: 'ah-search-hit-time' }, relTime(hit.ts, locale))),
+                h('div', { className: 'ah-search-hit-snippet' }, `${where(hit)} · ${hit.snippet}`),
+                h('div', { className: 'ah-search-hit-path' }, hit.projectPath || t('project.pathUnknown')));
+            }),
+            result && !result.fullText?.complete
+              ? h('div', { className: 'ah-search-note' }, t('search.partial', { searched: result.fullText.searched, total: result.fullText.total }))
+              : result ? h('div', { className: 'ah-search-note' }, t('search.scope', { total: result.fullText?.total ?? 0 })) : null)
+          : null,
+      );
+    }
+
     function ProjectView(props) {
       const {
         project, sessions, agents, t, locale, selectedAgentId, onSelectAgent, tab, onTabChange,
@@ -2421,6 +2512,16 @@ window.__ModuleLoader__.load({
         [opened, showToast, t],
       );
 
+      /** A search result: show its folder (all time, exact folder) with the session expanded. */
+      const openSearchHit = useCallback(
+        async (hit) => {
+          setRange('all');
+          if (hit.projectPath) await openProject(hit.projectPath, { deep: false });
+          focusSession(hit.sessionId);
+        },
+        [openProject, focusSession],
+      );
+
       const browseFolder = useCallback(async () => {
         if (!actions?.pickDirectory) {
           showToast(t('action.openFolderHint'), 'error');
@@ -2623,6 +2724,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'ah-header-actions' },
+            h(GlobalSearch, { t, locale, agents: agentMap, onPick: openSearchHit }),
             h(Button, { variant: 'primary', icon: h(IconPlus), label: t('action.openProject'), onClick: () => setPickerOpen(true), title: t('action.openFolderHint') }),
             h(Button, { variant: 'default', icon: scanning ? h(Spinner) : h(IconRefresh), label: scanning ? t('action.refreshing') : t('action.refresh'), onClick: scanNow, disabled: scanning }),
           ),
@@ -2813,6 +2915,23 @@ window.__ModuleLoader__.load({
 .ah-header-stats { font-variant-numeric: tabular-nums; }
 .ah-header-scan { color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); font-size: 10.5px; }
 .ah-header-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.ah-global-search { position: relative; width: 220px; }
+.ah-global-search .ah-search input { width: 100%; }
+.ah-search-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 60; width: min(460px, 80vw); max-height: min(70vh, 560px);
+  overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; border-radius: 12px;
+  border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-2));
+  box-shadow: 0 18px 48px rgba(0,0,0,.22); animation: ah-pop-in .12s ease-out; }
+.ah-search-hit { display: flex; flex-direction: column; gap: 3px; padding: 8px; border: 0; border-radius: 8px; background: transparent;
+  color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.ah-search-hit:hover, .ah-search-hit:focus-visible { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.05)); outline: none; }
+.ah-search-hit-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ah-search-hit-title { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ah-search-hit-time { flex: none; font-size: 10.5px; color: var(--dsw-alias-label-tertiary); }
+.ah-search-hit-snippet { font-size: 11.5px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.ah-search-hit-path { font-size: 10.5px; color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
+.ah-search-note { display: flex; align-items: center; gap: 6px; padding: 8px; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.ah-search-note.is-error { color: var(--dsw-alias-state-error-primary); }
 .ah-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-primary);
   border-radius: 8px; padding: 5px 11px; font-size: 12px; font-weight: 500; font-family: inherit; cursor: pointer; white-space: nowrap;
   transition: background .12s ease, border-color .12s ease, opacity .12s ease; }

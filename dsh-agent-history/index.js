@@ -9,6 +9,7 @@
  *   GET  /api/dsh-agent-history/session    -> one session's messages (lazy transcript read)
  *   GET  /api/dsh-agent-history/timeline   -> one project's merged multi-agent message timeline
  *   POST /api/dsh-agent-history/launch     -> resume one session (native terminal / DSH GUI)
+ *   GET  /api/dsh-agent-history/search     -> sessions matching ?q= (metadata of all, text of recent ones)
  *   GET  /api/dsh-agent-history/projects   -> folders the user opened (most recent first)
  *   POST /api/dsh-agent-history/projects/open | /projects/remove -> record / forget one folder
  *   GET  /api/dsh-agent-history/health     -> plugin/route diagnostics
@@ -49,7 +50,20 @@ const ROUTES = {
   projects: '/api/dsh-agent-history/projects',
   projectsOpen: '/api/dsh-agent-history/projects/open',
   projectsRemove: '/api/dsh-agent-history/projects/remove',
+  search: '/api/dsh-agent-history/search',
 };
+
+const SEARCH_LIMIT = 100;
+const SEARCH_FULLTEXT_SESSIONS = 200;
+const SEARCH_BUDGET_MS = 8000;
+
+/** `…text around the match…` for a result list. */
+function snippetAround(text, index, length) {
+  const start = Math.max(0, index - 60);
+  const end = Math.min(text.length, index + length + 80);
+  const body = text.slice(start, end).replace(/\s+/g, ' ').trim();
+  return `${start > 0 ? '…' : ''}${body}${end < text.length ? '…' : ''}`;
+}
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -206,6 +220,57 @@ export function apply(ctx, config = {}) {
     return current.sessions.find((session) => session.id === id) || null;
   }
 
+  /**
+   * Search every session: titles, previews and folders of all of them, and the messages of the most
+   * recently active SEARCH_FULLTEXT_SESSIONS (transcripts are read on the worker and cached), within
+   * a time budget. The answer says how far the full-text part got.
+   */
+  async function search(raw) {
+    const query = String(raw).trim().slice(0, 200);
+    const needle = query.toLowerCase();
+    if (needle.length < 2) return { query, hits: [], fullText: { searched: 0, total: 0, complete: true } };
+    const current = await getSnapshot();
+    const sessions = current?.sessions ?? [];
+    const hits = [];
+    const seen = new Set();
+    const add = (session, where, snippet, ts) => {
+      if (hits.length >= SEARCH_LIMIT) return;
+      hits.push({ sessionId: session.id, agentId: session.agentId, title: session.title, projectPath: session.projectPath,
+        updatedAt: session.updatedAt, where, snippet, ts: ts || session.updatedAt });
+      seen.add(session.id);
+    };
+    for (const session of sessions) {
+      if (hits.length >= SEARCH_LIMIT) break;
+      for (const [where, text] of [['title', session.title], ['preview', session.preview], ['preview', session.lastPreview], ['folder', session.projectPath]]) {
+        const index = String(text || '').toLowerCase().indexOf(needle);
+        if (index >= 0) { add(session, where, snippetAround(String(text), index, needle.length)); break; }
+      }
+    }
+    const candidates = sessions
+      .filter((session) => session.messages > 0 && !seen.has(session.id))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, SEARCH_FULLTEXT_SESSIONS);
+    const deadline = Date.now() + SEARCH_BUDGET_MS;
+    let searched = 0;
+    await runWithConcurrency(candidates, 4, async (session) => {
+      if (Date.now() > deadline || hits.length >= SEARCH_LIMIT) return;
+      let entry;
+      try {
+        entry = await reader.get(session, new AbortController().signal);
+      } catch {
+        return;
+      }
+      searched += 1;
+      for (const message of entry.messages) {
+        if (message.kind === 'tool-call' || message.kind === 'tool-result' || message.role === 'system') continue;
+        const index = message.text.toLowerCase().indexOf(needle);
+        if (index >= 0) { add(session, 'message', snippetAround(message.text, index, needle.length), message.ts); break; }
+      }
+    });
+    hits.sort((a, b) => b.ts - a.ts);
+    return { query, hits, fullText: { searched, total: candidates.length, complete: searched === candidates.length } };
+  }
+
   /** @type {import('@deepseek-ai/dsh-host-webserver').WebRoute[]} */
   const routes = [
     {
@@ -354,6 +419,7 @@ export function apply(ctx, config = {}) {
         writeJson(response, 200, { ok: result.ok, plan, terminal: result.terminal, error: result.error, copy });
       },
     },
+    jsonRoute(ROUTES.search, 'GET', async (_body, request) => search(requestUrl(request).searchParams.get('q') || '')),
     jsonRoute(ROUTES.projects, 'GET', async () => ({ projects: await opened.list() })),
     jsonRoute(ROUTES.projectsOpen, 'POST', async (body) => ({ projects: await opened.open(body.path) })),
     jsonRoute(ROUTES.projectsRemove, 'POST', async (body) => ({ projects: await opened.remove(body) })),
