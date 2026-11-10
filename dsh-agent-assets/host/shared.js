@@ -197,7 +197,9 @@ export async function listDirSafe(path) {
  * @returns {{ data: Record<string, string>, extraLines: string[], body: string, hasFrontmatter: boolean }}
  */
 export function parseSkillFile(raw) {
-  const text = typeof raw === 'string' ? raw : ''
+  // A UTF-8 BOM (Windows editors write one) would hide the frontmatter, and a save would then stack
+  // a second frontmatter block on top of the old one. The BOM is dropped; files are written without.
+  const text = typeof raw === 'string' ? raw.replace(/^\uFEFF/, '') : ''
   if (!text.startsWith('---')) {
     return { data: {}, extraLines: [], body: text, hasFrontmatter: false }
   }
