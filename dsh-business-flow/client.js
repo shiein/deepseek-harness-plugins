@@ -73,6 +73,11 @@ window.__ModuleLoader__.load({
       updating: 'Updating…',
       updateHint: 'Re-analyze this project and business and update this history record',
       fullscreen: 'Full screen',
+      exportMenu: 'Export',
+      exportMermaid: 'Copy as Mermaid',
+      exportSvg: 'Download SVG',
+      exportedMermaid: 'Mermaid copied',
+      exportFailed: 'Export failed',
       exitFullscreen: 'Exit full screen',
       refineInPanel: 'Refine this node',
       confirmDelete: 'Delete',
@@ -184,6 +189,11 @@ window.__ModuleLoader__.load({
       updating: '更新中…',
       updateHint: '用当前项目与业务重新分析，并更新这条历史记录',
       fullscreen: '全屏',
+      exportMenu: '导出',
+      exportMermaid: '复制为 Mermaid',
+      exportSvg: '下载 SVG',
+      exportedMermaid: '已复制 Mermaid',
+      exportFailed: '导出失败',
       exitFullscreen: '退出全屏',
       refineInPanel: '细化这个节点',
       confirmDelete: '删除',
@@ -358,6 +368,14 @@ window.__ModuleLoader__.load({
       .bf-zoom button:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.05));
         color: var(--dsw-alias-label-primary, #1f2328); }
       .bf-zoom span { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }
+      .bf-export { position: relative; display: inline-flex; }
+      .bf-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 150px; padding: 4px;
+        display: flex; flex-direction: column; border-radius: 10px; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.14));
+        background: var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-2, #fff)); box-shadow: 0 10px 28px rgba(0,0,0,.16); }
+      .bf-zoom .bf-menu button { width: auto; height: 28px; padding: 0 10px; text-align: left; font-size: 12px; white-space: nowrap; }
+      .bf-notice { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 6; padding: 6px 12px;
+        border-radius: 8px; font-size: 12px; color: var(--dsw-alias-label-primary-foreground, #fff);
+        background: var(--dsw-alias-button-primary-fill, #1f2328); pointer-events: none; }
       .bf-canvas { position: relative; flex: 1; min-height: 0; overflow: auto; margin: 0 16px 14px; padding: 12px;
         border-radius: 12px; border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08));
         background-color: var(--dsw-alias-bg-layer-1, #fafbfc);
@@ -963,7 +981,93 @@ window.__ModuleLoader__.load({
       folder: 'M2.5 4.5a1 1 0 0 1 1-1h3l1.3 1.5h4.7a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z',
       chevron: 'M6 4l4 4-4 4',
       search: 'M7 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10z M10.6 10.6 14 14',
+      download: 'M8 2.5v8 M4.8 7.6 8 10.8l3.2-3.2 M3 13.5h10',
     };
+
+    // ------------------------------------------------------------------------------------------
+    // Export: Mermaid text (pastes into Markdown/docs) and a standalone SVG of the drawing.
+    // ------------------------------------------------------------------------------------------
+
+    const MERMAID_ARROW = { flow: '-->', data: '==>', auth: '-.->' };
+
+    /** `flowchart` source for the graph shown; node ids are re-numbered so any model id is valid. */
+    function toMermaid(graph, t) {
+      const ids = new Map(graph.nodes.map((node, index) => [node.id, `n${index + 1}`]));
+      const text = (value) => String(value ?? '').replace(/"/g, '#quot;').replace(/[\r\n]+/g, ' ');
+      const lines = ['flowchart TD'];
+      for (const node of graph.nodes) {
+        const kind = KIND_COLOR[node.kind] ? node.kind : 'process';
+        lines.push(`  ${ids.get(node.id)}["${text(node.name)}<br/><small>${text(kindLabel(kind, t))}</small>"]:::${kind}`);
+      }
+      for (const edge of graph.edges) {
+        const from = ids.get(edge.from);
+        const to = ids.get(edge.to);
+        if (!from || !to) continue;
+        const arrow = MERMAID_ARROW[edge.kind] ?? MERMAID_ARROW.flow;
+        const label = edge.label ? `|"${text(edge.label).replace(/\|/g, '#124;')}"|` : '';
+        lines.push(`  ${from} ${arrow}${label} ${to}`);
+      }
+      for (const [kind, color] of Object.entries(KIND_COLOR)) {
+        lines.push(`  classDef ${kind} stroke:${color},stroke-width:1.5px`);
+      }
+      return `${lines.join('\n')}\n`;
+    }
+
+    /** Value of `var(--x, fallback)` as the page currently resolves it; nested fallbacks are followed. */
+    function resolveCssColor(value, style) {
+      let out = String(value);
+      for (let guard = 0; guard < 4 && out.includes('var('); guard += 1) {
+        out = out.replace(/var\((--[\w-]+)(?:,\s*([^()]*(?:\([^()]*\))?[^()]*))?\)/g, (all, name, fallback) => {
+          const resolved = style.getPropertyValue(name).trim();
+          return resolved !== '' ? resolved : (fallback ?? '').trim();
+        });
+      }
+      return out;
+    }
+
+    /**
+     * A standalone SVG of the drawing: theme variables are resolved to the colours on screen (a file
+     * cannot see the page's CSS) and a background is added so it reads the same outside the app.
+     */
+    function svgForDownload(svg, page) {
+      const style = window.getComputedStyle(page);
+      const clone = svg.cloneNode(true);
+      const [, , width, height] = String(svg.getAttribute('viewBox') || '0 0 0 0').split(/\s+/).map(Number);
+      // XMLSerializer writes the SVG namespace itself; setting xmlns again would duplicate the attribute.
+      clone.setAttribute('width', String(width));
+      clone.setAttribute('height', String(height));
+      clone.removeAttribute('class');
+      for (const element of [clone, ...clone.querySelectorAll('*')]) {
+        for (const attribute of ['fill', 'stroke']) {
+          const value = element.getAttribute(attribute);
+          if (value && value.includes('var(')) element.setAttribute(attribute, resolveCssColor(value, style));
+        }
+      }
+      const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      background.setAttribute('width', '100%');
+      background.setAttribute('height', '100%');
+      background.setAttribute('fill', resolveCssColor('var(--dsw-alias-bg-base, #ffffff)', style));
+      clone.insertBefore(background, clone.firstChild);
+      const family = style.fontFamily && style.fontFamily !== 'inherit' ? style.fontFamily : '';
+      clone.setAttribute('font-family', family || 'system-ui, -apple-system, "Segoe UI", sans-serif');
+      return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}`;
+    }
+
+    function downloadText(name, text, type) {
+      const url = URL.createObjectURL(new Blob([text], { type }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function fileStem(value) {
+      const stem = String(value || 'business-flow').replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+      return stem || 'business-flow';
+    }
 
     const KIND_GLYPH = {
       entry: 'M2.5 8h6.5 M6.5 5.3 9.2 8l-2.7 2.7 M10.5 3.2h1.8a1.2 1.2 0 0 1 1.2 1.2v7.2a1.2 1.2 0 0 1-1.2 1.2h-1.8',
@@ -1831,6 +1935,38 @@ window.__ModuleLoader__.load({
           finally { setBusy(''); }
         }, [graphProject, prompt]);
 
+        const [exportOpen, setExportOpen] = useState(false);
+        useEffect(() => {
+          if (!exportOpen) return undefined;
+          const close = () => setExportOpen(false);
+          window.addEventListener('click', close);
+          return () => window.removeEventListener('click', close);
+        }, [exportOpen]);
+        const exportMermaid = useCallback(async () => {
+          setExportOpen(false);
+          if (shown === null) return;
+          try {
+            await navigator.clipboard.writeText(toMermaid(shown, t));
+            setError('');
+            setNotice(t('exportedMermaid'));
+          } catch (e) { setError(`${t('exportFailed')}: ${e?.message ?? e}`); }
+        }, [shown]);
+        const exportSvg = useCallback(() => {
+          setExportOpen(false);
+          const svg = graphRef.current?.querySelector('svg.bf-svg');
+          const page = graphRef.current?.closest('.bf-page');
+          if (!svg || !page) return;
+          try {
+            downloadText(`${fileStem(graph?.business || business)}.svg`, svgForDownload(svg, page), 'image/svg+xml');
+          } catch (e) { setError(`${t('exportFailed')}: ${e?.message ?? e}`); }
+        }, [graph, business]);
+        const [notice, setNotice] = useState('');
+        useEffect(() => {
+          if (notice === '') return undefined;
+          const timer = window.setTimeout(() => setNotice(''), 1800);
+          return () => window.clearTimeout(timer);
+        }, [notice]);
+
         const copy = useCallback(async () => {
           try {
             await navigator.clipboard.writeText(prompt);
@@ -2043,7 +2179,15 @@ window.__ModuleLoader__.load({
                       title: maximised ? t('exitFullscreen') : t('fullscreen'),
                       'aria-label': maximised ? t('exitFullscreen') : t('fullscreen'),
                       onClick: toggleFullscreen,
-                    }, h(Icon, { d: maximised ? ICON.collapse : ICON.expand, size: 13 })))) : null,
+                    }, h(Icon, { d: maximised ? ICON.collapse : ICON.expand, size: 13 })),
+                    h('span', { className: 'bf-export' },
+                      h('button', {
+                        title: t('exportMenu'), 'aria-label': t('exportMenu'), 'aria-haspopup': 'menu', 'aria-expanded': exportOpen,
+                        onClick: (event) => { event.stopPropagation(); setExportOpen((open) => !open); },
+                      }, h(Icon, { d: ICON.download, size: 13 })),
+                      exportOpen ? h('div', { className: 'bf-menu', role: 'menu', onClick: (event) => event.stopPropagation() },
+                        h('button', { role: 'menuitem', onClick: exportMermaid }, t('exportMermaid')),
+                        h('button', { role: 'menuitem', onClick: exportSvg }, t('exportSvg'))) : null))) : null,
                 h('div', {
                   className: `bf-canvas${graph === null ? ' is-empty' : ''}`,
                   ref: canvasRef,
@@ -2070,6 +2214,7 @@ window.__ModuleLoader__.load({
                       }, h(Icon, { d: ICON.history }), t('openHistory', { n: history.length })) : null)
                     : h('div', { className: 'bf-stage' },
                       h(GraphView, { graph: shown, layout, selectedId, zoom, focusIds, onSelect: setSelectedId, t }))),
+                notice === '' ? null : h('div', { className: 'bf-notice', role: 'status' }, notice),
                 maximised && selected !== null
                   ? h('div', { className: 'bf-float' }, nodeCard,
                     h('button', {
