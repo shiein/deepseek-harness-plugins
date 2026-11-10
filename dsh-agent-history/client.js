@@ -190,6 +190,7 @@ window.__ModuleLoader__.load({
       'launch.opened': '已打开会话',
       'launch.launched': '已在 {terminal} 中继续对话',
       'launch.failed': '启动失败：{error}',
+      'launch.cwdMissing': '无法继续：原项目目录已不存在或暂时无法访问（{path}）',
       'launch.unsupported': '这个 Agent 暂不支持一键继续，可以展示路径手动打开',
       'launch.copiedCmd': '已复制启动命令',
       'footnote': '数据目录 {dir}',
@@ -344,6 +345,7 @@ window.__ModuleLoader__.load({
       'launch.opened': 'Session opened',
       'launch.launched': 'Continuing in {terminal}',
       'launch.failed': 'Launch failed: {error}',
+      'launch.cwdMissing': 'Cannot resume: the project folder is gone or unreachable ({path})',
       'launch.unsupported': 'This agent has no one-click resume; open its folder manually',
       'launch.copiedCmd': 'Launch command copied',
       'footnote': 'Data folder {dir}',
@@ -2550,6 +2552,7 @@ window.__ModuleLoader__.load({
           try {
             const payload = await requestJson(API.launch, { method: 'POST', body: { sessionId: session.id } });
             if (payload.ok) showToast(t('launch.launched', { terminal: payload.terminal || 'Terminal' }), 'ok');
+            else if (payload.code === 'cwdMissing') showToast(t('launch.cwdMissing', { path: payload.plan?.cwd || '' }), 'error');
             else showToast(t('launch.failed', { error: payload.error || '' }), 'error');
           } catch (launchError) {
             showToast(t('launch.failed', { error: launchError instanceof Error ? launchError.message : String(launchError) }), 'error');

@@ -224,7 +224,7 @@ function launcherResult(child, label) {
  * Start one launch plan in a native terminal window.
  * @param {LaunchPlan} plan
  * @param {{dataDir: string, config?: Record<string, unknown>}} options
- * @returns {Promise<{ok: boolean, display: string, terminal?: string, error?: string}>}
+ * @returns {Promise<{ok: boolean, display: string, terminal?: string, error?: string, code?: 'cwdMissing'}>}
  */
 export async function launchInTerminal(plan, options) {
   if (plan.kind !== 'cli' || !plan.command) {
@@ -235,12 +235,17 @@ export async function launchInTerminal(plan, options) {
   const launchDir = join(dataDir, 'launch');
   await mkdirSafe(launchDir);
   const display = plan.display || [plan.command, ...(plan.args || [])].join(' ');
+  // The session belongs to its folder: if that folder was deleted, moved or is offline, refuse
+  // rather than resume the agent somewhere else. No recorded folder means the home folder.
+  if (plan.cwd && !(await fs.stat(plan.cwd).then((info) => info.isDirectory(), () => false))) {
+    return { ok: false, display, code: 'cwdMissing', error: `project folder is missing or unreachable: ${plan.cwd}` };
+  }
 
   const resolved = resolveExecutable(plan.command, config);
 
   try {
     if (platform() === 'win32') {
-      const cwd = plan.cwd && existsSync(plan.cwd) ? plan.cwd : homedir();
+      const cwd = plan.cwd || homedir();
       // `start cmd.exe` opens the legacy console host, which agent CLIs such as Devin warn about.
       const windowsTerminal = config.terminalApp === 'conhost' ? null : findWindowsTerminal();
       if (windowsTerminal !== null) {

@@ -13,7 +13,7 @@ import { after, test } from 'node:test';
 
 import { apply } from '../index.js';
 import {
-  copyableCommand, findWindowsTerminal, launchInTerminal, windowsResumeScript, windowsTerminalArgs,
+  copyableCommand, findWindowsTerminal, launchInTerminal, posixResumeScript, windowsResumeScript, windowsTerminalArgs,
 } from '../host/launch.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agent-history-security-'));
@@ -49,16 +49,12 @@ test('a session id or folder name cannot run commands in the resume script', { s
   assert.ok(output.includes(payload), 'the command line is still shown');
 
   const missing = { ...plan, cwd: join(root, `gone${payload}`) };
-  process.env.PATH = `${bin}:${originalPath}`;
+  assert.equal((await launchInTerminal(missing, { dataDir, config: {} })).code, 'cwdMissing', 'the Host refuses first');
+  // The script keeps its own guard for a folder that disappears between the check and the launch.
+  const raced = join(launchDir, 'raced.command');
+  writeFileSync(raced, posixResumeScript(missing, null, missing.display));
   try {
-    await new Promise((resolve) => setTimeout(resolve, 2));
-    await launchInTerminal(missing, { dataDir, config: {} });
-  } finally {
-    process.env.PATH = originalPath;
-  }
-  const newest = readdirSync(launchDir).filter((name) => name.startsWith('resume-')).sort().pop();
-  try {
-    execFileSync('/bin/zsh', [join(launchDir, newest)], { encoding: 'utf8' });
+    execFileSync('/bin/zsh', [raced], { encoding: 'utf8' });
     assert.fail('a missing folder must exit non-zero');
   } catch (error) {
     assert.equal(error.status, 1);

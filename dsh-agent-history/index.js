@@ -416,7 +416,7 @@ export function apply(ctx, config = {}) {
         if (!result.ok) {
           logger?.warn?.(`[agent-history] launch failed for ${session.id}: ${result.error || ''}`);
         }
-        writeJson(response, 200, { ok: result.ok, plan, terminal: result.terminal, error: result.error, copy });
+        writeJson(response, 200, { ok: result.ok, plan, terminal: result.terminal, error: result.error, code: result.code, copy });
       },
     },
     jsonRoute(ROUTES.search, 'GET', async (_body, request) => search(requestUrl(request).searchParams.get('q') || '')),
