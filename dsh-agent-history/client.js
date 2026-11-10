@@ -99,6 +99,12 @@ window.__ModuleLoader__.load({
       'session.truncated': '内容较长，仅显示最近 {count} 条',
       'timeline.loaded': '已显示 {shown} / {total} 条',
       'session.loadedCount': '已显示 {shown} / {total} 个会话',
+      'action.exportMarkdown': '导出 Markdown',
+      'export.agent': 'Agent',
+      'export.project': '项目',
+      'export.time': '时间',
+      'export.source': '来源',
+      'export.tools': '另有 {count} 条工具调用/结果未导出',
       'timeline.scope': '合并了最近 {included} / {total} 个会话的消息',
       'timeline.failed': '{count} 个会话读取失败，未计入：{detail}',
       'timeline.truncated': '{count} 个会话过长，只合并和搜索了最近的消息：{detail}',
@@ -239,6 +245,12 @@ window.__ModuleLoader__.load({
       'session.truncated': 'Long session: showing the latest {count} messages',
       'timeline.loaded': '{shown} / {total} messages shown',
       'session.loadedCount': '{shown} / {total} sessions shown',
+      'action.exportMarkdown': 'Export Markdown',
+      'export.agent': 'Agent',
+      'export.project': 'Project',
+      'export.time': 'Time',
+      'export.source': 'Source',
+      'export.tools': '{count} tool calls/results not exported',
       'timeline.scope': 'Merged the latest {included} / {total} sessions',
       'timeline.failed': '{count} sessions could not be read and are left out: {detail}',
       'timeline.truncated': '{count} long sessions: only their latest messages are merged and searched: {detail}',
@@ -857,6 +869,36 @@ window.__ModuleLoader__.load({
       return blocks;
     }
 
+    /** One conversation as a Markdown document (user and assistant turns; tools only as a count). */
+    function transcriptMarkdown(session, agent, messages, t) {
+      const readable = messages.filter((message) => message.kind !== 'tool-call' && message.kind !== 'tool-result' && message.role !== 'system');
+      const tools = messages.length - readable.length;
+      const lines = [
+        `# ${session.title}`,
+        '',
+        `- ${t('export.agent')}: ${agent?.name || session.agentId}`,
+        `- ${t('export.project')}: ${session.projectPath || t('project.pathUnknown')}`,
+        `- ${t('export.time')}: ${fullTime(session.startedAt || session.updatedAt)} – ${fullTime(session.updatedAt)}`,
+        `- ${t('export.source')}: ${session.sourcePath}`,
+      ];
+      if (tools > 0) lines.push(`- ${t('export.tools', { count: tools })}`);
+      for (const message of readable) {
+        lines.push('', `## ${message.role === 'user' ? t('role.user') : t('role.assistant')}${message.ts ? ` · ${fullTime(message.ts)}` : ''}`, '', message.text);
+      }
+      return `${lines.join('\n')}\n`;
+    }
+
+    function downloadText(name, text, type) {
+      const url = URL.createObjectURL(new Blob([text], { type }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
     function MessageRow(props) {
       const { message, agents, showTools, compact } = props;
       const agent = agents.get(message.agentId);
@@ -1023,6 +1065,21 @@ window.__ModuleLoader__.load({
                   { className: 'ah-transcript-source' },
                   h('span', null, t('session.source')),
                   h('code', { title: session.sourcePath }, session.sourcePath),
+                  transcript && transcript.messages.length > 0
+                    ? h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'ah-link',
+                          onClick: () => {
+                            const stem = String(session.title || session.nativeId).replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 60) || 'session';
+                            downloadText(`${stem}.md`, transcriptMarkdown(session, agent, transcript.messages, t), 'text/markdown');
+                          },
+                        },
+                        h(IconCopy),
+                        h('span', null, t('action.exportMarkdown')),
+                      )
+                    : null,
                 ),
                 loadingTranscript
                   ? h('div', { className: 'ah-transcript-loading' }, h(Spinner), h('span', null, t('state.loading')))
