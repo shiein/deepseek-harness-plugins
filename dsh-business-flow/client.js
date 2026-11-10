@@ -1653,7 +1653,10 @@ window.__ModuleLoader__.load({
             const value = await api('/history/upsert', { method: 'POST', body: { entry, replaceSameRun: true } });
             if (Array.isArray(value.entries)) setHistory(sortHistory(value.entries.filter(validEntry)));
           } catch (e) {
-            setHistoryError(`${t('historySaveFail')}: ${e.message}`);
+            // Shown on the page too: the drawer that also lists it is usually closed.
+            const message = `${t('historySaveFail')}: ${e.message}`;
+            setHistoryError(message);
+            setError(message);
           }
         }, []);
 
