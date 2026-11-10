@@ -74,6 +74,17 @@ window.__ModuleLoader__.load({
       updateHint: 'Re-analyze this project and business and update this history record',
       fullscreen: 'Full screen',
       exportMenu: 'Export',
+      diffCompare: 'Compare',
+      diffCompareHint: 'Compare the graph on screen with this earlier analysis',
+      diffTitle: 'Changes since {when}',
+      diffClose: 'End comparison',
+      diffSame: 'Same nodes and edges as that analysis.',
+      diffAddedNodes: '{n} new nodes (dashed outline)',
+      diffRemovedNodes: '{n} nodes no longer present',
+      diffAddedEdges: '{n} new edges',
+      diffRemovedEdges: '{n} edges no longer present',
+      diffMore: '… {n} more',
+      diffNewNode: 'New since the compared analysis',
       exportMermaid: 'Copy as Mermaid',
       exportSvg: 'Download SVG',
       exportedMermaid: 'Mermaid copied',
@@ -190,6 +201,17 @@ window.__ModuleLoader__.load({
       updateHint: '用当前项目与业务重新分析，并更新这条历史记录',
       fullscreen: '全屏',
       exportMenu: '导出',
+      diffCompare: '对比',
+      diffCompareHint: '把当前图与这条较早的分析对比',
+      diffTitle: '相对 {when} 的变化',
+      diffClose: '结束对比',
+      diffSame: '节点与连线和那次分析相同。',
+      diffAddedNodes: '新增 {n} 个节点（虚线框）',
+      diffRemovedNodes: '{n} 个节点已不存在',
+      diffAddedEdges: '新增 {n} 条连线',
+      diffRemovedEdges: '{n} 条连线已不存在',
+      diffMore: '… 还有 {n} 项',
+      diffNewNode: '对比的那次分析里没有这个节点',
       exportMermaid: '复制为 Mermaid',
       exportSvg: '下载 SVG',
       exportedMermaid: '已复制 Mermaid',
@@ -369,6 +391,15 @@ window.__ModuleLoader__.load({
         color: var(--dsw-alias-label-primary, #1f2328); }
       .bf-zoom span { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }
       .bf-export { position: relative; display: inline-flex; }
+      .bf-diff { position: absolute; left: 28px; top: 52px; z-index: 5; width: 260px; max-height: 60%; overflow-y: auto;
+        display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px;
+        border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.14));
+        background: var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-2, #fff)); box-shadow: 0 12px 30px rgba(0,0,0,.14); }
+      .bf-diff-group { font-size: 11.5px; font-weight: 600; }
+      .bf-diff-group.is-added { color: var(--dsw-alias-state-success-primary, #2f9e6e); }
+      .bf-diff-group.is-removed { color: var(--dsw-alias-state-error-primary, #cf222e); }
+      .bf-diff-list { margin: 0; padding-left: 16px; font-size: 11.5px; line-height: 1.55; color: var(--dsw-alias-label-secondary, #57606a); }
+      .bf-diff-more { list-style: none; margin-left: -16px; color: var(--dsw-alias-label-tertiary, #8b949e); }
       .bf-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 150px; padding: 4px;
         display: flex; flex-direction: column; border-radius: 10px; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.14));
         background: var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-2, #fff)); box-shadow: 0 10px 28px rgba(0,0,0,.16); }
@@ -1117,6 +1148,54 @@ window.__ModuleLoader__.load({
       return { ...graph, nodes, edges: edges.filter((e) => known.has(e.from) && known.has(e.to)) };
     }
 
+    /**
+     * What changed between two analyses of a business. Node ids are model-chosen per run, so nodes are
+     * matched by name (case-insensitive) and edges by their endpoint names and kind.
+     */
+    function graphDiff(base, next) {
+      const key = (node) => String(node?.name ?? '').trim().toLowerCase();
+      const baseNames = new Map(base.nodes.map((node) => [key(node), node]));
+      const nextNames = new Map(next.nodes.map((node) => [key(node), node]));
+      const edgeKeys = (graph) => {
+        const names = new Map(graph.nodes.map((node) => [node.id, node]));
+        const out = new Map();
+        for (const edge of graph.edges) {
+          const from = names.get(edge.from);
+          const to = names.get(edge.to);
+          if (from && to) out.set(`${key(from)}\u0000${key(to)}\u0000${edge.kind}`, { from: from.name, to: to.name, kind: edge.kind });
+        }
+        return out;
+      };
+      const baseEdges = edgeKeys(base);
+      const nextEdges = edgeKeys(next);
+      return {
+        addedNodes: next.nodes.filter((node) => !baseNames.has(key(node))),
+        removedNodes: base.nodes.filter((node) => !nextNames.has(key(node))),
+        addedEdges: [...nextEdges].filter(([edgeKey]) => !baseEdges.has(edgeKey)).map(([, edge]) => edge),
+        removedEdges: [...baseEdges].filter(([edgeKey]) => !nextEdges.has(edgeKey)).map(([, edge]) => edge),
+      };
+    }
+
+    function DiffCard({ diff, base, onClose, t }) {
+      const list = (items, render) => (items.length === 0 ? null : h('ul', { className: 'bf-diff-list' },
+        items.slice(0, 12).map((item, index) => h('li', { key: index }, render(item))),
+        items.length > 12 ? h('li', { className: 'bf-diff-more' }, t('diffMore', { n: items.length - 12 })) : null));
+      const unchanged = diff.addedNodes.length + diff.removedNodes.length + diff.addedEdges.length + diff.removedEdges.length === 0;
+      return h('div', { className: 'bf-diff', role: 'region', 'aria-label': t('diffTitle', { when: formatWhen(base.at) }) },
+        h('div', { className: 'bf-node-head' },
+          h('div', { className: 'bf-section-label' }, t('diffTitle', { when: formatWhen(base.at) })),
+          h('button', { className: 'bf-icon-btn', onClick: onClose, title: t('diffClose'), 'aria-label': t('diffClose') }, '×')),
+        unchanged ? h('div', { className: 'bf-summary' }, t('diffSame')) : null,
+        diff.addedNodes.length ? h('div', { className: 'bf-diff-group is-added' }, t('diffAddedNodes', { n: diff.addedNodes.length })) : null,
+        list(diff.addedNodes, (node) => node.name),
+        diff.removedNodes.length ? h('div', { className: 'bf-diff-group is-removed' }, t('diffRemovedNodes', { n: diff.removedNodes.length })) : null,
+        list(diff.removedNodes, (node) => node.name),
+        diff.addedEdges.length ? h('div', { className: 'bf-diff-group is-added' }, t('diffAddedEdges', { n: diff.addedEdges.length })) : null,
+        list(diff.addedEdges, (edge) => `${edge.from} → ${edge.to}`),
+        diff.removedEdges.length ? h('div', { className: 'bf-diff-group is-removed' }, t('diffRemovedEdges', { n: diff.removedEdges.length })) : null,
+        list(diff.removedEdges, (edge) => `${edge.from} → ${edge.to}`));
+    }
+
     function tableUsage(graph) {
       const usage = new Map();
       for (const node of graph?.nodes ?? []) {
@@ -1225,7 +1304,7 @@ window.__ModuleLoader__.load({
       return list.some((o) => r.x < o.x + o.w && r.x + r.w > o.x && r.y < o.y + o.h && r.y + r.h > o.y);
     }
 
-    function GraphView({ graph, layout, selectedId, onSelect, zoom, focusIds, t }) {
+    function GraphView({ graph, layout, selectedId, onSelect, zoom, focusIds, addedIds, t }) {
       const { pos, routes, NODE_W: W, NODE_H: H } = layout;
       const vertical = layout.orientation !== 'horizontal';
       const [hoverNode, setHoverNode] = useState(null);
@@ -1347,6 +1426,10 @@ window.__ModuleLoader__.load({
           style: { cursor: 'pointer' },
         },
           h('title', null, `${n.name}${n.summary ? `\n${n.summary}` : ''}`),
+          addedIds?.has(n.id) ? h('rect', {
+            x: -3, y: -3, width: W + 6, height: H + 6, rx: 14, fill: 'none',
+            stroke: KIND_COLOR.entry, strokeWidth: 1.6, strokeDasharray: '5 4',
+          }, h('title', null, t('diffNewNode'))) : null,
           selected || focused ? h('rect', {
             x: -4, y: -4, width: W + 8, height: H + 8, rx: 15, fill: 'none',
             stroke: selected ? ACCENT : KIND_COLOR.data, strokeOpacity: 0.28, strokeWidth: 4,
@@ -1471,7 +1554,7 @@ window.__ModuleLoader__.load({
             h('button', { className: 'bf-btn bf-btn-danger', onClick: onConfirm, disabled: busy }, confirmLabel))));
     }
 
-    function HistoryDrawer({ entries, loading, error, currentId, currentProject, onPick, onAskDelete, onClose, t }) {
+    function HistoryDrawer({ entries, loading, error, currentId, currentProject, onPick, onAskDelete, onClose, onCompare, comparable, t }) {
       const [query, setQuery] = useState('');
       const [collapsed, setCollapsed] = useState(() => new Set());
       const needle = query.trim().toLowerCase();
@@ -1538,6 +1621,10 @@ window.__ModuleLoader__.load({
                     h('div', { className: 'bf-hist-title' }, entry.business || entry.graph.business || folderName(entry.projectPath)),
                     h('div', { className: 'bf-hist-meta' },
                       `${formatWhen(entry.at)} · ${entry.graph.nodes.length} ${t('nodes')} · ${entry.graph.edges.length} ${t('edges')}`)),
+                  comparable(entry) ? h('button', {
+                    className: 'bf-btn bf-btn-ghost bf-btn-sm', title: t('diffCompareHint'),
+                    onClick: (event) => { event.stopPropagation(); onCompare(entry); },
+                  }, t('diffCompare')) : null,
                   h('button', {
                     className: 'bf-icon-btn bf-icon-danger', title: t('historyDelete'), 'aria-label': t('historyDelete'),
                     onClick: (event) => { event.stopPropagation(); onAskDelete({ kind: 'entry', id: entry.id, title: entry.business || entry.graph.business }); },
@@ -1611,6 +1698,8 @@ window.__ModuleLoader__.load({
         const [fullscreen, setFullscreen] = useState('');
         const [focusTable, setFocusTable] = useState(null);
         const [view, setView] = usePersisted('view', 'all');
+        /** History record the graph on screen is compared with, if any. */
+        const [compareId, setCompareId] = usePersisted('compareId', null);
         const [, setLocaleTick] = useState(0);
         const canvasRef = useRef(null);
         const graphRef = useRef(null);
@@ -1844,7 +1933,9 @@ window.__ModuleLoader__.load({
 
         const remember = useCallback(async (entry) => {
           try {
-            const value = await api('/history/upsert', { method: 'POST', body: { entry, replaceSameRun: true } });
+            // Earlier analyses of the same business are kept so they can be compared; "Update" reuses
+            // the record's id and so replaces only that record.
+            const value = await api('/history/upsert', { method: 'POST', body: { entry } });
             if (Array.isArray(value.entries)) setHistory(sortHistory(value.entries.filter(validEntry)));
           } catch (e) {
             // Shown on the page too: the drawer that also lists it is usually closed.
@@ -1886,6 +1977,9 @@ window.__ModuleLoader__.load({
 
         const analyze = useCallback(() => runAnalysis(projectPath, business.trim(), null), [runAnalysis, projectPath, business]);
         const current = history.find((entry) => entry.id === currentId) ?? null;
+        const compare = compareId === null || compareId === currentId ? null : history.find((entry) => entry.id === compareId) ?? null;
+        const diff = useMemo(() => (compare === null || graph === null ? null : graphDiff(compare.graph, graph)), [compare, graph]);
+        const addedIds = useMemo(() => (diff === null ? null : new Set(diff.addedNodes.map((node) => node.id))), [diff]);
         const update = useCallback(() => {
           if (current === null) return runAnalysis(projectPath, business.trim(), null);
           return runAnalysis(current.projectPath, current.business || business.trim(), current.id);
@@ -1982,6 +2076,7 @@ window.__ModuleLoader__.load({
           setGraph(entry.graph);
           setGraphProject(entry.projectPath);
           setCurrentId(entry.id);
+          setCompareId(null);
           setSelectedId(null);
           setRequirement('');
           setPrompt('');
@@ -2213,7 +2308,9 @@ window.__ModuleLoader__.load({
                         className: 'bf-btn', onClick: (event) => { event.stopPropagation(); setHistoryOpen(true); },
                       }, h(Icon, { d: ICON.history }), t('openHistory', { n: history.length })) : null)
                     : h('div', { className: 'bf-stage' },
-                      h(GraphView, { graph: shown, layout, selectedId, zoom, focusIds, onSelect: setSelectedId, t }))),
+                      h(GraphView, { graph: shown, layout, selectedId, zoom, focusIds, addedIds, onSelect: setSelectedId, t }))),
+                compare === null || diff === null ? null
+                  : h(DiffCard, { diff, base: compare, onClose: () => setCompareId(null), t }),
                 notice === '' ? null : h('div', { className: 'bf-notice', role: 'status' }, notice),
                 maximised && selected !== null
                   ? h('div', { className: 'bf-float' }, nodeCard,
@@ -2232,6 +2329,10 @@ window.__ModuleLoader__.load({
             onPick: loadRecord,
             onAskDelete: setConfirm,
             onClose: () => setHistoryOpen(false),
+            // Another run of the business on screen (same project and business text).
+            comparable: (entry) => graph !== null && current !== null && entry.id !== currentId
+              && entry.projectPath === current.projectPath && (entry.business || '') === (current.business || ''),
+            onCompare: (entry) => { setCompareId(entry.id); setHistoryOpen(false); },
             t,
           }) : null,
           confirmSpec === null ? null : h(ConfirmDialog, {
