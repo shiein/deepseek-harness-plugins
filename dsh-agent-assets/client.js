@@ -3187,7 +3187,15 @@ window.__ModuleLoader__.load({
       const useSessionsSafe = typeof useSessions === 'function' ? useSessions : noopUseSessions;
       const sessionCwd = useSessionsSafe(selectSessionCwd);
       const preferredWs = useMemo(() => preferredWorkspace(bootstrap, sessionCwd), [bootstrap, sessionCwd]);
-      const wsPath = workspaceChoice || preferredWs || '';
+      const [importOpen, setImportOpen] = useState(false);
+      // The preferred workspace follows the session list, which can reorder while a dialog is open.
+      // An open editor, confirmation or import keeps the workspace it was opened in, so a save can
+      // never land in another workspace's same-named skill, file or server.
+      const liveWs = workspaceChoice || preferredWs || '';
+      const frozenWsRef = useRef(liveWs);
+      const modalOpen = Boolean(dialog || confirm || importOpen);
+      if (!modalOpen || frozenWsRef.current === '') frozenWsRef.current = liveWs;
+      const wsPath = frozenWsRef.current;
 
       // Latest-value refs: async callbacks must never read a stale render closure.
       const mountedRef = useRef(false);
@@ -3607,7 +3615,6 @@ window.__ModuleLoader__.load({
       const handleCreate = useCallback(() => {
         openEditor(activeTabRef.current, 'create', null);
       }, [openEditor]);
-      const [importOpen, setImportOpen] = useState(false);
 
       const handleClearFilters = useCallback(() => {
         setQuery('');
