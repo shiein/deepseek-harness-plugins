@@ -18,6 +18,15 @@ const MAX_TRANSCRIPT_CHARS = 2_000_000;
  */
 const MAX_CACHED_TRANSCRIPT_CHARS = 24_000_000;
 const MAX_CACHED_TIMELINE_CHARS = 24_000_000;
+/**
+ * Searchable text kept per session for full-text search. Search visits the same most-recent
+ * sessions in the same order every time, which an LRU smaller than that set turns into a miss on
+ * every visit; so this cache admits entries until its budget is full and then stops admitting
+ * (see {@link TranscriptReader#getSearchText}) instead of evicting what the next search reads first.
+ * The texts are the transcript's own strings, so an entry also held by `cache` costs no extra text.
+ */
+const MAX_CACHED_SEARCH_SESSIONS = 400;
+const MAX_CACHED_SEARCH_CHARS = 24_000_000;
 
 export class TranscriptReader {
   /**
@@ -35,8 +44,34 @@ export class TranscriptReader {
     this.cache = new Map();
     /** Timeline reads keep only the readable slice of each session. @type {Map<string, {key: string, messages: any[]}>} */
     this.timelineCache = new Map();
+    /** @type {Map<string, {key: string, texts: Array<{text: string, ts: number}>, chars: number}>} */
+    this.searchCache = new Map();
+    /** Reads in progress, so concurrent requests for one session version share one read. @type {Map<string, {key: string, promise: Promise<any>}>} */
+    this.pending = new Map();
     this.cacheChars = 0;
     this.timelineCacheChars = 0;
+    this.searchCacheChars = 0;
+  }
+
+  /**
+   * Read and finalize one transcript, joining a read of the same session version already in
+   * progress. The joined read runs with the first caller's signal; a failure reaches every caller
+   * and is not remembered, so the next request retries.
+   * @param {import('./types.js').SessionSummary} session @param {AbortSignal} signal @param {string} key
+   */
+  load(session, signal, key) {
+    const running = this.pending.get(session.id);
+    if (running && running.key === key) return running.promise;
+    const promise = (async () => {
+      const result = await this.read(session, signal);
+      const complete = finalizeMessages(result?.messages || []);
+      const messages = limitTranscriptChars(complete);
+      return { key, supported: Boolean(result?.supported), messages, chars: messageChars(messages), clipped: messages !== complete };
+    })().finally(() => {
+      if (this.pending.get(session.id)?.promise === promise) this.pending.delete(session.id);
+    });
+    this.pending.set(session.id, { key, promise });
+    return promise;
   }
 
   /** @param {import('./types.js').SessionSummary} session */
@@ -56,12 +91,52 @@ export class TranscriptReader {
     }
     // A failed read propagates and is NOT cached: caching it as an empty transcript would hide the
     // error and pin the empty result until the session changes.
-    const result = await this.read(session, signal);
-    const complete = finalizeMessages(result?.messages || []);
-    const messages = limitTranscriptChars(complete);
-    const entry = { key, supported: Boolean(result?.supported), messages, chars: messageChars(messages), clipped: messages !== complete };
+    const entry = await this.load(session, signal, key);
     this.cacheChars = putBounded(this.cache, this.cacheChars, session.id, entry, MAX_CACHED_TRANSCRIPTS, MAX_CACHED_TRANSCRIPT_CHARS);
     return entry;
+  }
+
+  /**
+   * The messages full-text search looks at (no tool plumbing, no system notes), from a cache of its
+   * own so a search neither re-reads every transcript each time nor evicts the transcripts the user
+   * opened. A failed read propagates and is not cached.
+   * @param {import('./types.js').SessionSummary} session @param {AbortSignal} signal
+   * @returns {Promise<Array<{text: string, ts: number}>>}
+   */
+  async getSearchText(session, signal) {
+    const key = await this.keyOf(session);
+    const cached = this.searchCache.get(session.id);
+    if (cached && cached.key === key) return cached.texts;
+    const full = this.cache.get(session.id);
+    const entry = full && full.key === key ? full : await this.load(session, signal, key);
+    const texts = [];
+    let chars = 0;
+    for (const message of entry.messages) {
+      if (message.kind === 'tool-call' || message.kind === 'tool-result' || message.role === 'system') continue;
+      texts.push({ text: message.text, ts: message.ts });
+      chars += message.text.length;
+    }
+    this.searchCacheChars -= cached?.chars || 0;
+    this.searchCache.delete(session.id);
+    // Admit while it fits; once full, keep what is cached (the sessions every search starts with).
+    if (this.searchCache.size < MAX_CACHED_SEARCH_SESSIONS && this.searchCacheChars + chars <= MAX_CACHED_SEARCH_CHARS) {
+      this.searchCache.set(session.id, { key, texts, chars });
+      this.searchCacheChars += chars;
+    }
+    return texts;
+  }
+
+  /**
+   * Drop search entries of sessions the next search will not visit, so the admission budget goes to
+   * the current most recent sessions rather than ones that fell out of that set.
+   * @param {Set<string>} ids
+   */
+  retainSearch(ids) {
+    for (const [id, entry] of this.searchCache) {
+      if (ids.has(id)) continue;
+      this.searchCache.delete(id);
+      this.searchCacheChars -= entry.chars;
+    }
   }
 
   /**
@@ -104,8 +179,10 @@ export class TranscriptReader {
   forget(sessionId) {
     this.cacheChars -= this.cache.get(sessionId)?.chars || 0;
     this.timelineCacheChars -= this.timelineCache.get(sessionId)?.chars || 0;
+    this.searchCacheChars -= this.searchCache.get(sessionId)?.chars || 0;
     this.cache.delete(sessionId);
     this.timelineCache.delete(sessionId);
+    this.searchCache.delete(sessionId);
   }
 }
 

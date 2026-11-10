@@ -47,3 +47,39 @@ test('a session cut by the character budget is marked even under the message lim
   assert.equal(result.truncated, true);
   assert.ok(result.messages.length <= 150);
 });
+
+test('repeated full-text search over more sessions than the transcript cache reads each one once', async () => {
+  let reads = 0;
+  const reader = new TranscriptReader({
+    read: async () => { reads += 1; return { supported: true, messages: [{ role: 'user', ts: 1, text: 'needle' }, { role: 'assistant', kind: 'tool-call', ts: 2, text: 'tool' }] }; },
+  });
+  const sessions = Array.from({ length: 200 }, (_, index) => ({ id: `s${index}`, updatedAt: 1 }));
+  const signal = new AbortController().signal;
+  for (let round = 0; round < 2; round += 1) {
+    reader.retainSearch(new Set(sessions.map((item) => item.id)));
+    for (const item of sessions) assert.deepEqual(await reader.getSearchText(item, signal), [{ text: 'needle', ts: 1 }]);
+  }
+  assert.equal(reads, 200, 'the second search is served from the search cache');
+  assert.equal(reader.cache.size, 0, 'search does not evict the transcripts the user opened');
+});
+
+test('concurrent requests for one session version share one read; a failed read is retried', async () => {
+  let reads = 0;
+  let fail = true;
+  const reader = new TranscriptReader({
+    read: async () => {
+      reads += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      if (fail) throw new Error('boom');
+      return { supported: true, messages: messages(3) };
+    },
+  });
+  const signal = new AbortController().signal;
+  const failed = await Promise.allSettled([reader.get(session, signal), reader.get(session, signal), reader.getSearchText(session, signal)]);
+  assert.deepEqual(failed.map((item) => item.status), ['rejected', 'rejected', 'rejected']);
+  assert.equal(reads, 1);
+  fail = false;
+  const results = await Promise.all([1, 2, 3, 4].map(() => reader.get(session, signal)));
+  assert.equal(reads, 2);
+  assert.ok(results.every((item) => item.messages.length === 3));
+});

@@ -250,19 +250,20 @@ export function apply(ctx, config = {}) {
       .filter((session) => session.messages > 0 && !seen.has(session.id))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, SEARCH_FULLTEXT_SESSIONS);
+    // Sessions that matched by title this time are still full-text candidates of the next query.
+    reader.retainSearch(new Set([...seen, ...candidates.map((session) => session.id)]));
     const deadline = Date.now() + SEARCH_BUDGET_MS;
     let searched = 0;
     await runWithConcurrency(candidates, 4, async (session) => {
       if (Date.now() > deadline || hits.length >= SEARCH_LIMIT) return;
-      let entry;
+      let texts;
       try {
-        entry = await reader.get(session, new AbortController().signal);
+        texts = await reader.getSearchText(session, new AbortController().signal);
       } catch {
         return;
       }
       searched += 1;
-      for (const message of entry.messages) {
-        if (message.kind === 'tool-call' || message.kind === 'tool-result' || message.role === 'system') continue;
+      for (const message of texts) {
         const index = message.text.toLowerCase().indexOf(needle);
         if (index >= 0) { add(session, 'message', snippetAround(message.text, index, needle.length), message.ts); break; }
       }
