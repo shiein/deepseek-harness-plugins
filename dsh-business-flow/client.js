@@ -1436,6 +1436,10 @@ window.__ModuleLoader__.load({
         const analysisSession = useRef('');
 
         const selected = graph?.nodes.find((n) => n.id === selectedId) ?? null;
+        const selectedRef = useRef(selectedId);
+        selectedRef.current = selectedId;
+        const shownGraphRef = useRef(graph);
+        shownGraphRef.current = graph;
         const views = useMemo(() => VIEWS.map((item) => {
           const sub = deriveView(graph, item.id);
           return { id: item.id, graph: sub, count: sub === null ? 0 : sub.nodes.length };
@@ -1674,6 +1678,8 @@ window.__ModuleLoader__.load({
 
         const draft = useCallback(async () => {
           if (!selected) return;
+          const nodeId = selected.id;
+          const graphAtRequest = graph;
           setBusy('draft');
           setError('');
           try {
@@ -1682,6 +1688,9 @@ window.__ModuleLoader__.load({
               body: { projectPath: graphProject, business: graph?.business || business, node: selected, graph, requirement, sessionId: analysisSession.current },
             });
             analysisSession.current = value.sessionId ?? '';
+            // The user may have picked another node (or record) while the model was writing; the
+            // prompt belongs to the node it was drafted for, so a late answer is dropped.
+            if (selectedRef.current !== nodeId || shownGraphRef.current !== graphAtRequest) return;
             setPrompt(value.prompt);
           } catch (e) { setError(e.message); }
           finally { setBusy(''); }
