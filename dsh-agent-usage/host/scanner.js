@@ -8,7 +8,7 @@
 
 import { dirname, join } from 'node:path';
 import { mergeCells, finalizeCells, cellTokens } from './cells.js';
-import { estimateCellCost, hasPrice, PRICING_VERSION } from './pricing.js';
+import { estimateCellCost, hasPrice, PRICES_FETCHED, PRICING_VERSION, pricingTable } from './pricing.js';
 import { ScanCache } from './scan-cache.js';
 import { loadProviders } from './providers/index.js';
 import { makeScanContext } from './context.js';
@@ -77,6 +77,8 @@ export async function runScan(options) {
   const startedAt = Date.now();
   const dataDir = options.dataDir;
   const config = options.config || {};
+  // Profile `prices` overrides apply to this scan's estimates (not to provider-reported costs).
+  const pricing = pricingTable(config.prices);
   const signal = options.signal || new AbortController().signal;
   await mkdirSafe(dataDir);
 
@@ -145,8 +147,8 @@ export async function runScan(options) {
     let tokens = 0;
     let cost = 0;
     for (const cell of merged) {
-      const cellCost = estimateCellCost(cell);
-      if (cellCost === null && !hasPrice(cell.model)) unpriced.add(cell.model);
+      const cellCost = estimateCellCost(cell, pricing.table);
+      if (cellCost === null && !hasPrice(cell.model, pricing.table)) unpriced.add(cell.model);
       const normalizedCost = cellCost ?? 0;
       tokens += cellTokens(cell);
       cost += normalizedCost;
@@ -213,6 +215,7 @@ export async function runScan(options) {
     scannedAt: Date.now(),
     durationMs: Date.now() - startedAt,
     pricingVersion: PRICING_VERSION,
+    pricing: { version: PRICING_VERSION, fetched: PRICES_FETCHED, overrides: pricing.applied, invalid: pricing.invalid },
     platform: process.platform,
     agents,
     cells: tuples,

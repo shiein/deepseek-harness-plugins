@@ -100,6 +100,12 @@ window.__ModuleLoader__.load({
       'sources.status.broken': '插件异常',
       'sources.warn': '提示',
       'footer.pricing': '价目表 v{version}',
+      'footer.pricingHint': '按公开 API 价格估算（美元 / 百万 token）；插件配置的 prices 字段可覆盖或补充单价',
+      'footer.overrides': '自定义单价',
+      'footer.overrideCount': '自定义 {n} 项',
+      'footer.invalid': '无效的自定义单价（未生效）',
+      'footer.invalidCount': '{n} 项自定义单价无效',
+      'footer.unpriced': '没有单价的模型',
       'footer.dir': '{dir}',
     };
 
@@ -177,6 +183,12 @@ window.__ModuleLoader__.load({
       'sources.status.broken': 'Plugin error',
       'sources.warn': 'Note',
       'footer.pricing': 'price table v{version}',
+      'footer.pricingHint': 'Estimated from public API list prices (USD per 1M tokens); the plugin config field prices overrides or adds rates',
+      'footer.overrides': 'Custom rates',
+      'footer.overrideCount': '{n} custom',
+      'footer.invalid': 'Invalid custom rates (not applied)',
+      'footer.invalidCount': '{n} invalid custom rates',
+      'footer.unpriced': 'Models without a price',
       'footer.dir': '{dir}',
     };
 
@@ -1415,7 +1427,19 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'au-footline' },
             h('span', { className: 'au-foot-left au-ellipsis' }, t('footer.dir', { dir: dataDir || '~/.dsh/agent-usage' })),
-            h('span', { className: 'au-foot-right' }, t('footer.pricing', { version: snapshot?.pricingVersion ?? '—' })),
+            h('span', {
+              className: `au-foot-right${snapshot?.pricing?.invalid?.length ? ' is-warn' : ''}`,
+              title: snapshot?.pricing ? [
+                t('footer.pricingHint'),
+                snapshot.pricing.overrides?.length ? `${t('footer.overrides')}: ${snapshot.pricing.overrides.join(', ')}` : '',
+                snapshot.pricing.invalid?.length ? `${t('footer.invalid')}: ${snapshot.pricing.invalid.join(', ')}` : '',
+                snapshot.unpricedModels?.length ? `${t('footer.unpriced')}: ${snapshot.unpricedModels.join(', ')}` : '',
+              ].filter(Boolean).join('\n') : undefined,
+            },
+              t('footer.pricing', { version: snapshot?.pricing?.version ?? snapshot?.pricingVersion ?? '—' }),
+              snapshot?.pricing?.fetched ? ` · ${snapshot.pricing.fetched}` : '',
+              snapshot?.pricing?.overrides?.length ? ` · ${t('footer.overrideCount', { n: snapshot.pricing.overrides.length })}` : '',
+              snapshot?.pricing?.invalid?.length ? ` · ${t('footer.invalidCount', { n: snapshot.pricing.invalid.length })}` : ''),
           ),
         ),
       );
@@ -1598,6 +1622,7 @@ html[data-platform=darwin] .au-header { min-height: max(40px, calc(var(--dsh-fra
 .au-footline { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 9.5px; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); opacity: .82; min-height: 11px; }
 .au-foot-left { min-width: 0; }
 .au-foot-right { flex: none; white-space: nowrap; }
+.au-foot-right.is-warn { color: var(--dsw-alias-state-warn-primary, #9a6700); }
 .au-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .au-root.is-short .au-subtitle, .au-root.is-short .au-kpi-hint, .au-root.is-short .au-state-hint { display: none; }
 .au-root.is-short .au-panel { padding: 8px 12px 7px; gap: 6px; }

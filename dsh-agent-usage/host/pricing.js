@@ -33,6 +33,9 @@
 
 export const PRICING_VERSION = 4;
 
+/** When the built-in rates were last fetched (see "Rate sources" above). */
+export const PRICES_FETCHED = '2026-11-04';
+
 /** @typedef {{input: number, output: number, cacheRead: number, cacheWrite: number}} ModelPrice */
 
 /**
@@ -369,18 +372,18 @@ export function normalizeModelId(model) {
  * @param {string} model
  * @returns {ModelPrice|null}
  */
-export function priceFor(model) {
+export function priceFor(model, table = PRICES) {
   const normalized = normalizeModelId(model);
   if (normalized === '') return null;
-  const direct = PRICES[normalized];
+  const direct = table[normalized];
   if (direct) return direct;
   // Longest-prefix match handles effort/preview/fast suffixes the alias table missed. The rest must
   // be a named suffix (`-high`): `gpt-5.7` or `claude-opus-4-9` is another version, so it stays unpriced.
   let best = null;
   let bestLength = 0;
-  for (const key of Object.keys(PRICES)) {
+  for (const key of Object.keys(table)) {
     if (normalized.startsWith(key) && key.length > bestLength && /^-[a-z]/.test(normalized.slice(key.length))) {
-      best = PRICES[key];
+      best = table[key];
       bestLength = key.length;
     }
   }
@@ -404,8 +407,8 @@ function explicitSpeedTier(model) {
  * @param {{input?: number, output?: number, cacheRead?: number, cacheWrite?: number, tier?: string}} usage
  * @returns {number|null} USD, or null when the model has no known price
  */
-export function estimateCost(model, usage) {
-  const price = priceFor(model);
+export function estimateCost(model, usage, table = PRICES) {
+  const price = priceFor(model, table);
   if (!price) return null;
   const tier = usage.tier === 'ultrafast' || usage.tier === 'fast'
     ? usage.tier
@@ -432,11 +435,11 @@ export function estimateCost(model, usage) {
  *          costUsd?: number|null, tier?: string}} cell
  * @returns {number|null}
  */
-export function estimateCellCost(cell) {
+export function estimateCellCost(cell, table = PRICES) {
   if (typeof cell.costUsd === 'number' && Number.isFinite(cell.costUsd)) {
     return cell.costUsd;
   }
-  return estimateCost(cell.model, cell);
+  return estimateCost(cell.model, cell, table);
 }
 
 /**
@@ -444,6 +447,46 @@ export function estimateCellCost(cell) {
  * @param {string} model
  * @returns {boolean}
  */
-export function hasPrice(model) {
-  return priceFor(model) !== null;
+export function hasPrice(model, table = PRICES) {
+  return priceFor(model, table) !== null;
+}
+
+const RATE_KEYS = ['input', 'output', 'cacheRead', 'cacheWrite'];
+
+/**
+ * The built-in table with the profile's `prices` overrides on top: `{ "<model id>": { input, output,
+ * cacheRead?, cacheWrite?, fast?: {…} } }` in USD per 1M tokens. Ids are normalised like transcript
+ * model ids, so an override can add a model the table lacks or correct one it has. Invalid entries are
+ * skipped and reported, never half-applied.
+ * @param {unknown} overrides
+ * @returns {{table: Record<string, ModelPrice>, applied: string[], invalid: string[]}}
+ */
+export function pricingTable(overrides) {
+  const table = { ...PRICES };
+  const applied = [];
+  const invalid = [];
+  if (overrides === undefined || overrides === null) return { table, applied, invalid };
+  if (typeof overrides !== 'object' || Array.isArray(overrides)) return { table, applied, invalid: ['(prices must be an object)'] };
+  const rates = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const out = {};
+    for (const key of RATE_KEYS) {
+      if (value[key] === undefined) continue;
+      if (typeof value[key] !== 'number' || !Number.isFinite(value[key]) || value[key] < 0) return null;
+      out[key] = value[key];
+    }
+    return typeof out.input === 'number' && typeof out.output === 'number' ? out : null;
+  };
+  for (const [model, value] of Object.entries(overrides)) {
+    const id = normalizeModelId(model);
+    const base = rates(value);
+    const fast = value && value.fast !== undefined ? rates(value.fast) : undefined;
+    if (id === '' || base === null || fast === null) {
+      invalid.push(model);
+      continue;
+    }
+    table[id] = fast ? { ...base, fast } : base;
+    applied.push(id);
+  }
+  return { table, applied, invalid };
 }

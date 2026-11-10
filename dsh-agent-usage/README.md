@@ -167,7 +167,19 @@ registry discovers it automatically. See `CONTRACT.md`.
   several independent adapters and skips malformed rows rather than guessing.
 - **Pi** integration fixtures record fake model ids (`a`, `b`); model ids are validated and such
   records are bucketed as `unknown`.
-- Costs are **estimates** from public list prices, not subscription bills. Add rates in
-  `host/pricing.js` (`PRICING_VERSION` bumps invalidate nothing but tells you which table produced
-  a snapshot).
+- Costs are **estimates** from public list prices, not subscription bills. Built-in rates live in
+  `host/pricing.js` (`PRICING_VERSION` and the fetch date show in the footer). To correct or add a
+  rate without editing code, set `prices` in the plugin's profile config, USD per 1M tokens:
+
+  ```yaml
+  - id: agent-usage
+    name: '@local/dsh-agent-usage'
+    config:
+      prices:
+        my-local-model: { input: 0.5, output: 1.5 }
+        claude-sonnet-4-5: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
+  ```
+
+  Overrides apply from the next scan; invalid entries are skipped and listed in the footer tooltip.
+  Provider-reported costs are never re-priced.
 - The dashboard is loopback-only (`127.0.0.1`/`::1`); requests from other hosts are rejected.
