@@ -149,6 +149,9 @@ export function isZstdPath(path) {
  * Stream a JSONL file line by line. `.zst` / `.zstd` files are decompressed on the fly; they cannot
  * be resumed from an offset (`startOffset` must be 0) and `bytes` / `endOffset` count decompressed
  * text, so incremental callers must only pass plain files.
+ *
+ * An aborted `signal` rejects with an `AbortError`: a partial read must never look like a complete
+ * file to a caller that caches what it parsed.
  * @param {string} path
  * @param {(line: string, index: number) => void} onLine
  * @param {{startOffset?: number, signal?: AbortSignal}} [options]
@@ -172,6 +175,8 @@ export async function readJsonl(path, onLine, options = {}) {
   if (zstd && typeof zlib.createZstdDecompress !== 'function') {
     throw new Error(`zstd-compressed JSONL needs Node.js ≥ 22.15 (running ${process.version}): ${path}`);
   }
+  const abortError = () => Object.assign(new Error(`read aborted: ${path}`), { name: 'AbortError' });
+  if (signal?.aborted) throw abortError();
   await new Promise((resolvePromise, reject) => {
     const raw = createReadStream(path, zstd ? {} : { encoding: 'utf8', start: startOffset });
     /** @type {import('node:stream').Readable} */
@@ -185,11 +190,15 @@ export async function readJsonl(path, onLine, options = {}) {
       stream.destroy();
       if (stream !== raw) raw.destroy();
     };
+    const onAbort = () => {
+      destroy();
+      reject(abortError());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const detach = () => signal?.removeEventListener('abort', onAbort);
+    stream.on('close', detach);
     stream.on('data', (chunk) => {
-      if (signal?.aborted) {
-        destroy();
-        return;
-      }
+      if (signal?.aborted) return;
       bytes += Buffer.byteLength(chunk);
       tail += chunk;
       if (atStart) {
