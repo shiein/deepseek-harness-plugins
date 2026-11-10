@@ -889,7 +889,7 @@ window.__ModuleLoader__.load({
                     title: `${t('action.copyCommand')}\n${command}`,
                     onClick: (event) => {
                       event.stopPropagation();
-                      onCopyCommand(command);
+                      onCopyCommand(session);
                     },
                   },
                   h(IconCopy),
@@ -2138,6 +2138,24 @@ window.__ModuleLoader__.load({
         [showToast, t],
       );
 
+      /**
+       * The copied command comes from the Host, which quotes every argument for the platform's shell
+       * and prefixes `cd <project>`; the card's own preview is display text only.
+       */
+      const copyResumeCommand = useCallback(
+        async (session) => {
+          try {
+            const payload = await requestJson(API.launch, { method: 'POST', body: { sessionId: session.id, dryRun: true } });
+            const command = typeof payload.copy === 'string' ? payload.copy : '';
+            if (command === '') throw new Error(t('launch.unsupported'));
+            await copyText(command, t('launch.copiedCmd'));
+          } catch (copyError) {
+            showToast(t('launch.failed', { error: copyError instanceof Error ? copyError.message : String(copyError) }), 'error');
+          }
+        },
+        [copyText, showToast, t],
+      );
+
       const continueSession = useCallback(
         async (session) => {
           const agent = agentMap.get(session.agentId);
@@ -2306,7 +2324,7 @@ window.__ModuleLoader__.load({
             expandedId,
             onToggle: toggleSession,
             onContinue: continueSession,
-            onCopyCommand: (command) => copyText(command, t('launch.copiedCmd')),
+            onCopyCommand: copyResumeCommand,
             transcripts,
             loadingIds,
             timeline,
@@ -2336,7 +2354,7 @@ window.__ModuleLoader__.load({
             expandedId,
             onToggle: toggleSession,
             onContinue: continueSession,
-            onCopyCommand: (command) => copyText(command, t('launch.copiedCmd')),
+            onCopyCommand: copyResumeCommand,
             transcripts,
             loadingIds,
             continueLabelFor,
