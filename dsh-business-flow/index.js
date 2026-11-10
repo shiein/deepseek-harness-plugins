@@ -8,10 +8,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import {
-  existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync,
-} from 'node:fs';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { statSync } from 'node:fs';
+import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
@@ -62,11 +60,11 @@ const LEGACY_HISTORY_FILE = join(homedir(), '.dsh', 'bizflow', 'history.json');
  * One-time move of the pre-rename history file. Only when the new file does not exist yet, so a
  * later legacy copy can never overwrite newer records; a failed move is reported, not ignored.
  */
-function migrateLegacyHistory() {
-  if (existsSync(HISTORY_FILE) || !existsSync(LEGACY_HISTORY_FILE)) return;
+async function migrateLegacyHistory() {
+  if (await pathExists(HISTORY_FILE) || !await pathExists(LEGACY_HISTORY_FILE)) return;
   try {
-    mkdirSync(dirname(HISTORY_FILE), { recursive: true });
-    renameSync(LEGACY_HISTORY_FILE, HISTORY_FILE);
+    await mkdir(dirname(HISTORY_FILE), { recursive: true });
+    await rename(LEGACY_HISTORY_FILE, HISTORY_FILE);
   } catch (error) {
     throw bizError(
       `cannot move the old history ${LEGACY_HISTORY_FILE} to ${HISTORY_FILE}: ${error?.message ?? String(error)}`,
@@ -75,24 +73,27 @@ function migrateLegacyHistory() {
   }
 }
 
-/** Saved analyses, kept in the DSH home so a new GUI port keeps them. */
-/** Records the current code cannot read; kept on disk so a later write does not destroy them. */
-function unreadableHistoryEntries() {
+async function pathExists(path) {
   try {
-    const parsed = JSON.parse(readFileSync(HISTORY_FILE, 'utf8'));
-    return Array.isArray(parsed) ? parsed.filter((entry) => !isHistoryEntry(entry)) : [];
+    await stat(path);
+    return true;
   } catch {
-    return [];
+    return false;
   }
 }
 
-function readHistoryFile() {
-  migrateLegacyHistory();
+/**
+ * Saved analyses, kept in the DSH home so a new GUI port keeps them. One read returns both the
+ * records this code understands and the ones it does not (kept on disk so a later write does not
+ * destroy them).
+ */
+async function readHistoryState() {
+  await migrateLegacyHistory();
   let text;
   try {
-    text = readFileSync(HISTORY_FILE, 'utf8');
+    text = await readFile(HISTORY_FILE, 'utf8');
   } catch (error) {
-    if (error && error.code === 'ENOENT') return [];
+    if (error && error.code === 'ENOENT') return { entries: [], unreadable: [] };
     throw bizError(`cannot read the history file: ${error?.message ?? String(error)}`, 500);
   }
   let parsed;
@@ -103,22 +104,29 @@ function readHistoryFile() {
     throw bizError(`history file is not valid JSON, fix or move it first: ${HISTORY_FILE}`, 500);
   }
   if (!Array.isArray(parsed)) throw bizError(`history file is not a list: ${HISTORY_FILE}`, 500);
-  return parsed.filter(isHistoryEntry);
+  return { entries: parsed.filter(isHistoryEntry), unreadable: parsed.filter((entry) => !isHistoryEntry(entry)) };
 }
 
 /** History is unbounded by design (the user decides what to delete); newest first on disk. */
-function writeHistoryFile(entries, { keepUnreadable = true } = {}) {
+async function writeHistoryFile(entries, unreadable) {
   const sorted = [...entries].sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
-  const unreadable = keepUnreadable ? unreadableHistoryEntries() : [];
   try {
-    mkdirSync(dirname(HISTORY_FILE), { recursive: true });
+    await mkdir(dirname(HISTORY_FILE), { recursive: true });
     const temporary = `${HISTORY_FILE}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify([...sorted, ...unreadable]), 'utf8');
-    renameSync(temporary, HISTORY_FILE);
+    await writeFile(temporary, JSON.stringify([...sorted, ...unreadable]), 'utf8');
+    await rename(temporary, HISTORY_FILE);
     return sorted;
   } catch (error) {
     throw bizError(`cannot write the history file: ${error?.message ?? String(error)}`, 500);
   }
+}
+
+/** History reads and read-modify-writes run one at a time, so two saves cannot drop each other's records. */
+let historyQueue = Promise.resolve();
+function withHistory(task) {
+  const run = historyQueue.then(task, task);
+  historyQueue = run.then(() => {}, () => {});
+  return run;
 }
 
 function isHistoryEntry(entry) {
@@ -1068,8 +1076,10 @@ async function handleDraft(ctx, liveSessions, body, signal) {
 }
 
 function handleHistoryGet() {
-  const entries = readHistoryFile().sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
-  return { entries };
+  return withHistory(async () => {
+    const { entries } = await readHistoryState();
+    return { entries: entries.sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0)) };
+  });
 }
 
 /**
@@ -1079,12 +1089,15 @@ function handleHistoryGet() {
 function handleHistoryMerge(body) {
   const entries = Array.isArray(body.entries) ? body.entries.filter(isHistoryEntry) : undefined;
   if (entries === undefined) throw bizError('history save requires an entries array');
-  const byId = new Map(readHistoryFile().map((entry) => [entry.id, entry]));
-  for (const entry of entries) {
-    const existing = byId.get(entry.id);
-    if (existing === undefined || (Number(entry.at) || 0) >= (Number(existing.at) || 0)) byId.set(entry.id, entry);
-  }
-  return { entries: writeHistoryFile([...byId.values()]) };
+  return withHistory(async () => {
+    const state = await readHistoryState();
+    const byId = new Map(state.entries.map((entry) => [entry.id, entry]));
+    for (const entry of entries) {
+      const existing = byId.get(entry.id);
+      if (existing === undefined || (Number(entry.at) || 0) >= (Number(existing.at) || 0)) byId.set(entry.id, entry);
+    }
+    return { entries: await writeHistoryFile([...byId.values()], state.unreadable) };
+  });
 }
 
 /** Insert or replace one entry; `replaceSameRun` also drops older records of the same project + business. */
@@ -1092,8 +1105,11 @@ function handleHistoryUpsert(body) {
   const entry = body.entry;
   if (!isHistoryEntry(entry)) throw bizError('history upsert requires a valid entry');
   const sameRun = (other) => other.projectPath === entry.projectPath && (other.business ?? '') === (entry.business ?? '');
-  const rest = readHistoryFile().filter((other) => other.id !== entry.id && !(body.replaceSameRun === true && sameRun(other)));
-  return { entries: writeHistoryFile([{ ...entry, at: Number(entry.at) || Date.now() }, ...rest]) };
+  return withHistory(async () => {
+    const state = await readHistoryState();
+    const rest = state.entries.filter((other) => other.id !== entry.id && !(body.replaceSameRun === true && sameRun(other)));
+    return { entries: await writeHistoryFile([{ ...entry, at: Number(entry.at) || Date.now() }, ...rest], state.unreadable) };
+  });
 }
 
 /** Delete by ids, by project folder, or everything (`all: true`). */
@@ -1103,9 +1119,13 @@ function handleHistoryDelete(body) {
   if (body.all !== true && ids === null && project === null) {
     throw bizError('history delete requires ids, projectPath or all');
   }
-  const kept = body.all === true ? [] : readHistoryFile().filter((entry) => !(
-    (ids !== null && ids.has(entry.id)) || (project !== null && entry.projectPath === project)));
-  return { entries: writeHistoryFile(kept, { keepUnreadable: body.all !== true }) };
+  return withHistory(async () => {
+    if (body.all === true) return { entries: await writeHistoryFile([], []) };
+    const state = await readHistoryState();
+    const kept = state.entries.filter((entry) => !(
+      (ids !== null && ids.has(entry.id)) || (project !== null && entry.projectPath === project)));
+    return { entries: await writeHistoryFile(kept, state.unreadable) };
+  });
 }
 
 function handlePing(ctx) {

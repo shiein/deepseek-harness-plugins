@@ -70,3 +70,10 @@ test('a failed write reports its cause', { skip: process.platform === 'win32' ||
     chmodSync(dir, 0o755);
   }
 });
+
+test('concurrent saves keep every record', async () => {
+  writeFileSync(file, '[]');
+  const results = await Promise.all(['x1', 'x2', 'x3', 'x4'].map((id) => post('/history/upsert', { entry: entry(id) })));
+  assert.ok(results.every((result) => result.status === 200));
+  assert.deepEqual(onDisk().map((item) => item.id).sort(), ['x1', 'x2', 'x3', 'x4']);
+});
