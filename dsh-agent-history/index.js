@@ -23,7 +23,8 @@ import { join } from 'node:path';
 import { isLoopbackRequest } from './host/loopback.js';
 import { runScanInWorker } from './host/scan-in-worker.js';
 import { runWithConcurrency } from './host/concurrency.js';
-import { loadSnapshot, readSessionViaProvider } from './host/scanner.js';
+import { loadSnapshot } from './host/scanner.js';
+import { TranscriptReaderPool } from './host/transcript-reader-pool.js';
 import { TranscriptReader, buildTimeline } from './host/transcript.js';
 import { buildLaunchPlan, copyableCommand, launchInTerminal } from './host/launch.js';
 import { projectKey } from './host/model.js';
@@ -33,6 +34,7 @@ import { OpenedProjects } from './host/opened-projects.js';
 export const name = 'agent-history';
 
 const SCAN_WORKER_URL = new URL('./host/scan-worker.js', import.meta.url);
+const TRANSCRIPT_WORKER_URL = new URL('./host/transcript-worker.js', import.meta.url);
 
 /** Hard dependency: the browser HTTP carrier that serves the Web GUI this page renders in. */
 export const inject = ['webServer'];
@@ -147,8 +149,10 @@ export function apply(ctx, config = {}) {
     },
   });
 
+  // Transcript reads (synchronous SQLite for several agents) run off the Host thread.
+  const readerPool = new TranscriptReaderPool(TRANSCRIPT_WORKER_URL, { dataDir, config });
   const reader = new TranscriptReader({
-    read: (session, signal) => readSessionViaProvider(dataDir, config, session, signal),
+    read: (session) => readerPool.read(session),
     version: async (session) => {
       try {
         const info = await stat(session.sourcePath);
@@ -368,6 +372,7 @@ export function apply(ctx, config = {}) {
     // Plugin stop / hot reload: do not leave a scan worker reading databases in the background.
     void activeWorker?.terminate();
     activeWorker = null;
+    readerPool.dispose();
   }, 'agent-history: scan worker');
 
   ctx.effect(() => {
