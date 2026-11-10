@@ -290,6 +290,11 @@ window.__ModuleLoader__.load({
         font-size: 11px; color: var(--dsw-alias-label-secondary, #57606a); }
       .bf-status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .bf-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; }
+      .bf-status .bf-dot { background: var(--dsw-alias-state-success-primary, #2f9e6e); }
+      .bf-status.is-nomodel { color: var(--dsw-alias-state-warn-primary, #9a6700); }
+      .bf-status.is-nomodel .bf-dot { background: var(--dsw-alias-state-warn-primary, #d4a72c); }
+      .bf-status.is-fail { color: var(--dsw-alias-state-error-primary, #cf222e); }
+      .bf-status.is-fail .bf-dot { background: var(--dsw-alias-state-error-primary, #cf222e); }
       .bf-steps { display: flex; gap: 10px; align-items: center; font-size: 11px; flex: none;
         color: var(--dsw-alias-label-tertiary, #8b949e); }
       .bf-step { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
@@ -517,7 +522,7 @@ window.__ModuleLoader__.load({
       @media (max-width: 1320px) { .bf-legend-edge { display: none; } }
       @media (max-width: 1180px) { .bf-steps { display: none; } .bf-side { width: 300px; } .bf-graph-title { max-width: 7em; } }
       @media (max-width: 900px) {
-        .bf-status, .bf-legend { display: none; }
+        .bf-status.is-ok, .bf-legend { display: none; }
         .bf-side { width: 260px; }
         .bf-chip { max-width: 22ch; }
       }
@@ -1416,7 +1421,8 @@ window.__ModuleLoader__.load({
         const [prompt, setPrompt] = useState('');
         const [busy, setBusy] = useState('');
         const [error, setError] = useState('');
-        const [status, setStatus] = useState('');
+        /** Model check: `ok` with the provider/model, `nomodel`, `fail`, or '' while unknown. */
+        const [status, setStatus] = useState({ state: '', text: '' });
         const [copied, setCopied] = useState(false);
         const [history, setHistory] = useState([]);
         const [historyLoading, setHistoryLoading] = useState(true);
@@ -1524,9 +1530,11 @@ window.__ModuleLoader__.load({
           api('/ping')
             .then((value) => {
               if (!alive) return;
-              setStatus(value && value.configured ? `${value.provider}/${value.model}` : '');
+              setStatus(value && value.configured
+                ? { state: 'ok', text: `${value.provider}/${value.model}` }
+                : { state: 'nomodel', text: t('pingNoModel') });
             })
-            .catch(() => { if (alive) setStatus(''); });
+            .catch((e) => { if (alive) setStatus({ state: 'fail', text: `${t('pingFail')}: ${e.message}` }); });
           return () => { alive = false; };
         }, []);
 
@@ -1828,9 +1836,11 @@ window.__ModuleLoader__.load({
               [t('step1'), t('step2'), t('step3'), t('step4')].map((label, index) => h('span', {
                 key: label, className: `bf-step${step > index ? ' on' : ''}`,
               }, h('i', null, String(index + 1)), label))),
-            status === '' ? null : h('span', { className: 'bf-status', title: status },
-              h('i', { className: 'bf-dot', style: { background: '#2f9e6e' } }),
-              h('span', { className: 'bf-status-text' }, status)),
+            status.state === '' ? null : h('span', {
+              className: `bf-status is-${status.state}`, title: status.text, role: status.state === 'ok' ? undefined : 'status',
+            },
+              h('i', { className: 'bf-dot' }),
+              h('span', { className: 'bf-status-text' }, status.text)),
             h('button', {
               className: `bf-btn bf-btn-ghost${historyOpen ? ' is-on' : ''}`,
               onClick: (event) => { event.stopPropagation(); setHistoryOpen((open) => !open); },
