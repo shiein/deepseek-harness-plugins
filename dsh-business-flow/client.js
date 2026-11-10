@@ -43,6 +43,7 @@ window.__ModuleLoader__.load({
       draft: 'Generate prompt',
       drafting: 'Generating…',
       promptResult: 'Generated prompt',
+      promptEditable: 'Edit it here before copying or opening a session.',
       openSession: 'Open in new session',
       opening: 'Opening…',
       copyPrompt: 'Copy',
@@ -153,6 +154,7 @@ window.__ModuleLoader__.load({
       draft: '生成精准 prompt',
       drafting: '生成中…',
       promptResult: '生成的 prompt',
+      promptEditable: '可直接在这里修改，复制或新建会话时使用修改后的内容。',
       openSession: '在项目中新建会话',
       opening: '打开中…',
       copyPrompt: '复制',
@@ -402,9 +404,13 @@ window.__ModuleLoader__.load({
         color: var(--dsw-alias-state-error-primary, #cf222e);
         background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #cf222e) 8%, transparent);
         border: 1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary, #cf222e) 26%, transparent); }
-      .bf-prompt-box { flex: 1 1 auto; min-height: 80px; overflow-y: auto; white-space: pre-wrap; font-size: 12px; line-height: 1.65;
+      .bf-prompt-box { flex: 1 1 auto; min-height: 160px; width: 100%; resize: vertical; overflow-y: auto; white-space: pre-wrap;
+        font: inherit; font-size: 12px; line-height: 1.65; color: var(--dsw-alias-label-primary, #1f2328);
         border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); border-radius: 8px;
         background: var(--dsw-alias-bg-base, #fff); padding: 10px; }
+      .bf-prompt-box:focus { outline: 2px solid color-mix(in srgb, var(--bf-accent) 30%, transparent); outline-offset: -1px;
+        border-color: var(--bf-accent); }
+      .bf-prompt-hint { font-size: 11px; color: var(--dsw-alias-label-tertiary, #8b949e); }
       .bf-actions { display: flex; gap: 8px; }
       .bf-actions .bf-btn { flex: 1; }
       .bf-pop { position: absolute; top: calc(100% - 2px); right: 16px; z-index: 30;
@@ -1452,6 +1458,8 @@ window.__ModuleLoader__.load({
         const [selectedId, setSelectedId] = useState(null);
         const [requirement, setRequirement] = useState('');
         const [prompt, setPrompt] = useState('');
+        /** The prompt card stays while the user edits, even if they clear the text. */
+        const [promptShown, setPromptShown] = useState(false);
         const [busy, setBusy] = useState('');
         const [error, setError] = useState('');
         /** Model check: `ok` with the provider/model, `nomodel`, `fail`, or '' while unknown. */
@@ -1523,6 +1531,7 @@ window.__ModuleLoader__.load({
         useEffect(() => {
           setRequirement('');
           setPrompt('');
+          setPromptShown(false);
           setFocusTable(null);
         }, [selectedId]);
 
@@ -1725,6 +1734,7 @@ window.__ModuleLoader__.load({
             setCurrentId(id);
             setSelectedId(null);
             setPrompt('');
+            setPromptShown(false);
             setZoomTouched(false);
             await remember({ id, at: Date.now(), projectPath: path, business: text, graph: nextGraph });
           } catch (e) { setError(e?.name === 'AbortError' ? t('cancelled') : e.message); }
@@ -1761,6 +1771,7 @@ window.__ModuleLoader__.load({
             // prompt belongs to the node it was drafted for, so a late answer is dropped.
             if (selectedRef.current !== nodeId || shownGraphRef.current !== graphAtRequest) return;
             setPrompt(value.prompt);
+            setPromptShown(true);
           } catch (e) { setError(e?.name === 'AbortError' ? t('cancelled') : e.message); }
           finally {
             if (runControl.current === controller) runControl.current = null;
@@ -1802,6 +1813,7 @@ window.__ModuleLoader__.load({
           setSelectedId(null);
           setRequirement('');
           setPrompt('');
+          setPromptShown(false);
           setError('');
           setZoomTouched(false);
           setHistoryOpen(false);
@@ -1868,13 +1880,17 @@ window.__ModuleLoader__.load({
                 className: 'bf-btn bf-btn-primary bf-btn-block', onClick: draft,
                 disabled: busy !== '' || requirement.trim() === '',
               }, t('draft'))),
-          prompt === '' ? null : h('div', { key: 'prompt', className: 'bf-card bf-card-grow' },
+          !promptShown ? null : h('div', { key: 'prompt', className: 'bf-card bf-card-grow' },
             h('div', { className: 'bf-section-label' }, t('promptResult')),
-            h('div', { className: 'bf-prompt-box' }, prompt),
+            h('textarea', {
+              className: 'bf-prompt-box', value: prompt, 'aria-label': t('promptResult'), spellCheck: false,
+              onChange: (event) => setPrompt(event.target.value),
+            }),
+            h('div', { className: 'bf-prompt-hint' }, t('promptEditable')),
             h('div', { className: 'bf-actions' },
               h('button', { className: 'bf-btn', onClick: copy }, copied ? t('copied') : t('copyPrompt')),
               h('button', {
-                className: 'bf-btn bf-btn-primary', onClick: openSession, disabled: busy !== '',
+                className: 'bf-btn bf-btn-primary', onClick: openSession, disabled: busy !== '' || prompt.trim() === '',
               }, busy === 'open' ? t('opening') : t('openSession')))));
 
         const confirmSpec = confirm === null ? null
