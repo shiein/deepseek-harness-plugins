@@ -1878,13 +1878,6 @@ window.__ModuleLoader__.load({
         return () => clearInterval(timer);
       }, [scanning, scanStartedAt]);
 
-      // A new scan generation invalidates every transcript and the merged timeline.
-      useEffect(() => {
-        if (generation === 0) return;
-        setTranscripts(new Map());
-        setTimeline(null);
-      }, [generation]);
-
       const agentMap = useMemo(() => {
         const map = new Map();
         for (const agent of snapshot?.agents || []) map.set(agent.id, agent);
@@ -1994,16 +1987,21 @@ window.__ModuleLoader__.load({
         [agentMap, t],
       );
 
+      /** Transcript requests in flight; a ref so two effects in one tick cannot both start one. */
+      const transcriptRequests = useRef(new Set());
       const fetchTranscript = useCallback(
         async (session) => {
-          if (transcripts.has(session.id) || loadingIds.has(session.id)) return;
+          if (transcriptRequests.current.has(session.id)) return;
+          transcriptRequests.current.add(session.id);
           setLoadingIds((current) => new Set(current).add(session.id));
           try {
             const payload = await requestJson(`${API.session}?id=${encodeURIComponent(session.id)}`);
-            setTranscripts((current) => new Map(current).set(session.id, { messages: payload.messages || [], supported: payload.supported }));
+            const entry = { messages: payload.messages || [], supported: payload.supported, updatedAt: session.updatedAt };
+            setTranscripts((current) => new Map(current).set(session.id, entry));
           } catch (transcriptError) {
             showToast(transcriptError instanceof Error ? transcriptError.message : String(transcriptError), 'error');
           } finally {
+            transcriptRequests.current.delete(session.id);
             setLoadingIds((current) => {
               const next = new Set(current);
               next.delete(session.id);
@@ -2011,32 +2009,56 @@ window.__ModuleLoader__.load({
             });
           }
         },
-        [transcripts, loadingIds, showToast],
+        [showToast],
       );
 
-      const toggleSession = useCallback(
-        (sessionId) => {
-          setExpandedId((current) => (current === sessionId ? '' : sessionId));
-          setFocusId('');
-          const session = sessionsById.get(sessionId);
-          if (session && !transcripts.has(sessionId)) fetchTranscript(session);
-        },
-        [sessionsById, transcripts, fetchTranscript],
-      );
+      // A new scan only invalidates the transcripts of sessions that changed (or disappeared); an
+      // unchanged session keeps what is on screen.
+      useEffect(() => {
+        if (generation === 0) return;
+        setTranscripts((current) => {
+          let changed = false;
+          const next = new Map();
+          for (const [id, entry] of current) {
+            const session = sessionsById.get(id);
+            if (session && session.updatedAt === entry.updatedAt) next.set(id, entry);
+            else changed = true;
+          }
+          return changed ? next : current;
+        });
+      }, [generation]);
 
-      const focusSession = useCallback(
-        (sessionId) => {
-          setTab('sessions');
-          setExpandedId(sessionId);
-          setFocusId(sessionId);
-          const session = sessionsById.get(sessionId);
-          if (session && !transcripts.has(sessionId)) fetchTranscript(session);
-        },
-        [sessionsById, transcripts, fetchTranscript],
-      );
+      // The expanded session always has its transcript: on first expand, and again after a scan
+      // dropped a stale copy.
+      const expandedSession = expandedId === '' ? null : sessionsById.get(expandedId) || null;
+      useEffect(() => {
+        if (expandedSession && !transcripts.has(expandedSession.id)) fetchTranscript(expandedSession);
+      }, [expandedSession, transcripts, fetchTranscript]);
+
+      const toggleSession = useCallback((sessionId) => {
+        setExpandedId((current) => (current === sessionId ? '' : sessionId));
+        setFocusId('');
+      }, []);
+
+      const focusSession = useCallback((sessionId) => {
+        setTab('sessions');
+        setExpandedId(sessionId);
+        setFocusId(sessionId);
+      }, []);
+
+      // The merged timeline depends on which sessions are in scope and how far each has grown, so a
+      // scan that changed nothing here keeps the loaded pages (and the scroll position).
+      const sessionsSignature = useMemo(() => {
+        let hash = 5381;
+        for (const session of currentSessions) {
+          const part = `${session.id}:${session.updatedAt}:${session.messages};`;
+          for (let index = 0; index < part.length; index += 1) hash = ((hash * 33) ^ part.charCodeAt(index)) >>> 0;
+        }
+        return `${currentSessions.length}.${hash.toString(36)}`;
+      }, [currentSessions]);
 
       const timelineKey = selection
-        ? `${selection.kind === 'agent' ? `agent:${selection.id}` : `project:${pathKey(selection.path)}:${selection.deep ? 'deep' : 'exact'}`}|${selectedAgentId}|${timelineQuery.order}|${timelineQuery.role}|${timelineQuery.q.trim()}|${cutoff}`
+        ? `${selection.kind === 'agent' ? `agent:${selection.id}` : `project:${pathKey(selection.path)}:${selection.deep ? 'deep' : 'exact'}`}|${selectedAgentId}|${timelineQuery.order}|${timelineQuery.role}|${timelineQuery.q.trim()}|${cutoff}|${sessionsSignature}`
         : '';
 
       const loadTimeline = useCallback(
