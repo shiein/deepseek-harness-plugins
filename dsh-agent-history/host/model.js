@@ -93,6 +93,22 @@ export function comparablePath(value) {
  * @returns {Array<{key: string, path: string, name: string, sessions: number, messages: number,
  *                  agents: string[], startedAt: number, updatedAt: number, unknown: boolean}>}
  */
+/**
+ * Content signature of a snapshot: what the panel shows (sessions, their growth, agent status). Two
+ * scans with the same signature differ only in timing, so the Client can keep what it has.
+ * @param {{sessions?: any[], agents?: any[]}} snapshot
+ * @returns {string}
+ */
+export function snapshotSignature(snapshot) {
+  let hash = 5381;
+  const add = (text) => {
+    for (let index = 0; index < text.length; index += 1) hash = ((hash * 33) ^ text.charCodeAt(index)) >>> 0;
+  };
+  for (const session of snapshot?.sessions || []) add(`${session.id}|${session.updatedAt}|${session.messages}|${session.title};`);
+  for (const agent of snapshot?.agents || []) add(`${agent.id}|${agent.status}|${agent.sessions}|${agent.error || ''};`);
+  return `${(snapshot?.sessions || []).length}.${hash.toString(36)}`;
+}
+
 export function buildProjects(sessions) {
   const map = new Map();
   for (const session of sessions) {

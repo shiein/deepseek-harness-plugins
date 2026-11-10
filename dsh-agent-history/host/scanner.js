@@ -14,7 +14,7 @@ import { HistoryCache, cachePathIn } from './cache.js';
 import { makeScanContext } from './context.js';
 import { runWithConcurrency } from './concurrency.js';
 import { mkdirSafe } from './fs-extra.js';
-import { buildProjects, finalizeSession } from './model.js';
+import { buildProjects, finalizeSession, snapshotSignature } from './model.js';
 
 const SNAPSHOT_FORMAT = 1;
 const SCAN_CONCURRENCY = 4;
@@ -205,6 +205,7 @@ export async function runScan(options) {
     },
     cacheFiles: sharedCache.size(),
   };
+  snapshot.signature = snapshotSignature(snapshot);
 
   await persistSnapshot(dataDir, snapshot);
   return snapshot;

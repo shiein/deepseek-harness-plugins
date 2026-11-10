@@ -27,7 +27,7 @@ import { loadSnapshot } from './host/scanner.js';
 import { TranscriptReaderPool } from './host/transcript-reader-pool.js';
 import { TranscriptReader, buildTimeline } from './host/transcript.js';
 import { buildLaunchPlan, copyableCommand, launchInTerminal } from './host/launch.js';
-import { projectKey } from './host/model.js';
+import { projectKey, snapshotSignature } from './host/model.js';
 import { OpenedProjects } from './host/opened-projects.js';
 
 /** Cordis plugin name. */
@@ -169,8 +169,21 @@ export function apply(ctx, config = {}) {
     if (!snapshotLoadAttempted) {
       snapshotLoadAttempted = true;
       snapshot = await loadSnapshot(dataDir);
+      // Snapshots saved before signatures existed get one here.
+      if (snapshot && typeof snapshot.signature !== 'string') snapshot.signature = snapshotSignature(snapshot);
     }
     return snapshot;
+  }
+
+  /**
+   * The snapshot, or only its timing when the Client already holds the same content (`since` is the
+   * signature it has). Saves re-sending (and re-rendering) megabytes after an unchanged rescan.
+   */
+  function snapshotPayload(current, since) {
+    if (current && typeof since === 'string' && since !== '' && current.signature === since) {
+      return { unchanged: true, signature: current.signature, scannedAt: current.scannedAt, durationMs: current.durationMs };
+    }
+    return { snapshot: current };
   }
 
   /** Run (or join) one scan. */
@@ -203,7 +216,8 @@ export function apply(ctx, config = {}) {
         if (request.method !== 'GET') return writeJson(response, 405, { ok: false, error: `method not allowed: ${request.method}` });
         try {
           const current = await getSnapshot();
-          writeJson(response, 200, { ok: true, scanning: scanning !== null, dataDir, snapshot: current });
+          const since = requestUrl(request).searchParams.get('since');
+          writeJson(response, 200, { ok: true, scanning: scanning !== null, dataDir, ...snapshotPayload(current, since) });
         } catch (error) {
           writeJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -217,9 +231,10 @@ export function apply(ctx, config = {}) {
         if (request.method !== 'POST') return writeJson(response, 405, { ok: false, error: `method not allowed: ${request.method}` });
         try {
           const started = Date.now();
+          const since = requestUrl(request).searchParams.get('since');
           const { snapshot: next } = await ensureScan();
           logger?.info?.(`[agent-history] scan finished in ${Date.now() - started}ms: ${next.totals.sessions} sessions, ${next.totals.agents} agents`);
-          writeJson(response, 200, { ok: true, scanning: false, dataDir, snapshot: next });
+          writeJson(response, 200, { ok: true, scanning: false, dataDir, ...snapshotPayload(next, since) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           logger?.warn?.(`[agent-history] scan failed: ${message}`);

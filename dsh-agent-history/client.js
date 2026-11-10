@@ -497,8 +497,24 @@ window.__ModuleLoader__.load({
       const [scanning, setScanning] = useState(false);
       const [scanStartedAt, setScanStartedAt] = useState(0);
       const [generation, setGeneration] = useState(0);
+      /** Time of the latest scan, also when it found nothing new (the snapshot object is kept then). */
+      const [scannedAt, setScannedAt] = useState(0);
       const mounted = useRef(true);
       const inFlight = useRef(null);
+      const signature = useRef('');
+      /** Apply a snapshot payload; an `unchanged` one keeps the data (and every derived view) as is. */
+      const accept = (payload) => {
+        if (payload.unchanged) {
+          setScannedAt(payload.scannedAt || 0);
+          return false;
+        }
+        const next = payload.snapshot || null;
+        signature.current = typeof next?.signature === 'string' ? next.signature : '';
+        setSnapshot(next);
+        setScannedAt(next?.scannedAt || 0);
+        return true;
+      };
+      const since = () => (signature.current ? `?since=${encodeURIComponent(signature.current)}` : '');
 
       useEffect(() => {
         mounted.current = true;
@@ -509,9 +525,9 @@ window.__ModuleLoader__.load({
 
       const load = useCallback(async () => {
         try {
-          const payload = await requestJson(API.snapshot);
+          const payload = await requestJson(`${API.snapshot}${since()}`);
           if (!mounted.current) return;
-          setSnapshot(payload.snapshot || null);
+          accept(payload);
           setPhase('ready');
           setError('');
         } catch (loadError) {
@@ -528,12 +544,12 @@ window.__ModuleLoader__.load({
         setScanStartedAt(Date.now());
         const run = (async () => {
           try {
-            const payload = await requestJson(API.scan, { method: 'POST' });
+            const payload = await requestJson(`${API.scan}${since()}`, { method: 'POST' });
             if (!mounted.current) return true;
-            setSnapshot(payload.snapshot || null);
+            const changed = accept(payload);
             setPhase('ready');
             setError('');
-            setGeneration((value) => value + 1);
+            if (changed) setGeneration((value) => value + 1);
             return true;
           } catch (scanError) {
             const message = scanError instanceof Error ? scanError.message : String(scanError);
@@ -557,7 +573,7 @@ window.__ModuleLoader__.load({
         load().then(() => scan());
       }, [load, scan]);
 
-      return { snapshot, phase, error, scanning, scanStartedAt, generation, load, scan, setError };
+      return { snapshot, scannedAt, phase, error, scanning, scanStartedAt, generation, load, scan, setError };
     }
 
     /** Folders the user opened in this panel (Host-persisted, newest first). */
@@ -1828,7 +1844,7 @@ window.__ModuleLoader__.load({
       const { t, subscribeLocale, actions } = props;
       useLocaleTick(subscribeLocale);
       const locale = t.currentLocale ? t.currentLocale() : 'zh';
-      const { snapshot, phase, error, scanning, scanStartedAt, generation, scan, load } = useSnapshot();
+      const { snapshot, scannedAt, phase, error, scanning, scanStartedAt, generation, scan, load } = useSnapshot();
       const opened = useOpenedProjects();
       const rootRef = useRef(null);
       const lastAutoScan = useRef(Date.now());
@@ -2391,7 +2407,7 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'ah-header-scan' },
-              scanning ? t('scan.running', { seconds: elapsed }) : snapshot?.scannedAt ? t('scan.at', { time: fullTime(snapshot.scannedAt) }) : t('scan.never'),
+              scanning ? t('scan.running', { seconds: elapsed }) : scannedAt ? t('scan.at', { time: fullTime(scannedAt) }) : t('scan.never'),
             ),
           ),
           h(
