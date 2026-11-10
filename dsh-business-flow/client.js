@@ -630,6 +630,10 @@ window.__ModuleLoader__.load({
       .bf-dialog-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
       .bf-legend-sep { width: 1px; height: 12px; flex: none; background: var(--dsw-alias-border-l2, rgba(0,0,0,.14)); }
       .bf-edge-label text { font-family: inherit; }
+      .bf-edge-label { animation: bf-fade-in var(--dshp-dur) var(--dshp-ease-out); }
+      .bf-node { transition: transform .28s var(--dshp-ease-out), opacity var(--dshp-dur) ease; }
+      .bf-edge { transition: opacity var(--dshp-dur) ease; }
+      .bf-edge path { transition: d .28s var(--dshp-ease-out), stroke-width var(--dshp-dur-fast) ease; }
       .bf-section-count { margin-left: 6px; font-weight: 500; color: var(--dsw-alias-label-tertiary, #8b949e); }
       .bf-tables { display: flex; flex-direction: column; gap: 6px; padding-top: 8px;
         border-top: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); }
@@ -1453,12 +1457,14 @@ window.__ModuleLoader__.load({
         const d = smoothPath(points, vertical);
         return h('g', {
           key: `e${i}`, className: 'bf-edge', opacity: emphasis && !on ? 0.16 : 1,
+          style: { opacity: emphasis && !on ? 0.16 : 1 },
           onMouseEnter: () => setHoverEdge(i), onMouseLeave: () => setHoverEdge(null),
         },
           h('title', null, e.label === '' ? t(`edge${kind[0].toUpperCase()}${kind.slice(1)}`) : e.label),
           h('path', { d, fill: 'none', stroke: 'transparent', strokeWidth: 12 }),
           h('path', {
-            d, fill: 'none', stroke, strokeWidth: on ? 2.2 : 1.4, strokeLinecap: 'round',
+            // The CSS `d` mirrors the attribute so a re-layout can morph the curve (Chromium).
+            d, style: { d: `path('${d}')` }, fill: 'none', stroke, strokeWidth: on ? 2.2 : 1.4, strokeLinecap: 'round',
             markerEnd: `url(#bf-arrow-${kind})`, opacity: on ? 1 : 0.78,
             strokeDasharray: kind === 'auth' ? '5 4' : undefined,
           }));
@@ -1491,12 +1497,13 @@ window.__ModuleLoader__.load({
         const sub = n.summary === '' ? kindLabel(kind, t) : n.summary;
         return h('g', {
           key: n.id, className: 'bf-node', 'data-id': n.id,
+          // Attribute for exported files, style for the browser: a CSS transform can transition.
           transform: `translate(${p.x},${p.y})`,
           opacity: dim ? 0.32 : 1,
+          style: { cursor: 'pointer', transform: `translate(${p.x}px, ${p.y}px)`, opacity: dim ? 0.32 : 1 },
           onClick: (event) => { event.stopPropagation(); onSelect(n.id); },
           onMouseEnter: () => setHoverNode(n.id),
           onMouseLeave: () => setHoverNode(null),
-          style: { cursor: 'pointer' },
         },
           h('title', null, `${n.name}${n.summary ? `\n${n.summary}` : ''}`),
           addedIds?.has(n.id) ? h('rect', {
