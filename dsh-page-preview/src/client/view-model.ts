@@ -39,6 +39,15 @@ export function readinessLabel(preview: PanelPreview): string {
   return 'unverified'
 }
 
+/**
+ * 状态/新鲜度徽标文案：词典有 `<kind>.<value>` 时用译文，否则原样显示枚举值（新增状态不会显示成空白）。
+ */
+export function badgeLabel(t: (key: string) => string, kind: 'state' | 'freshness', value: string): string {
+  const key = kind + '.' + value
+  const text = t(key)
+  return text === key || text === '' ? value : text
+}
+
 export function stoppable(state: string): boolean {
   return !['stopped', 'failed', 'cleanup_failed'].includes(state)
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { RemoteStreamHandle } from '@deepseek-ai/dsh-typert-protocol'
 import type { PanelSnapshot } from '../../src/client/protocol.ts'
-import { createPanelController, readinessLabel, stoppable } from '../../src/client/view-model.ts'
+import { badgeLabel, createPanelController, readinessLabel, stoppable } from '../../src/client/view-model.ts'
 import type { PanelRemote } from '../../src/client/view-model.ts'
 
 test('panel controller binds the session for remote calls and forwards the open action', async () => {
@@ -48,4 +48,11 @@ test('readiness labels never merge evidence into a fabricated ready; stoppable s
   assert.equal(readinessLabel(preview({ ...base, serviceReachable: evidence('failed') })), 'failed')
   for (const state of ['stopped', 'failed', 'cleanup_failed']) assert.equal(stoppable(state), false)
   for (const state of ['serving', 'preparing', 'starting']) assert.equal(stoppable(state), true)
+})
+
+test('badge labels use the dictionary and fall back to the raw value', () => {
+  const t = (key: string) => ({ 'state.ready': '就绪', 'freshness.stale': '' } as Record<string, string>)[key] ?? key
+  assert.equal(badgeLabel(t, 'state', 'ready'), '就绪')
+  assert.equal(badgeLabel(t, 'state', 'brand_new_state'), 'brand_new_state')
+  assert.equal(badgeLabel(t, 'freshness', 'stale'), 'stale')
 })
