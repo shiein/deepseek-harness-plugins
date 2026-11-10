@@ -224,6 +224,11 @@ window.__ModuleLoader__.load({
       'editor.mcp.enabled': '启用',
       'editor.mcp.storeWarning':
         '环境变量与请求头以明文保存到 {userPath} 或 {workspacePath}，请勿写入无法承担的凭据。',
+      'editor.mcp.workspaceSecrets':
+        '工作区配置保存在项目目录内（{path}），容易随仓库一起提交。含令牌的值建议放到用户级服务器，或把该文件加入 .gitignore。',
+      'editor.mcp.windowsShim':
+        'Windows 上 {command} 是 .cmd 脚本，直接启动可能失败；若连接报错，命令改为 cmd，参数第一行写 /c，第二行写 {command}。',
+      'editor.mcp.sessionScoped': '工作区级服务器只挂载到之后新建的、位于该工作区内的会话；已打开的会话需要新建会话后才能使用。',
       'editor.loading': '正在读取当前配置…',
       'editor.loadFailed': '读取当前配置失败',
 
@@ -465,6 +470,11 @@ window.__ModuleLoader__.load({
       'editor.mcp.enabled': 'Enabled',
       'editor.mcp.storeWarning':
         'Environment variables and headers are stored in plain text under {userPath} or {workspacePath}. Do not put credentials there that you cannot afford to expose.',
+      'editor.mcp.workspaceSecrets':
+        'The workspace store lives inside the project ({path}) and is easily committed with it. Keep tokens in a user-scope server, or add that file to .gitignore.',
+      'editor.mcp.windowsShim':
+        'On Windows {command} is a .cmd script and may fail to start directly; if it does, set the command to cmd with /c and {command} as the first two arguments.',
+      'editor.mcp.sessionScoped': 'Workspace servers mount only on sessions created afterwards inside this workspace; start a new session to use them.',
       'editor.loading': 'Reading the current configuration…',
       'editor.loadFailed': 'Failed to read the current configuration',
 
@@ -2714,6 +2724,12 @@ window.__ModuleLoader__.load({
       const envError = !isHttp && envParsed.error ? t('editor.mcp.invalidEnv', { line: envParsed.error.line }) : '';
       const headersError = isHttp && headersParsed.error ? t('editor.mcp.invalidHeader', { line: headersParsed.error.line }) : '';
       const canSave = !nameError && !commandError && !urlError && !envError && !headersError;
+      // A workspace store lives in the repository folder and is easily committed; env values and
+      // headers are where tokens go.
+      const workspaceSecrets = scope === 'workspace'
+        && (isHttp ? Object.keys(headersParsed.value || {}).length > 0 : Object.keys(envParsed.value || {}).length > 0);
+      // npm/npx/pnpm/yarn are .cmd shims on Windows; spawning the bare name without a shell can fail.
+      const windowsShim = !isHttp && isWindowsPlatform() && /^(npx|npm|pnpm|yarn|bunx)$/i.test(command.trim());
       const formKey = JSON.stringify([serverName, scope, transport, command, argsText, cwd, envText, url, headersText, enabled]);
       const initialKey = useRef(formKey);
       const dirty = formKey !== initialKey.current;
@@ -2919,6 +2935,18 @@ window.__ModuleLoader__.load({
             h(IconAlert, { size: 12 }),
             h('span', null, t('editor.mcp.storeWarning', { userPath: userStorePath, workspacePath: workspaceStorePath })),
           ),
+          workspaceSecrets
+            ? h(
+                'div',
+                { className: 'aa-note aa-note-warn', role: 'status' },
+                h(IconAlert, { size: 12 }),
+                h('span', null, t('editor.mcp.workspaceSecrets', { path: workspaceStorePath })),
+              )
+            : null,
+          windowsShim
+            ? h('div', { className: 'aa-note' }, h('span', null, t('editor.mcp.windowsShim', { command: command.trim() })))
+            : null,
+          scope === 'workspace' ? h('div', { className: 'aa-note' }, h('span', null, t('editor.mcp.sessionScoped'))) : null,
         ),
       );
     }
