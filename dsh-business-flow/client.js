@@ -336,15 +336,23 @@ window.__ModuleLoader__.load({
       step4: '细化',
     };
 
-    const KIND_COLOR = {
+    /** Raw kind colours: CSS token defaults and Mermaid export (which cannot read CSS variables). */
+    const KIND_HEX = {
       entry: '#2f9e6e',
       process: '#2f6fed',
       data: '#b98000',
       permission: '#d64545',
       external: '#7a5af8',
     };
+    /** Kind colours as theme tokens (defined on .bf-page), so a theme can retint them. */
+    const KIND_COLOR = Object.fromEntries(Object.entries(KIND_HEX).map(([kind, hex]) => [kind, `var(--bf-${kind}, ${hex})`]));
+    /**
+     * Kind colour for text: mixed toward the theme's text colour, so labels stay readable on light
+     * and dark backgrounds alike (a mid-tone hue alone is too dark on dark themes).
+     */
+    const KIND_TEXT = Object.fromEntries(Object.keys(KIND_HEX).map((kind) => [kind, `color-mix(in srgb, ${KIND_COLOR[kind]} 76%, var(--bf-ink))`]));
     const KIND_ORDER = ['entry', 'process', 'data', 'permission', 'external'];
-    const EDGE_COLOR = { flow: '#8b949e', data: '#b98000', auth: '#d64545' };
+    const EDGE_COLOR = { flow: 'var(--bf-edge-flow, #8b949e)', data: KIND_COLOR.data, auth: KIND_COLOR.permission };
 
     // Browser cache key of versions before the Host history file; only read to migrate it.
     const STORAGE_KEY = 'bizflow.history.v1';
@@ -352,7 +360,10 @@ window.__ModuleLoader__.load({
     const ACCENT = 'var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary, #2f6fed))';
     const CSS = `
       /* Breakpoints follow the panel's own width (DSH sidebars take part of the window), not the viewport. */
-      .bf-page { container: bfpage / inline-size; --bf-accent: ${ACCENT}; position: relative; display: flex; flex-direction: column;
+      .bf-page { container: bfpage / inline-size; --bf-accent: ${ACCENT};
+        --bf-entry: ${KIND_HEX.entry}; --bf-process: ${KIND_HEX.process}; --bf-data: ${KIND_HEX.data};
+        --bf-permission: ${KIND_HEX.permission}; --bf-external: ${KIND_HEX.external}; --bf-write: #c4560d;
+        --bf-ink: var(--dsw-alias-label-primary, #1f2328); --bf-edge-flow: var(--dsw-alias-label-tertiary, #8b949e); position: relative; display: flex; flex-direction: column;
         height: 100%; min-height: 0; overflow: hidden; box-sizing: border-box;
         background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-primary, #1f2328);
         font-size: 13px; line-height: 1.45; font-family: inherit; -webkit-font-smoothing: antialiased; }
@@ -645,24 +656,24 @@ window.__ModuleLoader__.load({
         border-top: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); }
       .bf-table { display: flex; flex-direction: column; gap: 3px; padding: 6px 8px; border-radius: 8px;
         border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); background: var(--dsw-alias-bg-base, #fff); }
-      .bf-table.is-active { border-color: color-mix(in srgb, #b98000 55%, transparent);
-        background: color-mix(in srgb, #b98000 7%, var(--dsw-alias-bg-base, #fff)); }
+      .bf-table.is-active { border-color: color-mix(in srgb, var(--bf-data) 55%, transparent);
+        background: color-mix(in srgb, var(--bf-data) 9%, var(--dsw-alias-bg-base, #fff)); }
       .bf-table-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
-      .bf-table-icon { display: inline-flex; flex: none; color: #b98000; }
+      .bf-table-icon { display: inline-flex; flex: none; color: var(--bf-data); }
       .bf-table-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px;
         color: var(--dsw-alias-label-primary, #1f2328); }
       .bf-access { flex: none; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.5; }
-      .bf-access-read { color: #2f6fed; background: color-mix(in srgb, #2f6fed 12%, transparent); }
-      .bf-access-write { color: #c4560d; background: color-mix(in srgb, #c4560d 12%, transparent); }
-      .bf-access-readwrite { color: #7a5af8; background: color-mix(in srgb, #7a5af8 12%, transparent); }
+      .bf-access-read { color: color-mix(in srgb, var(--bf-process) 76%, var(--bf-ink)); background: color-mix(in srgb, var(--bf-process) 14%, transparent); }
+      .bf-access-write { color: color-mix(in srgb, var(--bf-write) 76%, var(--bf-ink)); background: color-mix(in srgb, var(--bf-write) 14%, transparent); }
+      .bf-access-readwrite { color: color-mix(in srgb, var(--bf-external) 76%, var(--bf-ink)); background: color-mix(in srgb, var(--bf-external) 14%, transparent); }
       .bf-table-inferred { flex: none; padding: 0 6px; border-radius: 999px; font-size: 10px; line-height: 1.5; cursor: help;
-        color: #9a6700; border: 1px dashed color-mix(in srgb, #b98000 60%, transparent); }
+        color: color-mix(in srgb, var(--bf-data) 72%, var(--bf-ink)); border: 1px dashed color-mix(in srgb, var(--bf-data) 60%, transparent); }
       .bf-table-share { flex: none; padding: 1px 6px; border: 0; border-radius: 6px; background: transparent; cursor: pointer;
         font: inherit; font-size: 10.5px; color: var(--dsw-alias-label-secondary, #57606a); white-space: nowrap; }
       .bf-table-share:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.05));
         color: var(--dsw-alias-label-primary, #1f2328); }
-      .bf-table-share.is-on { color: #9a6700; background: color-mix(in srgb, #b98000 14%, transparent); }
+      .bf-table-share.is-on { color: color-mix(in srgb, var(--bf-data) 72%, var(--bf-ink)); background: color-mix(in srgb, var(--bf-data) 16%, transparent); }
       .bf-table-share:focus-visible { outline: 2px solid var(--bf-accent); outline-offset: 1px; }
       .bf-table-note { padding-left: 19px; font-size: 11px; line-height: 1.5; color: var(--dsw-alias-label-secondary, #57606a); }
       @container bfpage (max-width: 1320px) { .bf-legend-edge { display: none; } }
@@ -1119,7 +1130,7 @@ window.__ModuleLoader__.load({
         const label = edge.label ? `|"${text(edge.label).replace(/\|/g, '#124;')}"|` : '';
         lines.push(`  ${from} ${arrow}${label} ${to}`);
       }
-      for (const [kind, color] of Object.entries(KIND_COLOR)) {
+      for (const [kind, color] of Object.entries(KIND_HEX)) {
         lines.push(`  classDef ${kind} stroke:${color},stroke-width:1.5px`);
       }
       return `${lines.join('\n')}\n`;
@@ -1149,12 +1160,21 @@ window.__ModuleLoader__.load({
       clone.setAttribute('width', String(width));
       clone.setAttribute('height', String(height));
       clone.removeAttribute('class');
+      // A probe inside the page turns var() / color-mix() into the plain rgb() other viewers understand.
+      const probe = document.createElement('span');
+      page.appendChild(probe);
+      const plain = (value) => {
+        probe.style.color = '';
+        probe.style.color = resolveCssColor(value, style);
+        return probe.style.color === '' ? resolveCssColor(value, style) : window.getComputedStyle(probe).color;
+      };
       for (const element of [clone, ...clone.querySelectorAll('*')]) {
         for (const attribute of ['fill', 'stroke']) {
           const value = element.getAttribute(attribute);
-          if (value && value.includes('var(')) element.setAttribute(attribute, resolveCssColor(value, style));
+          if (value && (value.includes('var(') || value.includes('color-mix('))) element.setAttribute(attribute, plain(value));
         }
       }
+      probe.remove();
       const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
       background.setAttribute('width', '100%');
       background.setAttribute('height', '100%');
@@ -1555,7 +1575,7 @@ window.__ModuleLoader__.load({
             x: 46, y: 41, fontSize: 10.5,
             fill: 'var(--dsw-alias-label-secondary, #57606a)',
           }, fitText(sub, 10.5, W - 58)),
-          h('text', { x: 46, y: 59, fontSize: 9.5, fontWeight: 600, fill: color }, kindLabel(kind, t)),
+          h('text', { x: 46, y: 59, fontSize: 9.5, fontWeight: 600, fill: KIND_TEXT[kind] }, kindLabel(kind, t)),
           tableCount === 0 ? null : h('g', { transform: `translate(${W - 12},0)` },
             h('title', null, t('tableCount', { n: tableCount })),
             h('path', {
@@ -1563,7 +1583,7 @@ window.__ModuleLoader__.load({
               fill: 'none', stroke: KIND_COLOR.data, strokeWidth: 1.5, strokeLinejoin: 'round',
             }),
             h('text', {
-              x: 0, y: 59, fontSize: 9.5, fontWeight: 600, textAnchor: 'end', fill: KIND_COLOR.data,
+              x: 0, y: 59, fontSize: 9.5, fontWeight: 600, textAnchor: 'end', fill: KIND_TEXT.data,
             }, String(tableCount))));
       });
 
