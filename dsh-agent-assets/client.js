@@ -620,7 +620,14 @@ window.__ModuleLoader__.load({
     function shortHomePath(homes) {
       const dshHome = String(homes?.dshHome || '');
       if (!dshHome) return '~/.dsh';
-      return dshHome.endsWith('/.dsh') ? '~/.dsh' : dshHome;
+      return /[\\/]\.dsh$/.test(dshHome) ? '~/.dsh' : dshHome;
+    }
+
+    /** Join display path segments with the separator the base already uses (`\` on Windows paths). */
+    function displayJoin(base, ...parts) {
+      const text = String(base || '');
+      const separator = text.includes('\\') && !text.includes('/') ? '\\' : '/';
+      return [text.replace(/[\\/]+$/, ''), ...parts].join(separator);
     }
 
     // -------------------------------------------------------------------------------------
@@ -2389,7 +2396,9 @@ window.__ModuleLoader__.load({
       const canSave = !nameError && !descriptionError && (mode === 'create' ? dirty : true);
       const { requestClose, guard } = useDiscardGuard(t, dirty && !saving, onCancel);
 
-      const root = scope === 'user' ? `${shortHomePath(homes)}/skills` : `${workspace || t('workspace.none')}/.dsh/skills`;
+      const root = scope === 'user'
+        ? displayJoin(shortHomePath(homes), 'skills')
+        : workspace ? displayJoin(workspace, '.dsh', 'skills') : `${t('workspace.none')}/.dsh/skills`;
 
       const handleSave = async () => {
         if (!canSave || saving) return;
@@ -2709,8 +2718,10 @@ window.__ModuleLoader__.load({
       const initialKey = useRef(formKey);
       const dirty = formKey !== initialKey.current;
       const { requestClose, guard } = useDiscardGuard(t, dirty && !saving, onCancel);
-      const userStorePath = `${shortHomePath(homes)}/agent-assets/mcp.json`;
-      const workspaceStorePath = `${workspace || t('workspace.none')}/.dsh/agent-assets/mcp.json`;
+      const userStorePath = displayJoin(shortHomePath(homes), 'agent-assets', 'mcp.json');
+      const workspaceStorePath = workspace
+        ? displayJoin(workspace, '.dsh', 'agent-assets', 'mcp.json')
+        : `${t('workspace.none')}/.dsh/agent-assets/mcp.json`;
 
       const handleSave = async () => {
         if (!canSave || saving) return;
