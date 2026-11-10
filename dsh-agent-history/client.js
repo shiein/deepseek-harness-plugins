@@ -781,6 +781,82 @@ window.__ModuleLoader__.load({
     // Message rendering
     // ---------------------------------------------------------------------------------------
 
+    // ---------------------------------------------------------------------------------------
+    // Markdown: a small, safe subset rendered as React elements (never innerHTML). Agents answer in
+    // Markdown; code fences, headings, lists, quotes, inline code, bold/italic and links are shown,
+    // anything else stays plain text. Links are not followed from here (the URL is the tooltip).
+    // ---------------------------------------------------------------------------------------
+
+    const MD_INLINE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\[[^\]\n]+\]\([^)\s]+\))|(\*[^*\s][^*\n]*\*)/g;
+    const MD_LIST = /^\s*([-*+]|\d+[.)])\s+/;
+    const MD_BREAK = /^(#{1,6}\s|\s*```|\s*~~~|\s*>|\s*([-*+]|\d+[.)])\s+)/;
+
+    function mdInline(text, keyBase) {
+      const out = [];
+      let last = 0;
+      let index = 0;
+      for (const match of String(text).matchAll(MD_INLINE)) {
+        if (match.index > last) out.push(text.slice(last, match.index));
+        const token = match[0];
+        const key = `${keyBase}-${index += 1}`;
+        if (match[1]) out.push(h('code', { key, className: 'ah-md-code' }, token.slice(1, -1)));
+        else if (match[2]) out.push(h('strong', { key }, token.slice(2, -2)));
+        else if (match[3]) {
+          const split = token.indexOf('](');
+          out.push(h('span', { key, className: 'ah-md-link', title: token.slice(split + 2, -1) }, token.slice(1, split)));
+        } else out.push(h('em', { key }, token.slice(1, -1)));
+        last = match.index + token.length;
+      }
+      if (last < text.length) out.push(text.slice(last));
+      return out;
+    }
+
+    function renderMarkdown(source) {
+      const lines = String(source).replace(/\r\n/g, '\n').split('\n');
+      const blocks = [];
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        const key = `b${blocks.length}`;
+        const fence = /^\s*(```|~~~)/.exec(line);
+        if (fence) {
+          const body = [];
+          i += 1;
+          while (i < lines.length && !lines[i].trim().startsWith(fence[1])) body.push(lines[i++]);
+          i += 1;
+          blocks.push(h('pre', { key, className: 'ah-md-pre' }, h('code', null, body.join('\n'))));
+          continue;
+        }
+        if (line.trim() === '') { i += 1; continue; }
+        const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+        if (heading) {
+          blocks.push(h('div', { key, className: `ah-md-h ah-md-h${Math.min(3, heading[1].length)}` }, mdInline(heading[2], key)));
+          i += 1;
+          continue;
+        }
+        if (MD_LIST.test(line)) {
+          const ordered = /^\s*\d/.test(line);
+          const items = [];
+          while (i < lines.length && MD_LIST.test(lines[i])) items.push(lines[i++].replace(MD_LIST, ''));
+          blocks.push(h(ordered ? 'ol' : 'ul', { key, className: 'ah-md-list' },
+            items.map((item, k) => h('li', { key: k }, mdInline(item, `${key}-${k}`)))));
+          continue;
+        }
+        if (/^\s*>/.test(line)) {
+          const quote = [];
+          while (i < lines.length && /^\s*>/.test(lines[i])) quote.push(lines[i++].replace(/^\s*>\s?/, ''));
+          blocks.push(h('blockquote', { key, className: 'ah-md-quote' }, mdInline(quote.join('\n'), key)));
+          continue;
+        }
+        const paragraph = [];
+        while (i < lines.length && lines[i].trim() !== '' && (paragraph.length === 0 || !MD_BREAK.test(lines[i]))) {
+          paragraph.push(lines[i++]);
+        }
+        blocks.push(h('p', { key, className: 'ah-md-p' }, mdInline(paragraph.join('\n'), key)));
+      }
+      return blocks;
+    }
+
     function MessageRow(props) {
       const { message, agents, showTools, compact } = props;
       const agent = agents.get(message.agentId);
@@ -800,7 +876,9 @@ window.__ModuleLoader__.load({
           message.ts ? h('span', { className: 'ah-msg-time' }, fullTime(message.ts)) : null,
           agent && compact ? h(AgentBadge, { agent, compact: true }) : null,
         ),
-        h('div', { className: 'ah-msg-text' }, message.text),
+        message.kind === 'tool-call' || message.kind === 'tool-result' || message.role === 'system'
+          ? h('div', { className: 'ah-msg-text' }, message.text)
+          : h('div', { className: 'ah-msg-text is-md' }, renderMarkdown(message.text)),
       );
     }
 
@@ -2806,6 +2884,18 @@ window.__ModuleLoader__.load({
 .ah-msg-role { font-size: 9px; font-weight: 700; letter-spacing: .06em; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
 .ah-msg-time { font-size: 9.5px; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); font-variant-numeric: tabular-nums; }
 .ah-msg-text { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dsw-alias-label-primary); max-height: 320px; overflow: auto; }
+.ah-msg-text.is-md { white-space: normal; line-height: 1.6; }
+.ah-md-p { margin: 0 0 6px; white-space: pre-wrap; }
+.ah-md-p:last-child, .ah-md-list:last-child, .ah-md-pre:last-child { margin-bottom: 0; }
+.ah-md-h { font-weight: 650; margin: 8px 0 4px; }
+.ah-md-h1 { font-size: 14px; } .ah-md-h2 { font-size: 13px; } .ah-md-h3 { font-size: 12.5px; }
+.ah-md-list { margin: 0 0 6px; padding-left: 20px; }
+.ah-md-quote { margin: 0 0 6px; padding-left: 10px; border-left: 3px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); white-space: pre-wrap; }
+.ah-md-pre { margin: 0 0 6px; padding: 8px 10px; border-radius: 6px; overflow-x: auto; white-space: pre; font-size: 11px;
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); background: var(--dsw-alias-bg-layer-2, rgba(0,0,0,.05)); }
+.ah-md-code { padding: 0 4px; border-radius: 4px; font-size: 11px; font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  background: var(--dsw-alias-bg-layer-2, rgba(0,0,0,.06)); }
+.ah-md-link { color: var(--dsw-alias-link, var(--dsw-alias-brand-primary)); text-decoration: underline dotted; }
 .ah-msg-tool-call .ah-msg-text, .ah-msg-tool-result .ah-msg-text { font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 10.5px; color: var(--dsw-alias-label-secondary); max-height: 140px; }
 .ah-timeline-messages { display: flex; flex-direction: column; gap: 2px; padding-top: 10px; }
 .ah-tl { display: grid; grid-template-columns: 42px 3px minmax(0, 1fr); gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--dsw-alias-border-l1); }
