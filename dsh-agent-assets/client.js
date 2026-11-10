@@ -245,6 +245,10 @@ window.__ModuleLoader__.load({
       'editor.stale': '这个文件在你打开后已被其他程序修改（例如 Agent）。关闭后重新打开可看到最新内容，或者用你的版本覆盖。',
       'editor.overwrite': '仍然覆盖保存',
       'detail.section.files': '其他文件（{count}）',
+      'editor.skill.clashWorkspace': '当前工作区已有同名技能，在这个工作区里会优先使用工作区的那个。',
+      'editor.skill.clashUser': '已有同名的用户级技能；在这个工作区里，新技能会覆盖它。',
+      'editor.skill.clashBundled': '已有同名的内置技能，新技能会覆盖它。',
+      'editor.mcp.clash': '另一作用域已有名为 {name} 的服务器。两者都会挂载，工具名同为 mcp__{name}__*，会相互冲突；建议换一个名字。',
       'detail.section.tools': '工具（{count}）',
       'detail.fileLink': '链接',
       'detail.filesTruncated': '只列出前 200 个文件。',
@@ -499,6 +503,10 @@ window.__ModuleLoader__.load({
       'editor.stale': 'This file was changed by another program (an agent, for example) after you opened it. Reopen it to see the latest version, or overwrite it with yours.',
       'editor.overwrite': 'Overwrite anyway',
       'detail.section.files': 'Other files ({count})',
+      'editor.skill.clashWorkspace': 'This workspace already has a skill with this name; inside it, that one takes precedence.',
+      'editor.skill.clashUser': 'A user skill with this name exists; inside this workspace the new skill replaces it.',
+      'editor.skill.clashBundled': 'A bundled skill with this name exists; the new skill replaces it.',
+      'editor.mcp.clash': 'The other scope already has a server named {name}. Both mount and their tools are both named mcp__{name}__*, so they collide; pick another name.',
       'detail.section.tools': 'Tools ({count})',
       'detail.fileLink': 'link',
       'detail.filesTruncated': 'Only the first 200 files are listed.',
@@ -2427,14 +2435,28 @@ window.__ModuleLoader__.load({
 
     // ----- Skill editor ---------------------------------------------------------------
 
-    function SkillEditor({ t, locale, dialog, workspace, homes, onCancel, onRetry, onSubmit }) {
+    function SkillEditor({ t, locale, dialog, workspace, homes, existing, onCancel, onRetry, onSubmit }) {
       const title = t(dialog.mode === 'create' ? 'editor.skill.createTitle' : 'editor.skill.editTitle');
       if (dialog.status === 'loading') return h(EditorLoadingDialog, { t, title, onCancel });
       if (dialog.status === 'error') return h(EditorErrorDialog, { t, title, error: dialog.error, onCancel, onRetry });
-      return h(SkillForm, { t, locale, dialog, workspace, homes, onCancel, onSubmit });
+      return h(SkillForm, { t, locale, dialog, workspace, homes, existing, onCancel, onSubmit });
     }
 
-    function SkillForm({ t, dialog, workspace, homes, onCancel, onSubmit }) {
+    /**
+     * What a new skill named like an existing one does. Workspace skills take precedence over user
+     * ones, and both over bundled ones, so a same-named skill is shadowed or shadows (no error).
+     */
+    function skillNameClash(t, existing, name, scope) {
+      if (!name || !Array.isArray(existing)) return '';
+      const same = existing.filter((item) => item && item.name === name);
+      if (same.some((item) => item.scope === scope)) return '';
+      if (scope === 'user' && same.some((item) => item.scope === 'workspace')) return t('editor.skill.clashWorkspace');
+      if (scope === 'workspace' && same.some((item) => item.scope === 'user')) return t('editor.skill.clashUser');
+      if (same.some((item) => item.scope === 'bundled')) return t('editor.skill.clashBundled');
+      return '';
+    }
+
+    function SkillForm({ t, dialog, workspace, homes, existing, onCancel, onSubmit }) {
       const mode = dialog.mode;
       const target = dialog.target || null;
       const initial = dialog.initial || null;
@@ -2601,6 +2623,10 @@ window.__ModuleLoader__.load({
               onChange: (event) => setBody(event.target.value),
             }),
           ),
+          mode === 'create' && skillNameClash(t, existing, trimmedName, scope)
+            ? h('div', { className: 'aa-note aa-note-warn', role: 'status' }, h(IconAlert, { size: 12 }),
+                h('span', null, skillNameClash(t, existing, trimmedName, scope)))
+            : null,
           h('div', { className: 'aa-note' }, t('editor.skill.pathNote', { root })),
         ),
       );
@@ -2757,14 +2783,14 @@ window.__ModuleLoader__.load({
 
     // ----- MCP editor -----------------------------------------------------------------
 
-    function McpEditor({ t, locale, dialog, workspace, homes, onCancel, onRetry, onSubmit }) {
+    function McpEditor({ t, locale, dialog, workspace, homes, existing, onCancel, onRetry, onSubmit }) {
       const title = t(dialog.mode === 'create' ? 'editor.mcp.createTitle' : 'editor.mcp.editTitle');
       if (dialog.status === 'loading') return h(EditorLoadingDialog, { t, title, onCancel });
       if (dialog.status === 'error') return h(EditorErrorDialog, { t, title, error: dialog.error, onCancel, onRetry });
-      return h(McpForm, { t, dialog, workspace, homes, onCancel, onSubmit });
+      return h(McpForm, { t, dialog, workspace, homes, existing, onCancel, onSubmit });
     }
 
-    function McpForm({ t, dialog, workspace, homes, onCancel, onSubmit }) {
+    function McpForm({ t, dialog, workspace, homes, existing, onCancel, onSubmit }) {
       const mode = dialog.mode;
       const target = dialog.target || null;
       const initial = dialog.initial || null;
@@ -2801,6 +2827,9 @@ window.__ModuleLoader__.load({
       const envError = !isHttp && envParsed.error ? t('editor.mcp.invalidEnv', { line: envParsed.error.line }) : '';
       const headersError = isHttp && headersParsed.error ? t('editor.mcp.invalidHeader', { line: headersParsed.error.line }) : '';
       const canSave = !nameError && !commandError && !urlError && !envError && !headersError;
+      // User and workspace rows of the same name both mount, and their tools share mcp__<name>__.
+      const mcpClash = mode === 'create' && trimmedName !== '' && Array.isArray(existing)
+        && existing.some((item) => item && item.serverName === trimmedName && item.scope !== scope);
       // A workspace store lives in the repository folder and is easily committed; env values and
       // headers are where tokens go.
       const workspaceSecrets = scope === 'workspace'
@@ -3012,6 +3041,10 @@ window.__ModuleLoader__.load({
             h(IconAlert, { size: 12 }),
             h('span', null, t('editor.mcp.storeWarning', { userPath: userStorePath, workspacePath: workspaceStorePath })),
           ),
+          mcpClash
+            ? h('div', { className: 'aa-note aa-note-warn', role: 'status' }, h(IconAlert, { size: 12 }),
+                h('span', null, t('editor.mcp.clash', { name: trimmedName })))
+            : null,
           workspaceSecrets
             ? h(
                 'div',
@@ -4210,7 +4243,7 @@ window.__ModuleLoader__.load({
             onRetry: () => openEditor(dialog.tab, dialog.mode, dialog.target),
           };
           if (dialog.tab === 'skills') {
-            nodes.push(h(SkillEditor, { ...editorCommon, onSubmit: submitSkill }));
+            nodes.push(h(SkillEditor, { ...editorCommon, existing: skillsList || [], onSubmit: submitSkill }));
           } else if (dialog.tab === 'instructions') {
             nodes.push(
               h(InstructionEditor, {
@@ -4221,7 +4254,7 @@ window.__ModuleLoader__.load({
               }),
             );
           } else {
-            nodes.push(h(McpEditor, { ...editorCommon, onSubmit: submitMcp }));
+            nodes.push(h(McpEditor, { ...editorCommon, existing: mcpServers || [], onSubmit: submitMcp }));
           }
         }
         if (importOpen) {
