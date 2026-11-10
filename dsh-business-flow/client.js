@@ -584,8 +584,29 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * Records written by older versions or edited by hand may lack `edges` (only `nodes` is required to
+     * list them); every view reads both, so they are filled in here once.
+     */
+    function normalizeEntry(entry) {
+      const graph = entry.graph;
+      const nodes = graph.nodes
+        .filter((node) => node && typeof node === 'object' && typeof node.id === 'string')
+        .map((node) => ({
+          ...node,
+          name: typeof node.name === 'string' && node.name !== '' ? node.name : node.id,
+          summary: typeof node.summary === 'string' ? node.summary : '',
+          files: Array.isArray(node.files) ? node.files.filter((file) => typeof file === 'string') : [],
+        }));
+      const edges = Array.isArray(graph.edges)
+        ? graph.edges.filter((edge) => edge && typeof edge === 'object')
+          .map((edge) => ({ ...edge, label: typeof edge.label === 'string' ? edge.label : '' }))
+        : [];
+      return { ...entry, graph: { ...graph, nodes, edges } };
+    }
+
     function sortHistory(entries) {
-      return [...entries].sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+      return entries.map(normalizeEntry).sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
     }
 
     function newEntryId() {
