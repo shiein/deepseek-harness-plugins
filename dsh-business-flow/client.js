@@ -1408,6 +1408,8 @@ window.__ModuleLoader__.load({
         const [projectPath, setProjectPath] = useState('');
         const [business, setBusiness] = useState('');
         const [graph, setGraph] = useState(null);
+        /** Project the graph on screen was drawn from; drafts and new sessions always use it. */
+        const [graphProject, setGraphProject] = useState('');
         const [currentId, setCurrentId] = useState(null);
         const [selectedId, setSelectedId] = useState(null);
         const [requirement, setRequirement] = useState('');
@@ -1653,6 +1655,7 @@ window.__ModuleLoader__.load({
             analysisSession.current = value.sessionId ?? '';
             const id = keepId || newEntryId();
             setGraph(nextGraph);
+            setGraphProject(path);
             setCurrentId(id);
             setSelectedId(null);
             setPrompt('');
@@ -1676,13 +1679,13 @@ window.__ModuleLoader__.load({
           try {
             const value = await api('/draft', {
               method: 'POST',
-              body: { projectPath, business: graph?.business || business, node: selected, graph, requirement, sessionId: analysisSession.current },
+              body: { projectPath: graphProject, business: graph?.business || business, node: selected, graph, requirement, sessionId: analysisSession.current },
             });
             analysisSession.current = value.sessionId ?? '';
             setPrompt(value.prompt);
           } catch (e) { setError(e.message); }
           finally { setBusy(''); }
-        }, [projectPath, business, graph, selected, requirement]);
+        }, [graphProject, business, graph, selected, requirement]);
 
         const openSession = useCallback(async () => {
           setBusy('open');
@@ -1691,14 +1694,14 @@ window.__ModuleLoader__.load({
             const workspaces = ctx.get('workspaces');
             const ui = ctx.get('uiWorkspace');
             if (workspaces === undefined || ui === undefined) throw new Error('workspace services unavailable');
-            const view = await workspaces.create({ path: projectPath });
+            const view = await workspaces.create({ path: graphProject });
             const id = view && (view.id ?? view.workspaceId);
             if (id === undefined) throw new Error('workspace create returned no id');
             ui.startSession(id, { prompt, whenDraftExists: 'replace' });
             ctx.get('layout')?.selectPanel?.(null);
           } catch (e) { setError(`${t('openFail')}: ${e.message}`); }
           finally { setBusy(''); }
-        }, [projectPath, prompt]);
+        }, [graphProject, prompt]);
 
         const copy = useCallback(async () => {
           try {
@@ -1713,6 +1716,7 @@ window.__ModuleLoader__.load({
           setProjectPath(entry.projectPath);
           setBusiness(entry.business || entry.graph.business || '');
           setGraph(entry.graph);
+          setGraphProject(entry.projectPath);
           setCurrentId(entry.id);
           setSelectedId(null);
           setRequirement('');
