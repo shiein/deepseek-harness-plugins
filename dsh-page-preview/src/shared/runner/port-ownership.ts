@@ -5,7 +5,8 @@
  * 否则只接受归属核对通过的监听地址，失败返回 ownership_unverified。
  *
  * 平台实现：macOS 用 lsof/ps（已实测）；Linux 用 /proc/net/tcp* + /proc/<pid>/fd + /proc/<pid>/stat
- * （procfs.ts，解析器有合成树单测，真实 Linux 端到端验收仍是待办）；其余平台返回 unsupported。
+ * （procfs.ts，解析器有合成树单测，真实 Linux 端到端验收仍是待办）；Windows 用 Get-NetTCPConnection
+ * 与 CIM 进程表（winproc.ts，解析器有合成输出单测，真实 Windows 未验）；其余平台返回 unsupported。
  */
 
 import { execFile } from 'node:child_process'
@@ -14,6 +15,7 @@ import type { AddressInfo } from 'node:net'
 import { promisify } from 'node:util'
 import { DiagnosticCode, RunnerSessionError } from '../errors.ts'
 import { procProcessTable, procSocketOwners, procTcpListeners } from './procfs.ts'
+import { compareStartTime, isLoopbackAddress, winProcessTable, winTcpListeners } from './winproc.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -38,6 +40,9 @@ export async function findListeningPids(port: number): Promise<number[]> {
   if (process.platform === 'linux') {
     const inodes = new Set((await procTcpListeners()).filter(value => value.port === port).map(value => value.inode))
     return [...(await procSocketOwners())].filter(([inode]) => inodes.has(inode)).flatMap(([, pids]) => [...pids])
+  }
+  if (process.platform === 'win32') {
+    return [...new Set((await winTcpListeners()).filter(value => value.port === port).map(value => value.pid))]
   }
   const output = await queryListeners(['-iTCP:' + port, '-sTCP:LISTEN', '-Fp'])
   return [...new Set(output.split('\n').filter((line) => /^p\d+$/.test(line)).map((line) => Number(line.slice(1))))]
@@ -68,6 +73,14 @@ export async function findOwnedListeningPorts(rootPid: number): Promise<number[]
     }
     return [...ports].sort((a, b) => a - b)
   }
+  if (process.platform === 'win32') {
+    const parents = await processParents()
+    const ports = new Set<number>()
+    for (const listener of await winTcpListeners()) {
+      if (isLoopbackAddress(listener.address) && descendant(listener.pid, rootPid, parents)) ports.add(listener.port)
+    }
+    return [...ports].sort((a, b) => a - b)
+  }
   const output = await queryListeners(['-iTCP', '-sTCP:LISTEN', '-Fpn'])
   const parents = await processParents()
   const ports = new Set<number>()
@@ -90,6 +103,7 @@ async function processParents(): Promise<Map<number, number>> {
     for (const [pid, identity] of await procProcessTable()) parents.set(pid, identity.ppid)
     return parents
   }
+  if (process.platform === 'win32') return windowsParents(await winProcessTable())
   requireSupportedPlatform()
   const { stdout } = await execFileAsync('/bin/ps', ['-axo', 'pid=,ppid='], { env: { LC_ALL: 'C' } })
   const parents = new Map<number, number>()
@@ -97,6 +111,20 @@ async function processParents(): Promise<Map<number, number>> {
     const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
     if (!match) throw new Error('Unexpected ps process table output')
     parents.set(Number(match[1]), Number(match[2]))
+  }
+  return parents
+}
+
+/**
+ * Windows 不重挂孤儿：PPID 可能指向已退出、又被更晚的进程复用的 PID。只保留父进程早于子进程创建
+ * 的父子边，复用 PID 不会把无关进程接到托管树上。
+ */
+export function windowsParents(table: Map<number, { pid: number; ppid: number; startTime: string }>): Map<number, number> {
+  const parents = new Map<number, number>()
+  for (const [pid, identity] of table) {
+    const parent = table.get(identity.ppid)
+    const consistent = parent !== undefined && compareStartTime(parent.startTime, identity.startTime) <= 0
+    parents.set(pid, consistent ? identity.ppid : 0)
   }
   return parents
 }
@@ -113,11 +141,11 @@ function descendant(pid: number, rootPid: number, parents: Map<number, number>):
 
 /** 不支持的平台如实返回 unsupported 诊断错误，不抛无码异常、不把未知归属当成通过或不存在。 */
 export function requireSupportedPlatform(): void {
-  if (!['darwin', 'linux'].includes(process.platform)) {
+  if (!['darwin', 'linux', 'win32'].includes(process.platform)) {
     throw new RunnerSessionError({
       code: DiagnosticCode.unsupportedCapability, phase: 'start',
       message: 'Process and port ownership inspection is not implemented on ' + process.platform,
-      hint: 'Run on a supported platform (macOS or Linux); there is no ownership-check fallback',
+      hint: 'Run on a supported platform (macOS, Linux or Windows); there is no ownership-check fallback',
     })
   }
 }

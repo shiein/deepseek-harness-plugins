@@ -1,7 +1,10 @@
 /**
  * 托管进程与进程树终止（方案 §9.2）。
  * - POSIX：detached 新进程组；停止时对 -pgid 发 SIGTERM，超时后 SIGKILL
- * - 当前只启用已实测的 macOS；Windows/Linux 在分配资源前明确拒绝
+ * - Windows：没有进程组也没有可捕获的 SIGTERM（Node 的 kill 即 TerminateProcess）。带 IPC 的执行器
+ *   先断开 IPC 通道（worker 的 'disconnect' 走与 SIGTERM 相同的有界优雅关闭），宽限期后逐个终止
+ *   按「组长后代 + 创建时间」核对过的成员；无 IPC 的项目命令只能强制终止。真实 Windows 未验。
+ * - 平台：macOS 实测；Linux 在 Docker 实测；Windows 有实现与合成单测，未实机验收
  * - npm run 等包装进程不一定转发信号，不能只杀直接子进程
  * - setsid 脱离进程组的后代无法覆盖，列为残留
  * - 先登记账本再返回句柄
@@ -12,8 +15,11 @@ import { isAbsolute } from 'node:path'
 import type { Readable } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
 import { DiagnosticCode } from '../shared/errors.ts'
-import { processTable, requireSupportedPlatform, signalPid } from '../shared/runner/process-table.ts'
-import type { ProcessIdentity } from '../shared/runner/process-table.ts'
+import {
+  groupMembersOf, leadsGroup, processTable, requireSupportedPlatform, signalGroup, signalPid, usesProcessGroups,
+} from '../shared/runner/process-table.ts'
+import type { ProcessGroup, ProcessIdentity } from '../shared/runner/process-table.ts'
+import { launchCommand, withPlatformBase } from '../shared/runner/platform-env.ts'
 import { readProcessStartTime } from './ledger.ts'
 import type { ResourceLedger } from './ledger.ts'
 
@@ -70,7 +76,13 @@ export async function spawnManaged(
   // 先确认当前运行环境能检查进程身份；例如沙箱拒绝 ps 时不能先启动再留下无法核对的服务。
   await processTable()
   signal?.throwIfAborted()
-  const child = spawn(spec.executable, spec.args, { cwd: spec.cwd, env: spec.env, shell: false, detached: true, stdio: spec.ipc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'] })
+  // windowsHide：Windows 上 detached 子进程默认会弹出新的控制台窗口；.cmd/.bat 经 cmd.exe 启动。
+  const launch = launchCommand(spec.executable, spec.args)
+  const child = spawn(launch.executable, launch.args, {
+    cwd: spec.cwd, env: withPlatformBase(spec.env), shell: false, detached: true, windowsHide: true,
+    ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    stdio: spec.ipc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
+  })
   const listeners = new Set<(message: unknown) => void>()
   const initialMessages: unknown[] = []
   let subscribed = false
@@ -113,7 +125,7 @@ export async function spawnManaged(
     signal?.throwIfAborted()
   } catch (error) {
     if (!startTime) {
-      const residual = [...(await processTable()).values()].filter(process => process.pgid === pid).map(process => process.pid)
+      const residual = groupMembersOf(await processTable(), { pgid: pid }).map(process => process.pid)
       if (residual.length) throw new ManagedProcessError('Startup identity unavailable; no unverified process was signalled', DiagnosticCode.cleanupFailed, residual, error)
       throw error
     }
@@ -128,13 +140,27 @@ export async function spawnManaged(
   let stopped = false
   let stopping: Promise<number[]> | undefined
   const knownResidual = new Map<number, { identity: ProcessIdentity; entryId?: string }>()
+  let exitedAlready = false
+  void exited.then(() => { exitedAlready = true }, () => { exitedAlready = true })
+  /**
+   * Windows 的优雅关闭：断开 IPC，等组长在宽限期内自行退出；返回留给强制终止阶段的等待时间。
+   * POSIX 与无 IPC 的进程直接进入 stopGroup（SIGTERM 本身就是优雅信号）。
+   */
+  const gracefulWindowsExit = async (graceMs: number): Promise<number> => {
+    if (usesProcessGroups() || !spec.ipc || exitedAlready || !child.connected) return graceMs
+    const started = Date.now()
+    child.disconnect()
+    await Promise.race([exited.catch(() => {}), delay(graceMs)])
+    return Math.max(0, graceMs - (Date.now() - started))
+  }
   return {
     ...identity, exited, stdout: textOutput(child.stdout), stderr: textOutput(child.stderr), ...(spec.ipc ? { ipc } : {}),
     stop(graceMs = 5000) {
       if (stopped) return Promise.resolve([])
       if (stopping) return stopping
       stopping = (async () => {
-        const remaining = await stopGroup(identity, graceMs, async (escaped) => {
+        const forcedGraceMs = await gracefulWindowsExit(graceMs)
+        const remaining = await stopGroup(identity, forcedGraceMs, async (escaped) => {
           // 在组长终止前落盘，停止期间 Host 被强制结束也不会丢掉已观察到的逃逸身份。
           for (const process of escaped) {
             let saved = knownResidual.get(process.pid)
@@ -173,34 +199,38 @@ export async function killTree(proc: Pick<ManagedProcess, 'pid' | 'pgid' | 'star
 async function stopGroup(proc: Pick<ManagedProcess, 'pid' | 'pgid' | 'startTime'>, graceMs: number, recordEscaped?: (processes: ProcessIdentity[]) => Promise<void>): Promise<ProcessIdentity[]> {
   requireSupportedPlatform()
   if (!Number.isSafeInteger(proc.pid) || proc.pid < 1 || proc.pgid !== proc.pid || !proc.startTime || !Number.isFinite(graceMs) || graceMs < 0) throw new RangeError('Invalid managed process identity or grace period')
+  const group: ProcessGroup = { pgid: proc.pgid, leaderStart: proc.startTime }
   const initial = await processTable()
   const leader = initial.get(proc.pid)
-  const members = [...initial.values()].filter(process => process.pgid === proc.pgid)
+  const members = groupMembersOf(initial, group)
   if (!leader) return members
-  if (leader.startTime !== proc.startTime || leader.pgid !== proc.pgid) throw new ManagedProcessError('Process identity changed; no signal was sent', DiagnosticCode.ownershipUnverified, [proc.pid])
-  const escaped = [...initial.values()].filter(process => process.pgid !== proc.pgid && descendant(process.pid, proc.pid, initial))
+  if (leader.startTime !== proc.startTime || !leadsGroup(leader, proc.pgid)) throw new ManagedProcessError('Process identity changed; no signal was sent', DiagnosticCode.ownershipUnverified, [proc.pid])
+  // 只有真实进程组才会有「组外后代」（setsid 等）；Windows 的组员本身就按后代判定。
+  const escaped = usesProcessGroups()
+    ? [...initial.values()].filter(process => process.pgid !== proc.pgid && descendant(process.pid, proc.pid, initial))
+    : []
   if (recordEscaped && escaped.length) {
     await recordEscaped(escaped)
     if (await readProcessStartTime(proc.pid) !== proc.startTime) throw new ManagedProcessError('Process identity changed while recording descendants; no signal was sent', DiagnosticCode.ownershipUnverified, [proc.pid, ...escaped.map(process => process.pid)])
   }
-  signalPid(-proc.pgid, 'SIGTERM')
-  let current = await waitForGroup(proc.pgid, graceMs)
+  signalGroup(group, members, 'SIGTERM')
+  let current = await waitForGroup(group, graceMs)
   // SIGTERM 后组长可能先退出；只对初始快照中启动时间仍匹配的成员升级信号。
+  const alive = new Set(groupMembersOf(current, group).map(process => process.pid))
   for (const member of members) {
-    const alive = current.get(member.pid)
-    if (alive?.startTime === member.startTime && alive.pgid === proc.pgid) signalPid(member.pid, 'SIGKILL')
+    if (alive.has(member.pid) && current.get(member.pid)?.startTime === member.startTime) signalPid(member.pid, 'SIGKILL')
   }
-  if ([...current.values()].some(process => process.pgid === proc.pgid)) current = await waitForGroup(proc.pgid, 1000)
-  const residual = [...current.values()].filter(process => process.pgid === proc.pgid)
+  if (groupMembersOf(current, group).length) current = await waitForGroup(group, 1000)
+  const residual = groupMembersOf(current, group)
   for (const process of escaped) if (current.get(process.pid)?.startTime === process.startTime) residual.push(process)
   return residual
 }
 
-async function waitForGroup(pgid: number, graceMs: number): Promise<Map<number, ProcessIdentity>> {
+async function waitForGroup(group: ProcessGroup, graceMs: number): Promise<Map<number, ProcessIdentity>> {
   const deadline = Date.now() + graceMs
   while (true) {
     const table = await processTable()
-    if (![...table.values()].some(process => process.pgid === pgid) || Date.now() >= deadline) return table
+    if (!groupMembersOf(table, group).length || Date.now() >= deadline) return table
     await delay(Math.min(50, Math.max(1, deadline - Date.now())))
   }
 }

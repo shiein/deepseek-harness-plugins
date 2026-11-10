@@ -15,8 +15,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { DiagnosticCode, RunnerSessionError } from '../errors.ts'
 import { findListeningPids } from './port-ownership.ts'
 import { procProcessStartTime } from './procfs.ts'
-import { processTable, signalPid } from './process-table.ts'
-import type { ProcessIdentity } from './process-table.ts'
+import {
+  groupMembersOf, hasLiveParent, processTable, signalGroup, signalPid, usesProcessGroups,
+} from './process-table.ts'
+import type { ProcessGroup, ProcessIdentity } from './process-table.ts'
+import { winProcessStartTime } from './winproc.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -170,9 +173,9 @@ export function createFileLedger(dataDir: string): ResourceLedger {
 type ReclaimOutcome = { action: string } | { reason: string; active?: boolean }
 
 /**
- * 存活且启动时间一致的进程只有在成为孤儿（父进程已退出、被 reparent 到 PID 1）时才回收：
- * 父进程仍活着说明资源属于一个仍在运行的持有者（例如另一个 Host 存活的 Runner），
- * 归为 active 残留——不终止、不归档，与方案 §15.3「不终止原进程」一致。
+ * 存活且启动时间一致的进程只有在成为孤儿（父进程已退出：POSIX 被 reparent 到 PID 1，Windows 父 PID
+ * 已不存在或被更晚创建的进程复用）时才回收：父进程仍活着说明资源属于一个仍在运行的持有者（例如另一个
+ * Host 存活的 Runner），归为 active 残留——不终止、不归档，与方案 §15.3「不终止原进程」一致。
  */
 async function reclaimProcess(
   resource: Extract<LedgerResource, { kind: 'process' }>,
@@ -181,46 +184,66 @@ async function reclaimProcess(
   const self = table.get(resource.pid)
   if (!self) {
     if (resource.pgid === undefined) return { action: 'recorded process is gone' }
-    return reclaimOrphanGroup(resource.pgid, table)
+    return reclaimOrphanGroup(recordedGroup(resource)!, table)
   }
   if (self.startTime !== resource.startTime) {
     return { reason: 'Recorded PID is used by a different process; ownership is unverified' }
   }
-  if (self.ppid !== 1 && table.has(self.ppid)) {
+  if (hasLiveParent(self, table)) {
     return { reason: 'Process is alive under a live parent; still owned', active: true }
   }
-  // 登记后进程换组时，-pgid 会命中无关进程组；此时只终止进程本身，登记组另按孤儿组核对。
-  const signaled = resource.pgid !== undefined && self.pgid === resource.pgid ? resource.pgid
-    : self.pid === self.pgid ? self.pid
-    : undefined
-  signalPid(signaled !== undefined ? -signaled : resource.pid, 'SIGTERM')
+  const signaled = signaledGroup(resource, self)
+  if (signaled) signalGroup(signaled, groupMembersOf(table, signaled), 'SIGTERM')
+  else signalPid(resource.pid, 'SIGTERM')
   const reasons: string[] = []
   const outcome = await settleSignaled(resource, signaled)
   if (outcome) reasons.push(outcome)
-  if (resource.pgid !== undefined && resource.pgid !== signaled) {
-    const orphan = await reclaimOrphanGroup(resource.pgid, table)
+  if (resource.pgid !== undefined && resource.pgid !== signaled?.pgid) {
+    const orphan = await reclaimOrphanGroup(recordedGroup(resource)!, table)
     if ('reason' in orphan) reasons.push(orphan.reason)
   }
   if (reasons.length) return { reason: reasons.join('; ') }
   return { action: 'terminated verified process' }
 }
 
+/** 登记的进程组；组长自身的登记项带组长启动时间（Windows 判定后代需要）。 */
+function recordedGroup(resource: Extract<LedgerResource, { kind: 'process' }>): ProcessGroup | undefined {
+  if (resource.pgid === undefined) return undefined
+  return resource.pgid === resource.pid
+    ? { pgid: resource.pgid, leaderStart: resource.startTime }
+    : { pgid: resource.pgid }
+}
+
+/**
+ * 本次信号的目标组。POSIX：登记后进程换组时，-pgid 会命中无关进程组，此时只终止进程本身，登记组另按
+ * 孤儿组核对。Windows：没有换组，组长登记项即按其后代成组。
+ */
+function signaledGroup(
+  resource: Extract<LedgerResource, { kind: 'process' }>,
+  self: ProcessIdentity,
+): ProcessGroup | undefined {
+  if (!usesProcessGroups()) return resource.pgid === resource.pid ? recordedGroup(resource) : undefined
+  if (resource.pgid !== undefined && self.pgid === resource.pgid) return { pgid: resource.pgid }
+  if (self.pid === self.pgid) return { pgid: self.pid }
+  return undefined
+}
+
 /** 组长已退出（或换组）的登记进程组：成员仍是本组号才终止，同号新组长视为归属无法核对。 */
 async function reclaimOrphanGroup(
-  pgid: number,
+  group: ProcessGroup,
   table: Map<number, ProcessIdentity>,
 ): Promise<ReclaimOutcome> {
-  const members = [...table.values()].filter(process => process.pgid === pgid)
+  const members = groupMembersOf(table, group)
   if (!members.length) return { action: 'recorded process group is gone' }
   // 登记的组长 PID 被新组长复用时，组内成员归属无法区分，不向任何成员发信号。
-  if (members.some(process => process.pid === pgid)) {
+  if (members.some(process => process.pid === group.pgid)) {
     return { reason: 'Process group has a live leader whose identity cannot be verified' }
   }
   for (const member of members) signalPid(member.pid, 'SIGTERM')
-  const remaining = await waitForMembers(pgid, 1500)
+  const remaining = await waitForMembers(group, 1500)
   for (const member of remaining) signalPid(member.pid, 'SIGKILL')
   if (remaining.length) await delay(500)
-  const left = await groupMembers(pgid)
+  const left = await groupMembers(group)
   if (left.length) return { reason: 'Process group members could not be terminated: ' + left.join(', ') }
   return { action: 'terminated recorded process group' }
 }
@@ -228,7 +251,7 @@ async function reclaimOrphanGroup(
 /** 等待已发信号的对象消失；SIGKILL 升级只作用于信号目标集合内的存活成员。 */
 async function settleSignaled(
   resource: Extract<LedgerResource, { kind: 'process' }>,
-  signaled: number | undefined,
+  signaled: ProcessGroup | undefined,
 ): Promise<string | undefined> {
   const deadline = Date.now() + 1500
   while (true) {
@@ -245,27 +268,25 @@ async function settleSignaled(
   return undefined
 }
 
-/** 信号目标集合内的存活进程：进程组目标按 pgid 收集，单 PID 目标只核对启动时间。 */
+/** 信号目标集合内的存活进程：进程组目标按组收集，单 PID 目标只核对启动时间。 */
 async function signaledSurvivors(
   resource: Extract<LedgerResource, { kind: 'process' }>,
-  signaled: number | undefined,
+  signaled: ProcessGroup | undefined,
 ): Promise<ProcessIdentity[]> {
   const table = await processTable()
-  if (signaled !== undefined) return [...table.values()].filter(process => process.pgid === signaled)
+  if (signaled !== undefined) return groupMembersOf(table, signaled)
   const self = table.get(resource.pid)
   return self?.startTime === resource.startTime ? [self] : []
 }
 
-async function groupMembers(pgid: number): Promise<number[]> {
-  const table = await processTable()
-  return [...table.values()].filter(process => process.pgid === pgid).map(process => process.pid)
+async function groupMembers(group: ProcessGroup): Promise<number[]> {
+  return groupMembersOf(await processTable(), group).map(process => process.pid)
 }
 
-async function waitForMembers(pgid: number, graceMs: number): Promise<ProcessIdentity[]> {
+async function waitForMembers(group: ProcessGroup, graceMs: number): Promise<ProcessIdentity[]> {
   const deadline = Date.now() + graceMs
   while (true) {
-    const table = await processTable()
-    const left = [...table.values()].filter(process => process.pgid === pgid)
+    const left = groupMembersOf(await processTable(), group)
     if (!left.length || Date.now() >= deadline) return left
     await delay(Math.min(50, Math.max(1, deadline - Date.now())))
   }
@@ -364,16 +385,18 @@ function positive(value: unknown): value is number { return typeof value === 'nu
 /**
  * 读取进程启动时间，用于防 PID 复用。
  * macOS 用 ps lstart（已实测）；Linux 用 /proc/<pid>/stat 的 starttime jiffies（合成树单测，端到端待验）；
+ * Windows 用 CIM CreationDate 的 FILETIME（合成输出单测，真实 Windows 未验）；
  * 其余平台返回 unsupported，不把未知归属当成进程不存在。
  */
 export async function readProcessStartTime(pid: number): Promise<string | undefined> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new RangeError('PID must be a positive integer')
   if (process.platform === 'linux') return procProcessStartTime(pid)
+  if (process.platform === 'win32') return winProcessStartTime(pid)
   if (process.platform !== 'darwin') {
     throw new RunnerSessionError({
       code: DiagnosticCode.unsupportedCapability, phase: 'start',
       message: 'Process start-time inspection is not implemented on ' + process.platform,
-      hint: 'Run on a supported platform (macOS or Linux); there is no ownership-check fallback',
+      hint: 'Run on a supported platform (macOS, Linux or Windows); there is no ownership-check fallback',
     })
   }
   try {

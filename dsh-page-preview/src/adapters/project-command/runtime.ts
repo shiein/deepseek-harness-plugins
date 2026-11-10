@@ -6,6 +6,7 @@ import { serviceUrls } from '../../shared/service-url.ts'
 import { findListeningPids, findOwnedListeningPorts, isDescendantOf } from '../../runner/port-ownership.ts'
 import { readProcessStartTime } from '../../runner/ledger.ts'
 import { spawnManaged } from '../../runner/process-tree.ts'
+import { UnsafeWindowsArgumentError } from '../../shared/runner/platform-env.ts'
 import type { ManagedProcess } from '../../runner/process-tree.ts'
 import { observeHttpService, probeHttpService } from '../../runner/http-observer.ts'
 import type { RunningHandle, StartContext } from '../types.ts'
@@ -23,7 +24,11 @@ export async function startProjectCommand(ctx: StartContext): Promise<RunningHan
   let process: ManagedProcess
   try { process = await spawnManaged({ executable: plan.process.executable, args: [...plan.process.args], cwd: plan.process.cwd, env: { ...plan.process.env } }, ctx.ledger, ctx, ctx.signal) }
   catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') throw problem(DiagnosticCode.dependencyMissing, 'Configured executable was not found in the explicit child environment; use an absolute path or an explicit PATH', error)
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      throw problem(DiagnosticCode.dependencyMissing, 'Configured executable was not found in the explicit child environment; '
+        + 'use an absolute path or an explicit PATH' + windowsCommandHint(), error)
+    }
+    if (error instanceof UnsafeWindowsArgumentError) throw problem(DiagnosticCode.configInvalid, error.message + '; remove %, " and line breaks from the command arguments', error)
     throw error
   }
   let exit: Awaited<typeof process.exited> | undefined
@@ -125,6 +130,11 @@ export async function startProjectCommand(ctx: StartContext): Promise<RunningHan
     if ((await stop()).residual.length) throw problem(DiagnosticCode.cleanupFailed, 'Project command startup rollback is incomplete; inspect resource ownership records', error)
     throw error
   }
+}
+
+/** Windows 上不带扩展名的 npm/pnpm/yarn 找不到：它们是 .cmd 脚本，spawn 不按 PATHEXT 补全。 */
+function windowsCommandHint(): string {
+  return globalThis.process.platform === 'win32' ? ' (on Windows, name scripts with their extension, e.g. npm.cmd)' : ''
 }
 
 function problem(code: string, message: string, cause?: unknown): RunnerSessionError {

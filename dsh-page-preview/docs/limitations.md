@@ -19,7 +19,13 @@
 
 - macOS arm64：全部实测基准。
 - Linux：Docker `node:24-slim` + Chromium 156 的 E2E 面通过（见 progress/AGENTS §2）；非 Docker 的 Linux 未验。
-- Windows：无实现。
+- Windows（2026-11-10 起列入支持范围，**未实机验收**）：进程表与启动时间走 CIM `Win32_Process`、监听归属走
+  `Get-NetTCPConnection`（PowerShell 5.1），组归属按「组长后代 + 创建时间一致」判定（无进程组）；带 IPC 的
+  worker 先断开 IPC 优雅退出，宽限期后逐个 `TerminateProcess`；无 IPC 的项目命令只能强制终止；`.cmd/.bat`
+  经 `cmd.exe /d /s /c` 启动，参数含 `%`、`"` 或换行时如实拒绝；子进程环境补 `SystemRoot`/`TEMP` 等 OS 位置。
+  解析与判定有合成单测（`tests/unit/winproc.test.ts`），PowerShell 调用每次约数百毫秒，停止/对账比 POSIX 慢；
+  中间进程已退出的孙进程无法再归属（与 POSIX 的 setsid 逃逸同类），计为无法覆盖。能力按 `unverified_toolchain`
+  如实保持 `unknown`。
 
 ## 3. 首版明确不做的事
 

@@ -10,7 +10,7 @@
   - `static`（无构建的 HTML/JS）、`existing-server`（接入已在运行的服务）、`project-command`（经批准后运行项目命令）；
   - Vue 3 + Vite、Vue 2 / Vue CLI（4.5 / 5）、React 18 + Vite 的隔离预览，包括入口重放、HMR / 自动刷新、编译错误带文件、行号和代码片段；
   - 已验证组合之外的工具链版本照常运行，能力标为 `unknown` 并附 `unverified_toolchain` 诊断。
-- **平台**：macOS arm64 是实测基准；Linux 只在 Docker `node:24-slim` 中验证过；Windows 未实现。
+- **平台**：macOS arm64 是实测基准；Linux 只在 Docker `node:24-slim` 中验证过；Windows 已实现（进程表、端口归属、进程树终止、`.cmd` 启动），只有合成单测、未实机验收，限制见 `docs/limitations.md` §2。
 - **真实 DSH 端到端**：在 DSH desktop 里部分跑通；审批弹窗和 Client 的其余路径目前只有代码和单测。
 - **首版不做**：SSR / Next / Nuxt、Svelte、Angular、webpack / CRA 的 React 项目、跨应用导航；截图交给模型的能力（`page_preview_capture`）如实返回 `unsupported`。
 

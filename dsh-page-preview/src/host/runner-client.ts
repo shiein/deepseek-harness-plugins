@@ -13,6 +13,7 @@ import type { LedgerEntry } from '../shared/runner/ledger.ts'
 import { runnerPaths } from '../shared/runner/paths.ts'
 import { RunnerConnection, RunnerConnectionError } from './runner-connection.ts'
 import { resolveNodeRuntime } from './node-runtime.ts'
+import { platformBaseEnv } from '../shared/runner/platform-env.ts'
 import { previewsToEvict, type RetainedPreview } from './snapshot-retention.ts'
 
 export type RunnerListener = (message: RunnerToHost) => void
@@ -258,7 +259,11 @@ export class RunnerClient {
     const { executable } = await resolveNodeRuntime(this.options.nodeExecutable)
     if (this.closed) throw new Error('Runner client is disposed')
     const entry = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? '../runner/main.ts' : '../runner/main.js', import.meta.url))
-    const child = fork(entry, [root, this.options.dataDir!], { execPath: executable, cwd: root, env: {}, execArgv: [], detached: true, serialization: 'json', stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+    // windowsHide：Windows 上 detached 的 Runner 默认会弹出一个控制台窗口。
+    const child = fork(entry, [root, this.options.dataDir!], {
+      execPath: executable, cwd: root, env: platformBaseEnv(), execArgv: [], detached: true, windowsHide: true,
+      serialization: 'json', stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    })
     const exited = new Promise<void>(resolve => {
       child.once('exit', () => resolve())
       child.once('error', () => { if (!child.pid) resolve() })

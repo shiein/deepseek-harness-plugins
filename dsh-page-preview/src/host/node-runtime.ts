@@ -5,11 +5,14 @@ import { constants } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
+import { nodeExecutableName, platformBaseEnv } from '../shared/runner/platform-env.ts'
 const execute = promisify(execFile)
 
 export async function resolveNodeRuntime(explicit?: string, searchPath = process.env.PATH ?? ''): Promise<{ executable: string; version: string }> {
   if (explicit !== undefined && !isAbsolute(explicit)) throw new Error('Runner Node executable must be absolute')
-  const candidates = explicit === undefined ? searchPath.split(delimiter).filter(isAbsolute).map(path => join(path, 'node')) : [explicit]
+  const candidates = explicit === undefined
+    ? searchPath.split(delimiter).filter(isAbsolute).map(path => join(path, nodeExecutableName()))
+    : [explicit]
   let executable: string | undefined
   for (const candidate of candidates) {
     try {
@@ -23,7 +26,8 @@ export async function resolveNodeRuntime(explicit?: string, searchPath = process
   }
   if (!executable) throw new Error('Node was not found in the configured path or user PATH')
   // 只运行 Node 自身的版本选项；不继承 NODE_OPTIONS 或工作区环境，不加载业务模块。
-  const result = await execute(executable, ['--version'], { cwd: tmpdir(), env: {}, timeout: 3000, maxBuffer: 1024 })
+  const result = await execute(executable, ['--version'],
+    { cwd: tmpdir(), env: platformBaseEnv(), timeout: 3000, maxBuffer: 1024, windowsHide: true })
   const version = result.stdout.trim()
   const match = /^v(\d+)\.(\d+)\.\d+$/.exec(version)
   const major = Number(match?.[1]), minor = Number(match?.[2])
