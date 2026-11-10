@@ -23,6 +23,7 @@ import {
   fail,
   isInside,
   listDirSafe,
+  matchLineEndings,
   parseSkillFile,
   readTextIfExists,
   removeTree,
@@ -407,7 +408,7 @@ export function createSkills(options = {}) {
       })
       try {
         // assertRealInside has checked where a link points; keep it a link.
-        await writeTextAtomic(skillFile, text, undefined, { followLink: true })
+        await writeTextAtomic(skillFile, matchLineEndings(raw, text), undefined, { followLink: true })
       } catch (error) {
         fail('internal', `cannot write skill file: ${errorMessage(error)}`, 500)
       }

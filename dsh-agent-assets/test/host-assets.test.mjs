@@ -171,6 +171,16 @@ describe('SKILL.md frontmatter: multi-line scalars', () => {
     assert.equal(parseSkillFile('---\nname: c\ndescription: first\n  second\n---\n').data.description, 'first second')
   })
 
+  it('keeps CRLF line endings when a skill is updated', async () => {
+    const directory = join(projectDshSkills, 'crlf-skill')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'SKILL.md'), '---\r\nname: crlf-skill\r\ndescription: old\r\n---\r\nbody\r\n', 'utf8')
+    await skills.update({ scope: 'workspace', workspace, name: 'crlf-skill', description: 'new' })
+    const text = await readFile(join(directory, 'SKILL.md'), 'utf8')
+    assert.equal(text, '---\r\nname: crlf-skill\r\ndescription: new\r\n---\r\nbody\r\n')
+    await rm(directory, { recursive: true })
+  })
+
   it('quotes a description that starts with a dash', () => {
     assert.match(renderSkillFile({ data: { name: 'a', description: '- item one' }, body: '' }), /^description: "- item one"$/m)
   })
@@ -672,6 +682,14 @@ describe('instructions: read/write/delete', { concurrency: false }, () => {
     assert.equal(instruction.exists, true)
     assert.equal(instruction.content, '# Workspace agents\n')
     assert.equal(instruction.size, Buffer.byteLength('# Workspace agents\n', 'utf8'))
+  })
+
+  it('keeps CRLF line endings of an existing file', async () => {
+    const target = join(instructionWorkspace, 'AGENTS.local.md')
+    await writeFile(target, '# Local\r\nline\r\n', 'utf8')
+    await instructions.write({ scope: 'workspace', workspace: instructionWorkspace, path: target, content: '# Local\nline two\n' })
+    assert.equal(await readFile(target, 'utf8'), '# Local\r\nline two\r\n')
+    await rm(target)
   })
 
   it('writes, re-reads and deletes an existing-target-candidate file', async () => {

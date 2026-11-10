@@ -162,6 +162,17 @@ export async function writeTextAtomic(path, text, mode, { followLink = false } =
   }
 }
 
+/**
+ * Keep a file's line endings across an edit. Browser textareas always hand back LF, so a CRLF file
+ * (common on Windows) would otherwise be rewritten line by line on every save.
+ * @param {string|undefined} previous current file text, if any
+ * @param {string} next text about to be written
+ */
+export function matchLineEndings(previous, next) {
+  if (typeof previous !== 'string' || !previous.includes('\r\n') || next.includes('\r')) return next
+  return next.replace(/\n/g, '\r\n')
+}
+
 /** Remove a file or directory tree, tolerating absence. */
 export async function removeTree(path) {
   await rm(path, { recursive: true, force: true })

@@ -18,6 +18,7 @@ import {
   fail,
   isInside,
   listDirSafe,
+  matchLineEndings,
   pathKey,
   readTextIfExists,
   removeTree,
@@ -297,9 +298,10 @@ export function createInstructions(options = {}) {
       if (info !== undefined && info.isDirectory()) {
         fail('bad_request', 'instruction path is a directory', 400)
       }
+      const previous = info !== undefined && info.isFile() ? await readTextIfExists(candidate.path).catch(() => undefined) : undefined
       try {
         // assertCandidateInside has checked where a link points; keep it a link.
-        await writeTextAtomic(candidate.path, content, undefined, { followLink: true })
+        await writeTextAtomic(candidate.path, matchLineEndings(previous, content), undefined, { followLink: true })
       } catch (error) {
         fail('internal', `cannot write instruction file: ${errorMessage(error)}`, 500)
       }
