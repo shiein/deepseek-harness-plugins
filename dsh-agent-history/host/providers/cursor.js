@@ -21,7 +21,7 @@
 
 import { join } from 'node:path';
 import { cleanPrompt, clip, titleFromPrompt } from '../model.js';
-import { safeJsonParse } from '../scan-utils.js';
+import { fileUriToPath, safeJsonParse } from '../scan-utils.js';
 
 export const meta = {
   id: 'cursor',
@@ -126,27 +126,18 @@ function coerceEpochMs(value) {
 }
 
 /**
- * `file:///Users/me/project` -> `/Users/me/project` (Windows drive URIs included).
+ * Project folder of a workspace `folder` / `workspace` URI; a `.code-workspace` file stands for
+ * the folder that holds it.
  * @param {unknown} uri
  * @returns {string}
  */
 function decodeFileUri(uri) {
-  if (typeof uri !== 'string' || uri.trim() === '') return '';
-  const text = uri.trim();
-  if (!text.startsWith('file://')) return '';
-  try {
-    const parsed = new URL(text);
-    let pathname = decodeURIComponent(parsed.pathname || '');
-    if (/^\/[A-Za-z]:\//.test(pathname)) pathname = pathname.slice(1);
-    if (pathname.length > 1 && pathname.endsWith('/')) pathname = pathname.slice(0, -1);
-    if (/\.code-workspace$/i.test(pathname)) {
-      const index = Math.max(pathname.lastIndexOf('/'), pathname.lastIndexOf('\\'));
-      return index > 0 ? pathname.slice(0, index) : pathname;
-    }
-    return pathname;
-  } catch {
-    return '';
+  const path = fileUriToPath(uri);
+  if (/\.code-workspace$/i.test(path)) {
+    const index = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    return index > 0 ? path.slice(0, index) : path;
   }
+  return path;
 }
 
 /**

@@ -22,3 +22,16 @@ test('readJsonl rejects with AbortError when aborted mid-file', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('fileUriToPath keeps the server of a UNC share and the drive of a Windows path', async () => {
+  const { fileUriToPath } = await import('../host/scan-utils.js');
+  assert.equal(fileUriToPath('file:///Users/me/my%20proj/'), '/Users/me/my proj');
+  assert.equal(fileUriToPath('file:///c%3A/Users/me/p'), 'c:/Users/me/p');
+  assert.equal(fileUriToPath('file:///C:/'), 'C:/');
+  assert.equal(fileUriToPath('file://localhost/C:/w'), 'C:/w');
+  assert.equal(fileUriToPath('file://nas/team/project'), '\\\\nas\\team\\project');
+  assert.equal(fileUriToPath('file://nas/team/project/'), '\\\\nas\\team\\project');
+  assert.equal(fileUriToPath('file:////nas/team/project'), '\\\\nas\\team\\project');
+  assert.equal(fileUriToPath('vscode-remote://ssh/x'), '');
+  assert.equal(fileUriToPath('/plain/path'), '');
+});

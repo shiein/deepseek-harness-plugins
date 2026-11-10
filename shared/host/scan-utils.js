@@ -447,6 +447,41 @@ export async function filterExisting(candidates) {
   return out;
 }
 
+/**
+ * Local path of a `file://` URI as an agent recorded it, or '' when it is not one:
+ * - `file:///Users/me/p`         -> `/Users/me/p`
+ * - `file:///c%3A/Users/me/p`    -> `c:/Users/me/p`  (VS Code encodes the drive colon)
+ * - `file://nas/team/p`          -> `\\nas\team\p`   (UNC share: the host is the server)
+ * - `file:////nas/team/p`        -> `\\nas\team\p`   (the four-slash UNC spelling)
+ * `localhost` is the local machine. A trailing separator is dropped unless it is the root.
+ * @param {unknown} uri
+ * @returns {string}
+ */
+export function fileUriToPath(uri) {
+  if (typeof uri !== 'string') return '';
+  const text = uri.trim();
+  if (!/^file:\/\//i.test(text)) return '';
+  let parsed;
+  let path;
+  try {
+    parsed = new URL(text);
+    path = decodeURIComponent(parsed.pathname || '');
+  } catch {
+    return '';
+  }
+  const host = parsed.hostname.toLowerCase() === 'localhost' ? '' : parsed.hostname;
+  let unc = '';
+  if (host !== '') unc = `${host}${path}`;
+  else if (/^\/\/[^/]/.test(path)) unc = path.slice(2);
+  if (unc !== '') {
+    const out = `\\\\${unc.replace(/\//g, '\\')}`;
+    return out.endsWith('\\') ? out.slice(0, -1) : out;
+  }
+  if (/^\/[A-Za-z]:(\/|$)/.test(path)) path = path.slice(1);
+  if (path.length > 1 && path.endsWith('/') && !/^[A-Za-z]:\/$/.test(path)) path = path.slice(0, -1);
+  return path;
+}
+
 /** @param {string} path @returns {string} */
 export function normalizeSlashes(path) {
   return String(path).replace(/\\/g, posix.sep);

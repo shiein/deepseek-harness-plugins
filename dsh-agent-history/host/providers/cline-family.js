@@ -24,7 +24,7 @@
 
 import { dirname, join } from 'node:path';
 import { cleanPrompt, clip, titleFromPrompt } from '../model.js';
-import { readText, safeJsonParse } from '../scan-utils.js';
+import { fileUriToPath, readText, safeJsonParse } from '../scan-utils.js';
 
 export const meta = {
   id: 'cline-family',
@@ -126,15 +126,7 @@ function normalizeWorkspacePath(value) {
   if (typeof value !== 'string' || value.trim() === '') return '';
   const text = value.trim();
   if (!text.startsWith('file://')) return text;
-  try {
-    const parsed = new URL(text);
-    let pathname = decodeURIComponent(parsed.pathname || '');
-    if (/^\/[A-Za-z]:\//.test(pathname)) pathname = pathname.slice(1);
-    if (pathname.length > 1 && pathname.endsWith('/')) pathname = pathname.slice(0, -1);
-    return pathname;
-  } catch {
-    return text;
-  }
+  return fileUriToPath(text) || text;
 }
 
 /**

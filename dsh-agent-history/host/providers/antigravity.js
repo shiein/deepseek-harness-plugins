@@ -30,7 +30,7 @@
 
 import { join } from 'node:path';
 import { cleanPrompt, clip, titleFromPrompt } from '../model.js';
-import { readJsonl, safeJsonParse } from '../scan-utils.js';
+import { fileUriToPath as decodeFileUri, readJsonl, safeJsonParse } from '../scan-utils.js';
 
 export const meta = {
   id: 'antigravity',
@@ -88,19 +88,15 @@ function extractTag(value, tag) {
 
 /** @param {string} uri @returns {string} */
 function fileUriToPath(uri) {
+  const path = decodeFileUri(uri);
+  if (path !== '') return path;
+  // Not a parseable URL (a raw protobuf string): take the text after the scheme.
+  const match = /^file:\/\/(.*)$/.exec(uri);
+  if (!match) return '';
   try {
-    const parsed = new URL(uri);
-    let path = decodeURIComponent(parsed.pathname);
-    if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
-    return path;
+    return decodeURIComponent(match[1]);
   } catch {
-    const match = /^file:\/\/(.*)$/.exec(uri);
-    if (!match) return '';
-    try {
-      return decodeURIComponent(match[1]);
-    } catch {
-      return '';
-    }
+    return '';
   }
 }
 
