@@ -232,6 +232,10 @@ window.__ModuleLoader__.load({
       'confirm.mcp.title': '删除 MCP 服务',
       'confirm.body': '将永久删除「{name}」，路径：{path}。此操作无法撤销。',
       'confirm.bodyNoPath': '将永久删除「{name}」。此操作无法撤销。',
+      'discard.title': '放弃未保存的修改？',
+      'discard.body': '关闭后，这次编辑的内容不会保存。',
+      'discard.confirm': '放弃修改',
+      'discard.keep': '继续编辑',
 
       'action.importSkill': '导入技能',
       'import.title': '导入技能',
@@ -467,6 +471,10 @@ window.__ModuleLoader__.load({
       'confirm.mcp.title': 'Delete MCP server',
       'confirm.body': 'This permanently deletes "{name}" at {path}. This cannot be undone.',
       'confirm.bodyNoPath': 'This permanently deletes "{name}". This cannot be undone.',
+      'discard.title': 'Discard unsaved changes?',
+      'discard.body': 'Closing now drops what you edited in this dialog.',
+      'discard.confirm': 'Discard',
+      'discard.keep': 'Keep editing',
 
       'action.importSkill': 'Import',
       'import.title': 'Import skills',
@@ -1821,7 +1829,7 @@ window.__ModuleLoader__.load({
                 onClick: onCancel,
                 disabled: saving,
               },
-              t('action.cancel'),
+              spec.cancelLabel || t('action.cancel'),
             ),
             h(
               'button',
@@ -1833,7 +1841,7 @@ window.__ModuleLoader__.load({
                 disabled: saving,
               },
               saving ? h(Spinner, { size: 11 }) : null,
-              t('action.delete'),
+              spec.confirmLabel || t('action.delete'),
             ),
           ],
         },
@@ -1845,6 +1853,35 @@ window.__ModuleLoader__.load({
           error ? h(InlineError, { t, info: error }) : null,
         ),
       );
+    }
+
+    /**
+     * Closing an editor with edits (Esc, the backdrop, Cancel) asks first instead of silently
+     * dropping a long SKILL.md / AGENTS.md change.
+     */
+    function useDiscardGuard(t, dirty, onCancel) {
+      const [asking, setAsking] = useState(false);
+      const requestClose = useCallback(() => {
+        if (dirty) setAsking(true);
+        else onCancel();
+      }, [dirty, onCancel]);
+      const guard = asking
+        ? h(ConfirmDialog, {
+            t,
+            spec: {
+              title: t('discard.title'),
+              body: t('discard.body'),
+              confirmLabel: t('discard.confirm'),
+              cancelLabel: t('discard.keep'),
+            },
+            onCancel: () => setAsking(false),
+            onConfirm: async () => {
+              setAsking(false);
+              onCancel();
+            },
+          })
+        : null;
+      return { requestClose, guard };
     }
 
     // -------------------------------------------------------------------------------------
@@ -2342,6 +2379,7 @@ window.__ModuleLoader__.load({
             whenToUse !== String(initial?.whenToUse || '') ||
             body !== String(initial?.body || '');
       const canSave = !nameError && !descriptionError && (mode === 'create' ? dirty : true);
+      const { requestClose, guard } = useDiscardGuard(t, dirty && !saving, onCancel);
 
       const root = scope === 'user' ? `${shortHomePath(homes)}/skills` : `${workspace || t('workspace.none')}/.dsh/skills`;
 
@@ -2371,9 +2409,10 @@ window.__ModuleLoader__.load({
           title: t(mode === 'create' ? 'editor.skill.createTitle' : 'editor.skill.editTitle'),
           subtitle: mode === 'create' ? undefined : String(target?.name || ''),
           width: 'wide',
-          onClose: saving ? () => {} : onCancel,
-          footer: h(FormFooter, { t, saving, canSave, onCancel, onSave: handleSave }),
+          onClose: saving ? () => {} : requestClose,
+          footer: h(FormFooter, { t, saving, canSave, onCancel: requestClose, onSave: handleSave }),
         },
+        guard,
         h(
           'div',
           { className: 'aa-form' },
@@ -2505,6 +2544,8 @@ window.__ModuleLoader__.load({
       const scope = String(chosen?.scope || (mode === 'create' ? 'workspace' : 'workspace'));
       const exists = mode === 'create' ? false : Boolean(initial ? initial.exists : target?.exists);
       const canSave = Boolean(filePath) && !saving && (mode !== 'create' || missingCandidates.length > 0);
+      const dirty = content !== String(initial?.content || '');
+      const { requestClose, guard } = useDiscardGuard(t, dirty && !saving, onCancel);
 
       const handleSave = async () => {
         if (!canSave || saving) return;
@@ -2531,18 +2572,19 @@ window.__ModuleLoader__.load({
           ),
           subtitle: chosen?.displayPath || chosen?.label || target?.displayPath || target?.label || '',
           width: 'wide',
-          onClose: saving ? () => {} : onCancel,
+          onClose: saving ? () => {} : requestClose,
           footer: h(FormFooter, {
             t,
             saving,
             canSave,
-            onCancel,
+            onCancel: requestClose,
             onSave: handleSave,
             onDelete: mode === 'edit' && exists && (target?.editable !== false || initial?.editable !== false)
               ? () => onDelete(target || initial)
               : null,
           }),
         },
+        guard,
         h(
           'div',
           { className: 'aa-form' },
@@ -2655,6 +2697,10 @@ window.__ModuleLoader__.load({
       const envError = !isHttp && envParsed.error ? t('editor.mcp.invalidEnv', { line: envParsed.error.line }) : '';
       const headersError = isHttp && headersParsed.error ? t('editor.mcp.invalidHeader', { line: headersParsed.error.line }) : '';
       const canSave = !nameError && !commandError && !urlError && !envError && !headersError;
+      const formKey = JSON.stringify([serverName, scope, transport, command, argsText, cwd, envText, url, headersText, enabled]);
+      const initialKey = useRef(formKey);
+      const dirty = formKey !== initialKey.current;
+      const { requestClose, guard } = useDiscardGuard(t, dirty && !saving, onCancel);
       const userStorePath = `${shortHomePath(homes)}/agent-assets/mcp.json`;
       const workspaceStorePath = `${workspace || t('workspace.none')}/.dsh/agent-assets/mcp.json`;
 
@@ -2693,9 +2739,10 @@ window.__ModuleLoader__.load({
           title: t(mode === 'create' ? 'editor.mcp.createTitle' : 'editor.mcp.editTitle'),
           subtitle: mode === 'create' ? t('editor.mcp.scopeHint') : String(target?.serverName || ''),
           width: 'wide',
-          onClose: saving ? () => {} : onCancel,
-          footer: h(FormFooter, { t, saving, canSave, onCancel, onSave: handleSave }),
+          onClose: saving ? () => {} : requestClose,
+          footer: h(FormFooter, { t, saving, canSave, onCancel: requestClose, onSave: handleSave }),
         },
+        guard,
         h(
           'div',
           { className: 'aa-form' },
