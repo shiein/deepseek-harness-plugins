@@ -98,6 +98,7 @@ window.__ModuleLoader__.load({
       'session.source': '来源文件',
       'session.truncated': '内容较长，仅显示最近 {count} 条',
       'timeline.loaded': '已显示 {shown} / {total} 条',
+      'session.loadedCount': '已显示 {shown} / {total} 个会话',
       'timeline.scope': '合并了最近 {included} / {total} 个会话的消息',
       'timeline.failed': '{count} 个会话读取失败，未计入：{detail}',
       'timeline.truncated': '{count} 个会话过长，只合并和搜索了最近的消息：{detail}',
@@ -237,6 +238,7 @@ window.__ModuleLoader__.load({
       'session.source': 'Source file',
       'session.truncated': 'Long session: showing the latest {count} messages',
       'timeline.loaded': '{shown} / {total} messages shown',
+      'session.loadedCount': '{shown} / {total} sessions shown',
       'timeline.scope': 'Merged the latest {included} / {total} sessions',
       'timeline.failed': '{count} sessions could not be read and are left out: {detail}',
       'timeline.truncated': '{count} long sessions: only their latest messages are merged and searched: {detail}',
@@ -1598,6 +1600,55 @@ window.__ModuleLoader__.load({
       });
     }
 
+    /** Session cards rendered per step; a project with hundreds of sessions grows as the user scrolls. */
+    const SESSION_PAGE = 80;
+
+    /** First `count` sessions in display order (newest or oldest start first). */
+    function firstSessions(sessions, order, count) {
+      if (sessions.length <= count) return sessions;
+      const sorted = [...sessions].sort((a, b) => (a.startedAt || a.updatedAt) - (b.startedAt || b.updatedAt));
+      return order === 'asc' ? sorted.slice(0, count) : sorted.slice(-count);
+    }
+
+    /** How many sessions to render; reset when the list changes, raised to include a focused session. */
+    function useSessionWindow(sessions, order, resetKey, focusId) {
+      const [count, setCount] = useState(SESSION_PAGE);
+      useEffect(() => setCount(SESSION_PAGE), [resetKey]);
+      useEffect(() => {
+        if (!focusId || sessions.length <= count) return;
+        const sorted = [...sessions].sort((a, b) => (a.startedAt || a.updatedAt) - (b.startedAt || b.updatedAt));
+        const index = sorted.findIndex((session) => session.id === focusId);
+        if (index < 0) return;
+        const position = order === 'asc' ? index : sorted.length - 1 - index;
+        if (position >= count) setCount(position + 1 + SESSION_PAGE / 4);
+      }, [focusId, sessions, order]);
+      return [Math.min(count, sessions.length), () => setCount((value) => value + SESSION_PAGE)];
+    }
+
+    /** Renders more sessions when it scrolls into view; also a button for keyboards and old shells. */
+    function MoreSessions(props) {
+      const { t, shown, total, onMore } = props;
+      const ref = useRef(null);
+      const more = useRef(onMore);
+      more.current = onMore;
+      useEffect(() => {
+        const node = ref.current;
+        if (!node || typeof IntersectionObserver !== 'function') return undefined;
+        const observer = new IntersectionObserver((entries) => {
+          if (entries.some((entry) => entry.isIntersecting)) more.current();
+        }, { rootMargin: '400px 0px' });
+        observer.observe(node);
+        return () => observer.disconnect();
+      }, [shown]);
+      if (shown >= total) return null;
+      return h(
+        'div',
+        { className: 'ah-timeline-foot', ref },
+        h('span', null, t('session.loadedCount', { shown, total })),
+        h(Button, { variant: 'default', label: t('action.loadMore'), onClick: onMore }),
+      );
+    }
+
     function ProjectView(props) {
       const {
         project, sessions, agents, t, locale, selectedAgentId, onSelectAgent, tab, onTabChange,
@@ -1638,6 +1689,10 @@ window.__ModuleLoader__.load({
         [agents, t],
       );
       const messageFilterActive = timelineQuery.role !== 'all' || timelineQuery.q.trim() !== '';
+      const [shownCount, showMore] = useSessionWindow(
+        filtered, sessionOrder, `${project.path}|${selectedAgentId}|${sessionOrder}`, props.focusId,
+      );
+      const shownSessions = useMemo(() => firstSessions(filtered, sessionOrder, shownCount), [filtered, sessionOrder, shownCount]);
       return h(
         'div',
         { className: 'ah-view' },
@@ -1739,10 +1794,15 @@ window.__ModuleLoader__.load({
           filtered.length === 0
             ? h('div', { className: 'ah-empty-inline' }, t('state.noMatch'))
             : tab === 'sessions'
-              ? h(ProjectTimeline, {
-                  sessions: filtered, agents, t, locale, expandedId, onToggle, onContinue, onCopyCommand,
-                  transcripts, loadingIds, continueLabelFor, focusId: props.focusId, order: sessionOrder,
-                })
+              ? h(
+                  React.Fragment,
+                  null,
+                  h(ProjectTimeline, {
+                    sessions: shownSessions, agents, t, locale, expandedId, onToggle, onContinue, onCopyCommand,
+                    transcripts, loadingIds, continueLabelFor, focusId: props.focusId, order: sessionOrder,
+                  }),
+                  h(MoreSessions, { t, shown: shownSessions.length, total: filtered.length, onMore: showMore }),
+                )
               : h(MessageTimeline, {
                   events: timeline?.events || [],
                   agents, t, locale,
@@ -1779,6 +1839,20 @@ window.__ModuleLoader__.load({
           .map((group) => ({ path: group.path, name: nameOfPath(group.path) || t('project.unknown'), sessions: group.list }))
           .sort((a, b) => Math.max(...b.sessions.map(sessionStatus)) - Math.max(...a.sessions.map(sessionStatus)));
       }, [sessions, t]);
+      // Groups are rendered in order until the session budget is used up.
+      const [budget, showMore] = useSessionWindow(sessions, sessionOrder, `${agent.id}|${sessionOrder}`, focusId);
+      const visibleGroups = useMemo(() => {
+        const out = [];
+        let left = budget;
+        for (const group of byProject) {
+          if (left <= 0) break;
+          const list = firstSessions(group.sessions, sessionOrder, left);
+          out.push({ ...group, shown: list });
+          left -= list.length;
+        }
+        return out;
+      }, [byProject, budget, sessionOrder]);
+      const shownTotal = visibleGroups.reduce((sum, group) => sum + group.shown.length, 0);
       return h(
         'div',
         { className: 'ah-view' },
@@ -1816,7 +1890,7 @@ window.__ModuleLoader__.load({
           { className: 'ah-view-body' },
           byProject.length === 0
             ? h('div', { className: 'ah-empty-inline' }, t('agent.empty'))
-            : byProject.map((group) =>
+            : visibleGroups.map((group) =>
                 h(
                   'div',
                   { key: group.path || 'unknown', className: 'ah-agent-project' },
@@ -1827,9 +1901,10 @@ window.__ModuleLoader__.load({
                     h('span', { className: 'ah-agent-project-path' }, group.path || t('project.pathUnknown')),
                     h('span', { className: 'ah-row-meta' }, t('project.sessions', { count: group.sessions.length })),
                   ),
-                  h(ProjectTimeline, { sessions: group.sessions, agents, t, locale, expandedId, onToggle, onContinue, onCopyCommand, transcripts, loadingIds, continueLabelFor, focusId, order: sessionOrder }),
+                  h(ProjectTimeline, { sessions: group.shown, agents, t, locale, expandedId, onToggle, onContinue, onCopyCommand, transcripts, loadingIds, continueLabelFor, focusId, order: sessionOrder }),
                 ),
               ),
+          byProject.length === 0 ? null : h(MoreSessions, { t, shown: shownTotal, total: sessions.length, onMore: showMore }),
         ),
       );
     }
@@ -2693,7 +2768,7 @@ window.__ModuleLoader__.load({
 .ah-cluster-head { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--dsw-alias-label-secondary); padding-left: 2px; }
 .ah-cluster-badge { font-size: 9.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px;
   color: var(--dsw-alias-state-warn-primary, #d97706); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 14%, transparent); }
-.ah-session { position: relative; display: flex; gap: 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1);
+.ah-session { content-visibility: auto; contain-intrinsic-size: auto 118px; position: relative; display: flex; gap: 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1);
   overflow: hidden; transition: border-color .12s ease, box-shadow .12s ease; }
 .ah-session:hover { border-color: var(--dsw-alias-border-l2); }
 .ah-session.is-open { border-color: var(--dsw-alias-border-l2); box-shadow: 0 2px 10px rgba(0,0,0,.06); }
