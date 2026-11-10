@@ -351,7 +351,8 @@ window.__ModuleLoader__.load({
 
     const ACCENT = 'var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary, #2f6fed))';
     const CSS = `
-      .bf-page { --bf-accent: ${ACCENT}; position: relative; display: flex; flex-direction: column;
+      /* Breakpoints follow the panel's own width (DSH sidebars take part of the window), not the viewport. */
+      .bf-page { container: bfpage / inline-size; --bf-accent: ${ACCENT}; position: relative; display: flex; flex-direction: column;
         height: 100%; min-height: 0; overflow: hidden; box-sizing: border-box;
         background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-primary, #1f2328);
         font-size: 13px; line-height: 1.45; font-family: inherit; -webkit-font-smoothing: antialiased; }
@@ -664,9 +665,9 @@ window.__ModuleLoader__.load({
       .bf-table-share.is-on { color: #9a6700; background: color-mix(in srgb, #b98000 14%, transparent); }
       .bf-table-share:focus-visible { outline: 2px solid var(--bf-accent); outline-offset: 1px; }
       .bf-table-note { padding-left: 19px; font-size: 11px; line-height: 1.5; color: var(--dsw-alias-label-secondary, #57606a); }
-      @media (max-width: 1320px) { .bf-legend-edge { display: none; } }
-      @media (max-width: 1180px) { .bf-steps { display: none; } .bf-side { width: 300px; } .bf-graph-title { max-width: 7em; } }
-      @media (max-width: 900px) {
+      @container bfpage (max-width: 1320px) { .bf-legend-edge { display: none; } }
+      @container bfpage (max-width: 1180px) { .bf-steps { display: none; } .bf-side { width: 300px; } .bf-graph-title { max-width: 7em; } }
+      @container bfpage (max-width: 900px) {
         .bf-status.is-ok, .bf-legend { display: none; }
         .bf-side { width: 260px; }
         .bf-chip { max-width: 22ch; }

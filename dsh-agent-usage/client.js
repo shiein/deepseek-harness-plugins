@@ -1609,7 +1609,8 @@ window.__ModuleLoader__.load({
     // ---------------------------------------------------------------------------------------
 
     const CSS = `
-.au-root { height: 100%; min-height: 0; overflow: hidden; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base);
+/* Breakpoints follow the panel's own width (DSH sidebars take part of the window), not the viewport. */
+.au-root { container: auroot / inline-size; height: 100%; min-height: 0; overflow: hidden; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base);
   font-family: var(--dsw-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
   font-size: 13px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
 .au-root *, .au-root *::before, .au-root *::after { box-sizing: border-box; }
@@ -1796,7 +1797,7 @@ html[data-platform=darwin] .au-header { min-height: max(40px, calc(var(--dsh-fra
 .au-root.is-narrow .au-subtitle, .au-root.is-narrow .au-scan-sub { display: none; }
 .au-root.is-narrow .au-filters .au-select select { max-width: 118px; min-width: 76px; }
 .au-root.is-narrow .au-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-@media (max-width: 980px) {
+@container auroot (max-width: 980px) {
   .au-detail { display: none; }
   .au-trend-grid { grid-template-columns: minmax(0, 1fr); }
   .au-rank-col { display: none; }
