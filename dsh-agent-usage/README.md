@@ -5,8 +5,9 @@ AI coding agent installed on this machine**, aggregated **by agent, by model, an
 API-equivalent cost estimate.
 
 Everything is read from **local session/usage files**. Nothing is uploaded, no account login is
-required, and **files are scanned only when you press Refresh** — there is no timer, no watcher, no
-background polling, and opening the panel only re-displays the last saved scan.
+required, and files are scanned only when you press Refresh **or when the panel opens (or the window
+regains focus) with a saved scan older than 10 minutes** — there is no timer, no watcher and no
+background polling.
 
 ![](icon.svg)
 
@@ -78,7 +79,7 @@ sidebar entry (Agent 用量)
       │  click
       ▼
 GET /api/dsh-agent-usage/snapshot   → last saved scan (no file reads)
-      │  "刷新" button
+      │  "刷新" button, or that scan is older than 10 min / still running
       ▼
 POST /api/dsh-agent-usage/scan      → walks local session files once, updates cache + snapshot
       ▼

@@ -43,7 +43,7 @@ window.__ModuleLoader__.load({
       'scan.never': '尚未扫描',
       'scan.at': '刷新于 {time}',
       'scan.meta': '{units} 个统计单元 · {duration}',
-      'scan.manual': '手动刷新',
+      'scan.manual': '超过 10 分钟会在打开时自动刷新',
       'range.7': '7 天',
       'range.30': '30 天',
       'range.90': '90 天',
@@ -126,7 +126,7 @@ window.__ModuleLoader__.load({
       'scan.never': 'Never scanned',
       'scan.at': 'Refreshed {time}',
       'scan.meta': '{units} buckets · {duration}',
-      'scan.manual': 'manual refresh only',
+      'scan.manual': 'refreshed on open when older than 10 minutes',
       'range.7': '7d',
       'range.30': '30d',
       'range.90': '90d',
@@ -1159,6 +1159,12 @@ window.__ModuleLoader__.load({
       { id: 'sources', key: 'tab.sources' },
     ];
 
+    const STALE_MS = 10 * 60 * 1000;
+
+    function isStale(snapshot) {
+      return !snapshot || !snapshot.scannedAt || Date.now() - snapshot.scannedAt > STALE_MS;
+    }
+
     function AgentUsagePage({ t, subscribeLocale }) {
       const localeTick = useLocaleTick(subscribeLocale);
 
@@ -1182,6 +1188,16 @@ window.__ModuleLoader__.load({
       }, []);
 
       const runScanRef = useRef(null);
+      const snapshotRef = useRef(null);
+      snapshotRef.current = snapshot;
+      // Coming back to the window refreshes a stale snapshot too.
+      useEffect(() => {
+        const onVisible = () => {
+          if (document.visibilityState === 'visible' && isStale(snapshotRef.current)) runScanRef.current?.();
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => document.removeEventListener('visibilitychange', onVisible);
+      }, []);
       const loadSnapshot = useCallback(() => {
         setLoading(true);
         setError(null);
@@ -1195,6 +1211,8 @@ window.__ModuleLoader__.load({
             // (the Host shares one scan between callers) so this page gets its result and its
             // refresh button comes back.
             if (payload.scanning) runScanRef.current?.();
+            // A snapshot older than STALE_MS (or none yet) is refreshed on open; scans are incremental.
+            else if (isStale(payload.snapshot)) runScanRef.current?.();
           })
           .catch((requestError) => {
             if (!mountedRef.current) return;
@@ -1207,7 +1225,10 @@ window.__ModuleLoader__.load({
         loadSnapshot();
       }, [loadSnapshot]);
 
+      const scanningRef = useRef(false);
       const runScan = useCallback(() => {
+        if (scanningRef.current) return;
+        scanningRef.current = true;
         setScanning(true);
         setError(null);
         requestJson(API.scan, { method: 'POST' })
@@ -1221,7 +1242,8 @@ window.__ModuleLoader__.load({
             if (!mountedRef.current) return;
             setError(scanError.message || String(scanError));
             setScanning(false);
-          });
+          })
+          .finally(() => { scanningRef.current = false; });
       }, []);
       runScanRef.current = runScan;
 
