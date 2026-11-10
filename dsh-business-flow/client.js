@@ -1447,21 +1447,52 @@ window.__ModuleLoader__.load({
           }, t('historyClear'))));
     }
 
+    // ------------------------------------------------------------------------------------------
+    // Page state that outlives the component: switching to another sidebar panel unmounts the page,
+    // and an analysis that is still running must land (and the typed text stay) when it comes back.
+    // Module scope = one per loaded client, i.e. per window.
+    // ------------------------------------------------------------------------------------------
+
+    const PAGE_STATE = new Map();
+    const PAGE_LISTENERS = new Set();
+    const PAGE_REFS = { analysisSession: { current: '' }, runControl: { current: null } };
+
+    function setPageState(key, value) {
+      const previous = PAGE_STATE.get(key);
+      const next = typeof value === 'function' ? value(previous) : value;
+      if (Object.is(previous, next)) return;
+      PAGE_STATE.set(key, next);
+      for (const listener of [...PAGE_LISTENERS]) listener();
+    }
+
+    /** useState whose value lives in PAGE_STATE; writes after unmount are kept for the next mount. */
+    function usePersisted(key, initial) {
+      const [, setTick] = useState(0);
+      useEffect(() => {
+        const listener = () => setTick((value) => value + 1);
+        PAGE_LISTENERS.add(listener);
+        return () => { PAGE_LISTENERS.delete(listener); };
+      }, []);
+      if (!PAGE_STATE.has(key)) PAGE_STATE.set(key, initial);
+      const set = useCallback((value) => setPageState(key, value), [key]);
+      return [PAGE_STATE.get(key), set];
+    }
+
     function Page(ctx, t) {
       return function BusinessFlowPage() {
-        const [projectPath, setProjectPath] = useState('');
-        const [business, setBusiness] = useState('');
-        const [graph, setGraph] = useState(null);
+        const [projectPath, setProjectPath] = usePersisted('projectPath', '');
+        const [business, setBusiness] = usePersisted('business', '');
+        const [graph, setGraph] = usePersisted('graph', null);
         /** Project the graph on screen was drawn from; drafts and new sessions always use it. */
-        const [graphProject, setGraphProject] = useState('');
-        const [currentId, setCurrentId] = useState(null);
-        const [selectedId, setSelectedId] = useState(null);
-        const [requirement, setRequirement] = useState('');
-        const [prompt, setPrompt] = useState('');
+        const [graphProject, setGraphProject] = usePersisted('graphProject', '');
+        const [currentId, setCurrentId] = usePersisted('currentId', null);
+        const [selectedId, setSelectedId] = usePersisted('selectedId', null);
+        const [requirement, setRequirement] = usePersisted('requirement', '');
+        const [prompt, setPrompt] = usePersisted('prompt', '');
         /** The prompt card stays while the user edits, even if they clear the text. */
-        const [promptShown, setPromptShown] = useState(false);
-        const [busy, setBusy] = useState('');
-        const [error, setError] = useState('');
+        const [promptShown, setPromptShown] = usePersisted('promptShown', false);
+        const [busy, setBusy] = usePersisted('busy', '');
+        const [error, setError] = usePersisted('error', '');
         /** Model check: `ok` with the provider/model, `nomodel`, `fail`, or '' while unknown. */
         const [status, setStatus] = useState({ state: '', text: '' });
         const [copied, setCopied] = useState(false);
@@ -1475,15 +1506,15 @@ window.__ModuleLoader__.load({
         const [zoomTouched, setZoomTouched] = useState(false);
         const [fullscreen, setFullscreen] = useState('');
         const [focusTable, setFocusTable] = useState(null);
-        const [view, setView] = useState('all');
+        const [view, setView] = usePersisted('view', 'all');
         const [, setLocaleTick] = useState(0);
         const canvasRef = useRef(null);
         const graphRef = useRef(null);
         /** The live Session of the graph on screen, so its prompt refinements continue there. */
-        const analysisSession = useRef('');
+        const analysisSession = PAGE_REFS.analysisSession;
         /** The running analysis or draft request, so the user can cancel it. */
-        const runControl = useRef(null);
-        const [busySince, setBusySince] = useState(0);
+        const runControl = PAGE_REFS.runControl;
+        const [busySince, setBusySince] = usePersisted('busySince', 0);
         const [now, setNow] = useState(Date.now());
         const longRunning = busy === 'analyze' || busy === 'update' || busy === 'draft';
         useEffect(() => {
@@ -1528,7 +1559,12 @@ window.__ModuleLoader__.load({
         // Records saved before table detection carry no `tables` field on any node.
         const tablesKnown = graph !== null && graph.nodes.some((n) => Array.isArray(n.tables));
 
+        // A different node starts a fresh requirement. Compared with the previous selection (not run on
+        // mount), so returning to the panel keeps what was typed for the selected node.
+        const lastSelected = useRef(selectedId);
         useEffect(() => {
+          if (lastSelected.current === selectedId) return;
+          lastSelected.current = selectedId;
           setRequirement('');
           setPrompt('');
           setPromptShown(false);
