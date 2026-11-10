@@ -171,6 +171,10 @@ describe('SKILL.md frontmatter: multi-line scalars', () => {
     assert.equal(parseSkillFile('---\nname: c\ndescription: first\n  second\n---\n').data.description, 'first second')
   })
 
+  it('quotes a description that starts with a dash', () => {
+    assert.match(renderSkillFile({ data: { name: 'a', description: '- item one' }, body: '' }), /^description: "- item one"$/m)
+  })
+
   it('reads frontmatter behind a UTF-8 BOM and re-renders a single block', () => {
     const parsed = parseSkillFile('\uFEFF---\nname: demo\ndescription: old\n---\nbody text\n')
     assert.equal(parsed.hasFrontmatter, true)
@@ -180,7 +184,7 @@ describe('SKILL.md frontmatter: multi-line scalars', () => {
   })
 
   it('round-trips descriptions with backslashes and control characters', () => {
-    for (const description of ['path is C:\\new\\table', 'tab\there', 'quote " and \\" mix', 'a: b', 'bell\u0007 end', '\\u0041 stays']) {
+    for (const description of ['- item one', '-flag', 'path is C:\\new\\table', 'tab\there', 'quote " and \\" mix', 'a: b', 'bell\u0007 end', '\\u0041 stays']) {
       const rendered = renderSkillFile({ data: { name: 'a', description }, body: 'b' })
       assert.equal(parseSkillFile(rendered).data.description, description)
     }

@@ -327,7 +327,8 @@ function unquoteScalar(value) {
 function quoteScalar(value) {
   const text = String(value ?? '')
   if (text.includes('\n')) return JSON.stringify(text)
-  if (/^[A-Za-z0-9_\-./ ]+$/.test(text) && !text.startsWith(' ') && !text.endsWith(' ')) {
+  // A leading `-` is a block-sequence indicator (`- item` is not a plain scalar), so it is quoted.
+  if (/^[A-Za-z0-9_./][A-Za-z0-9_\-./ ]*$/.test(text) && !text.endsWith(' ')) {
     // Plain is fine unless it could be read as a number/bool/null or contains `: `.
     if (!/^(true|false|null|~|-?\d+(\.\d+)?)$/is.test(text) && !text.includes(': ')) return text
   }
