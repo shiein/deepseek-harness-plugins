@@ -245,6 +245,7 @@ window.__ModuleLoader__.load({
       'editor.stale': '这个文件在你打开后已被其他程序修改（例如 Agent）。关闭后重新打开可看到最新内容，或者用你的版本覆盖。',
       'editor.overwrite': '仍然覆盖保存',
       'detail.section.files': '其他文件（{count}）',
+      'detail.section.tools': '工具（{count}）',
       'detail.fileLink': '链接',
       'detail.filesTruncated': '只列出前 200 个文件。',
       'discard.title': '放弃未保存的修改？',
@@ -498,6 +499,7 @@ window.__ModuleLoader__.load({
       'editor.stale': 'This file was changed by another program (an agent, for example) after you opened it. Reopen it to see the latest version, or overwrite it with yours.',
       'editor.overwrite': 'Overwrite anyway',
       'detail.section.files': 'Other files ({count})',
+      'detail.section.tools': 'Tools ({count})',
       'detail.fileLink': 'link',
       'detail.filesTruncated': 'Only the first 200 files are listed.',
       'discard.title': 'Discard unsaved changes?',
@@ -2238,6 +2240,24 @@ window.__ModuleLoader__.load({
                   ),
                 ),
           ),
+          Array.isArray(server.tools) && server.tools.length > 0
+            ? h(
+                FieldBlock,
+                { label: t('detail.section.tools', { count: server.tools.length }) },
+                h(
+                  'ul',
+                  { className: 'aa-file-list' },
+                  server.tools.map((tool) =>
+                    h(
+                      'li',
+                      { key: tool.name, title: tool.description || tool.name },
+                      h('span', { className: 'aa-file-name aa-mono' }, tool.name),
+                      h('span', { className: 'aa-muted aa-tool-desc' }, tool.description),
+                    ),
+                  ),
+                ),
+              )
+            : null,
           h(
             'div',
             { className: 'aa-toggle-row' },
@@ -3424,6 +3444,24 @@ window.__ModuleLoader__.load({
         if (tabSupported(tab, bootstrap)) loadTab(tab, wsPath);
       }, [bootstrap, wsPath, loadTab]);
 
+      // A user-scope server that is still connecting is re-read every 2 s (for up to ~30 s), so its
+      // row turns connected or error without a manual refresh.
+      const mcpPolls = useRef(0);
+      const mcpConnecting = activeTab === 'mcp'
+        && Array.isArray(data.mcp?.servers) && data.mcp.servers.some((server) => server?.status?.state === 'connecting');
+      useEffect(() => {
+        if (!mcpConnecting) {
+          mcpPolls.current = 0;
+          return undefined;
+        }
+        if (mcpPolls.current >= 15) return undefined;
+        const timer = setTimeout(() => {
+          mcpPolls.current += 1;
+          loadTab('mcp', workspaceRef.current);
+        }, 2000);
+        return () => clearTimeout(timer);
+      }, [mcpConnecting, data.mcp, loadTab]);
+
       useEffect(() => {
         if (contentRef.current) contentRef.current.scrollTop = 0;
       }, [activeTab]);
@@ -4601,6 +4639,7 @@ html[data-platform=darwin] .aa-header { min-height: max(40px, calc(var(--dsh-fra
 .aa-file-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 11.5px;
   max-height: 220px; overflow-y: auto; }
 .aa-file-list li { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+.aa-tool-desc { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .aa-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aa-toast-action { flex: none; margin-left: 4px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2);
   background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 11.5px; cursor: pointer; }

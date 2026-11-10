@@ -739,6 +739,25 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
     }
   }
 
+  /** Name and description of every tool this server registered globally (user-scope rows). */
+  function serverTools(serverName) {
+    try {
+      const tools = typeof ctx?.get === 'function' ? ctx.get('tools') : undefined
+      const schemas = tools && typeof tools.schemas === 'function' ? tools.schemas(undefined) : []
+      if (!Array.isArray(schemas)) return []
+      const prefix = `${TOOL_PREFIX}${serverName}__`
+      return schemas
+        .filter((schema) => typeof schema?.name === 'string' && schema.name.startsWith(prefix))
+        .map((schema) => ({
+          name: schema.name.slice(prefix.length),
+          description: typeof schema.description === 'string' ? schema.description.slice(0, 300) : '',
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    } catch {
+      return []
+    }
+  }
+
   /** Count this server's registered tools from a tool-name snapshot. */
   function countServerTools(names, serverName) {
     const prefix = `${TOOL_PREFIX}${serverName}__`
@@ -1078,6 +1097,8 @@ export function createMcp({ ctx, homes, loadClientPlugin } = {}) {
         ...stored,
         summary: summarizeStored(stored),
         status: statusFor(stored, resolved.scope, globalToolNames, trust.trusted),
+        // Workspace rows mount per Session, so only user rows have a global tool list to show.
+        tools: resolved.scope === 'user' ? serverTools(stored.serverName) : [],
         ...trust,
       },
     }

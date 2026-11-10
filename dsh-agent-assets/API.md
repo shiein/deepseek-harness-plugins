@@ -269,7 +269,9 @@ not mounted). Workspace rows also carry `trusted` and `fingerprint`. `env`/`head
 ### GET /mcp/detail?scope=&serverName=&workspace=
 
 Full stored config including `env`/`headers` values plus `status`:
-`{ "ok": true, "server": { ...McpStored, "summary": "…", "status": {...} } }`.
+`{ "ok": true, "server": { ...McpStored, "summary": "…", "status": {...}, "tools": [{ "name", "description" }] } }`.
+`tools` lists what a user-scope server registered (names without the `mcp__<server>__` prefix);
+workspace rows mount per Session, so theirs is empty.
 Missing → 404.
 
 ### POST /mcp

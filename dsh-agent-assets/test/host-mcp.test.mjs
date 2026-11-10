@@ -324,6 +324,9 @@ test('CRUD persists the store (0600), list masks secrets, detail exposes them, t
   assert.equal(detail.server.summary, 'npx -y @modelcontextprotocol/server-filesystem /tmp')
   assert.equal(detail.server.status.state, 'connected')
   assert.equal(detail.server.createdAt, raw.servers[0].createdAt)
+  assert.equal(detail.server.tools.length, 1, 'the registered tool is listed')
+  assert.match(detail.server.tools[0].description, /^fake mcp__files__/)
+  assert.ok(!detail.server.tools[0].name.startsWith('mcp__'), 'listed without the namespace prefix')
 
   // update: replaces config, preserves createdAt, timestamps updatedAt.
   const firstMount = harness.mounts.find((mount) => mount.label === 'root')
