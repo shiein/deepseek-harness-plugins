@@ -1169,6 +1169,7 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
+      const runScanRef = useRef(null);
       const loadSnapshot = useCallback(() => {
         setLoading(true);
         setError(null);
@@ -1177,8 +1178,11 @@ window.__ModuleLoader__.load({
             if (!mountedRef.current) return;
             setSnapshot(payload.snapshot || null);
             setDataDir(payload.dataDir || '');
-            setScanning(Boolean(payload.scanning));
             setLoading(false);
+            // A scan started elsewhere (another window, an earlier visit) is still running: join it
+            // (the Host shares one scan between callers) so this page gets its result and its
+            // refresh button comes back.
+            if (payload.scanning) runScanRef.current?.();
           })
           .catch((requestError) => {
             if (!mountedRef.current) return;
@@ -1207,6 +1211,7 @@ window.__ModuleLoader__.load({
             setScanning(false);
           });
       }, []);
+      runScanRef.current = runScan;
 
       const cutoff = range === 'all' ? null : localDayOffset(Number(range));
       const filters = useMemo(() => ({ agent: agentFilter, model: modelFilter, cutoff }), [agentFilter, modelFilter, cutoff]);
