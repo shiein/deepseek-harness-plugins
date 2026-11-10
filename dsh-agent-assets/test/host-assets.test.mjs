@@ -521,7 +521,8 @@ describe('skills: remove', { concurrency: false }, () => {
   it('deletes the whole skill directory and 404s afterwards', async () => {
     const directory = join(projectDshSkills, 'new-skill')
     const result = await skills.remove({ scope: 'workspace', workspace, name: 'new-skill' })
-    assert.deepEqual(result, { deleted: true, name: 'new-skill', scope: 'workspace' })
+    assert.deepEqual({ ...result, trashId: undefined }, { deleted: true, name: 'new-skill', scope: 'workspace', trashId: undefined })
+    assert.match(result.trashId, /^\d{13}-[0-9a-f]{8}$/)
     assert.equal(await statOrUndefined(directory), undefined)
     await expectError(skills.read({ scope: 'workspace', workspace, name: 'new-skill' }), 'not_found')
     await expectError(skills.remove({ scope: 'workspace', workspace, name: 'new-skill' }), 'not_found')
@@ -582,7 +583,8 @@ describe('skills: path safety', { concurrency: false }, () => {
     await expectError(skills.read({ scope: 'workspace', workspace, name: 'leaky' }), 'forbidden')
     // Deleting the real directory is safe (the symlink is unlinked, not followed).
     const removal = await skills.remove({ scope: 'workspace', workspace, name: 'leaky' })
-    assert.deepEqual(removal, { deleted: true, name: 'leaky', scope: 'workspace' })
+    assert.equal(removal.deleted, true)
+    assert.equal(removal.name, 'leaky')
     assert.equal(await statOrUndefined(leakyDirectory), undefined)
     assert.equal(await readFile(secret, 'utf8'), '# SECRET\n')
   })
@@ -748,7 +750,8 @@ describe('instructions: read/write/delete', { concurrency: false }, () => {
       workspace: instructionWorkspace,
       path: target,
     })
-    assert.deepEqual(deleted, { deleted: true })
+    assert.equal(deleted.deleted, true)
+    assert.match(deleted.trashId, /^\d{13}-[0-9a-f]{8}$/)
     assert.equal(await statOrUndefined(target), undefined)
     await expectError(
       instructions.remove({ scope: 'workspace', workspace: instructionWorkspace, path: target }),

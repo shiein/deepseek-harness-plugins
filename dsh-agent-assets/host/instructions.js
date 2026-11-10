@@ -12,6 +12,7 @@
  */
 
 import { basename, join, relative, resolve, sep } from 'node:path'
+import { createTrash } from './trash.js'
 import { realpath } from 'node:fs/promises'
 import {
   assertUnchangedSince,
@@ -22,7 +23,6 @@ import {
   matchLineEndings,
   pathKey,
   readTextIfExists,
-  removeTree,
   resolveHomes,
   statIfExists,
   writeTextAtomic,
@@ -96,6 +96,8 @@ export function createInstructions(options = {}) {
         ? resolve(options.homes.devinHome)
         : fallbackHomes.devinHome,
   }
+
+  const trash = createTrash({ dshHome: homes.dshHome })
 
   /**
    * Enumerate every allowed instruction-file candidate for one workspace.
@@ -331,12 +333,13 @@ export function createInstructions(options = {}) {
         fail('not_found', `instruction file not found: ${candidate.path}`, 404)
       }
       if (info.isDirectory()) fail('bad_request', 'instruction path is a directory', 400)
+      let trashId
       try {
-        await removeTree(candidate.path)
+        trashId = await trash.put(candidate.path, 'instruction')
       } catch (error) {
         fail('internal', `cannot delete instruction file: ${errorMessage(error)}`, 500)
       }
-      return { deleted: true }
+      return { deleted: true, trashId }
     },
   }
 }

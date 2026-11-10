@@ -27,13 +27,13 @@ import {
   matchLineEndings,
   parseSkillFile,
   readTextIfExists,
-  removeTree,
   renderSkillFile,
   resolveHomes,
   statIfExists,
   writeTextAtomic,
 } from './shared.js'
 import { describePackages, expandSource, installPackage, openSource } from './skill-import.js'
+import { createTrash } from './trash.js'
 
 /** Filesystem skill sources, highest precedence first. */
 const FILESYSTEM_SOURCES = Object.freeze([
@@ -85,6 +85,7 @@ export function createSkills(options = {}) {
         : fallbackHomes.devinHome,
   }
   const serviceSkills = typeof options.serviceSkills === 'function' ? options.serviceSkills : null
+  const trash = createTrash({ dshHome: homes.dshHome })
 
   /**
    * Ordered filesystem roots for a workspace.
@@ -529,12 +530,13 @@ export function createSkills(options = {}) {
       }
       const { root, directory } = located
       await assertRealInside(root.path, directory, 'skill directory resolves outside its root')
+      let trashId
       try {
-        await removeTree(directory)
+        trashId = await trash.put(directory, 'skill')
       } catch (error) {
         fail('internal', `cannot delete skill: ${errorMessage(error)}`, 500)
       }
-      return { deleted: true, name, scope }
+      return { deleted: true, name, scope, trashId }
     },
   }
 

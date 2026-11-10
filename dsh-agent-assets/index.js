@@ -31,6 +31,7 @@ import { createSkills } from './host/skills.js'
 import { createInstructions } from './host/instructions.js'
 import { createMcp } from './host/mcp.js'
 import { isLoopbackRequest } from './host/loopback.js'
+import { createTrash } from './host/trash.js'
 
 /** Cordis plugin name used by Loader diagnostics. */
 export const name = 'agent-assets'
@@ -260,6 +261,7 @@ export function apply(ctx) {
   const skills = createSkills({ homes, serviceSkills })
   const instructions = createInstructions({ homes })
   const mcp = createMcp({ ctx, homes, loadClientPlugin })
+  const trash = createTrash({ dshHome: homes.dshHome })
 
   // -------------------------------------------------------------------------------------------
   // Workspace resolution. A request may address any registered workspace (or the default
@@ -507,6 +509,12 @@ export function apply(ctx) {
       throw new AssetsError('bad_request', `unknown mcp op: ${op}`, 400)
     },
 
+    async trashRestore(request) {
+      requireMethod(request, 'POST')
+      const body = await readJsonBody(request)
+      return trash.restore(requireString(body, 'id'))
+    },
+
     async mcpDetail(request, url) {
       requireMethod(request, 'GET')
       const scope = requireString({ scope: queryValue(url, 'scope') }, 'scope')
@@ -528,6 +536,7 @@ export function apply(ctx) {
     ['/instruction', handlers.instruction],
     ['/mcp', handlers.mcp],
     ['/mcp/detail', handlers.mcpDetail],
+    ['/trash/restore', handlers.trashRestore],
   ]
 
   ctx.effect(() => {

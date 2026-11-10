@@ -121,7 +121,8 @@ Body: `{ "op": "create" | "update" | "delete", "scope": "user" | "workspace",
   frontmatter keys are preserved verbatim. 404 when absent. Optional `expectedModifiedAt` (the
   `modifiedAt` the editor read): when `SKILL.md` changed since, 409 `stale` and nothing is written;
   omit it to overwrite. CRLF files keep CRLF.
-- `delete`: removes the whole skill directory (`<root>/<name>/`) recursively; 404 when absent.
+- `delete`: moves the whole skill directory (`<root>/<name>/`) into the plugin trash and returns
+  `trashId`; 404 when absent. See `POST /trash/restore`.
 - Validation: `name` matches `^[a-z0-9][a-z0-9-]{0,63}$`; `description` non-empty, single line,
   ≤ 1024 chars; `body` is a string (may be empty); `whenToUse` optional single line.
 - Response: `{ "ok": true, "skill": SkillView }` for create/update,
@@ -198,7 +199,15 @@ Body: `{ "op": "write" | "delete", "scope": "user" | "workspace", "workspace": "
   `{ "ok": true, "instruction": { ...InstructionView, "content": "…" } }`. Optional
   `expectedModifiedAt` (ISO string, or `null` for "did not exist"): when the file changed since,
   409 `stale` and nothing is written. CRLF files keep CRLF.
-- `delete` removes the file (404 when absent) and returns `{ "ok": true, "deleted": true }`.
+- `delete` moves the file into the plugin trash (404 when absent) and returns
+  `{ "ok": true, "deleted": true, "trashId": "…" }`.
+
+### POST /trash/restore
+
+Body: `{ "id": "<trashId>" }`. Deleted skills and instruction files live in
+`<dshHome>/agent-assets/trash/<id>/` for 30 days (purged on a later delete). Restores the item to its
+original path: 409 `conflict` when something exists there now, 404 when the entry is gone. MCP rows
+are not trashed (their delete is final).
 - Read-only third-party candidates reject `write`/`delete` with `forbidden`.
 - Directories outside the two candidate sets are rejected (`forbidden`).
 

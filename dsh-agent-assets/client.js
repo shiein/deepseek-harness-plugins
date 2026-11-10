@@ -23,6 +23,7 @@ window.__ModuleLoader__.load({
     const API_BASE = '/api/dsh-agent-assets';
     const STALE_MS = 30_000;
     const TOAST_MS = 2_600;
+    const TOAST_ACTION_MS = 8_000;
     const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
     const MCP_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
     const SCOPE_ORDER = ['workspace', 'user', 'bundled'];
@@ -53,6 +54,8 @@ window.__ModuleLoader__.load({
       'action.saving': '保存中…',
       'action.edit': '编辑',
       'action.delete': '删除',
+      'action.undo': '撤销',
+      'toast.restored': '已恢复「{name}」',
       'action.create': '创建',
       'action.newSkill': '新建技能',
       'action.newMcp': '新建 MCP',
@@ -235,7 +238,7 @@ window.__ModuleLoader__.load({
       'confirm.skill.title': '删除技能',
       'confirm.instruction.title': '删除提示词文件',
       'confirm.mcp.title': '删除 MCP 服务',
-      'confirm.body': '将永久删除「{name}」，路径：{path}。此操作无法撤销。',
+      'confirm.body': '将删除「{name}」，路径：{path}。删除后会移入 ~/.dsh/agent-assets/trash，30 天内可撤销。',
       'confirm.bodyNoPath': '将永久删除「{name}」。此操作无法撤销。',
       'badge.link': '链接',
       'badge.linkHint': '链接到 {path}，在那里修改',
@@ -300,6 +303,8 @@ window.__ModuleLoader__.load({
       'action.saving': 'Saving…',
       'action.edit': 'Edit',
       'action.delete': 'Delete',
+      'action.undo': 'Undo',
+      'toast.restored': 'Restored "{name}"',
       'action.create': 'Create',
       'action.newSkill': 'New skill',
       'action.newMcp': 'New MCP',
@@ -483,7 +488,7 @@ window.__ModuleLoader__.load({
       'confirm.skill.title': 'Delete skill',
       'confirm.instruction.title': 'Delete prompt file',
       'confirm.mcp.title': 'Delete MCP server',
-      'confirm.body': 'This permanently deletes "{name}" at {path}. This cannot be undone.',
+      'confirm.body': 'This deletes "{name}" at {path}. It moves to ~/.dsh/agent-assets/trash and can be undone for 30 days.',
       'confirm.bodyNoPath': 'This permanently deletes "{name}". This cannot be undone.',
       'badge.link': 'Link',
       'badge.linkHint': 'Links to {path}; edit it there',
@@ -1460,6 +1465,9 @@ window.__ModuleLoader__.load({
             toast.kind === 'error' ? h(IconAlert, { size: 12 }) : h(IconCheck, { size: 12 }),
             h('span', { className: 'aa-toast-text' }, toast.message || ''),
             toast.detail ? h('span', { className: 'aa-toast-detail' }, toast.detail) : null,
+            toast.action
+              ? h('button', { type: 'button', className: 'aa-toast-action', onClick: toast.action.run }, toast.action.label)
+              : null,
           ),
         ),
       );
@@ -3296,12 +3304,16 @@ window.__ModuleLoader__.load({
       const pushToast = useCallback((toast) => {
         const id = (toastSeqRef.current += 1);
         setToasts((prev) =>
-          [...prev, { id, kind: toast.kind || 'success', message: toast.message || '', detail: toast.detail || null }].slice(-3),
+          [...prev, {
+            id, kind: toast.kind || 'success', message: toast.message || '', detail: toast.detail || null,
+            action: toast.action || null,
+          }].slice(-3),
         );
+        // A toast with an action (Undo) stays long enough to reach it.
         const timer = setTimeout(() => {
           toastTimersRef.current.delete(id);
           setToasts((prev) => prev.filter((item) => item.id !== id));
-        }, TOAST_MS);
+        }, toast.action ? TOAST_ACTION_MS : TOAST_MS);
         toastTimersRef.current.set(id, timer);
       }, []);
 
@@ -3525,18 +3537,33 @@ window.__ModuleLoader__.load({
         [loadTab, pushToast, t],
       );
 
+      /** Put a deleted skill or instruction file back from the plugin trash. */
+      const undoDelete = useCallback(
+        async (tab, trashId, name) => {
+          try {
+            await requestJson('/trash/restore', { method: 'POST', body: { id: trashId } });
+            pushToast({ kind: 'success', message: t('toast.restored', { name }) });
+            loadTab(tab, workspaceRef.current);
+          } catch (error) {
+            pushToast({ kind: 'error', message: t('toast.failed'), detail: describeApiError(t, errorInfo(error)) });
+          }
+        },
+        [loadTab, pushToast, t],
+      );
+
       const handleConfirmDelete = useCallback(async () => {
         const pending = confirm;
         if (!pending) return;
         const { tab, target } = pending;
+        let removed = null;
         try {
           if (tab === 'skills') {
-            await requestJson('/skill', {
+            removed = await requestJson('/skill', {
               method: 'POST',
               body: withWorkspace({ op: 'delete', scope: target.scope, name: target.name }, workspaceRef.current),
             });
           } else if (tab === 'instructions') {
-            await requestJson('/instruction', {
+            removed = await requestJson('/instruction', {
               method: 'POST',
               body: withWorkspace({ op: 'delete', scope: target.scope, path: target.path }, workspaceRef.current),
             });
@@ -3565,6 +3592,9 @@ window.__ModuleLoader__.load({
                   : 'toast.mcp.deleted',
               { name: displayEntityName(tab, target, t) },
             ),
+            action: typeof removed?.trashId === 'string'
+              ? { label: t('action.undo'), run: () => undoDelete(tab, removed.trashId, displayEntityName(tab, target, t)) }
+              : null,
           });
           loadTab(tab, workspaceRef.current);
         } catch (error) {
@@ -4543,6 +4573,9 @@ html[data-platform=darwin] .aa-header { min-height: max(40px, calc(var(--dsh-fra
 .aa-toast.is-error { color: var(--dsw-alias-state-error-primary); }
 .aa-toast-text { color: var(--dsw-alias-label-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .aa-toast-detail { color: var(--dsw-alias-label-tertiary); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aa-toast-action { flex: none; margin-left: 4px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2);
+  background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 11.5px; cursor: pointer; }
+.aa-toast-action:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.05)); }
 
 /* error boundary fallback */
 .aa-fallback { height: 100%; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px;
