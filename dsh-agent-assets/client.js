@@ -1802,7 +1802,11 @@ window.__ModuleLoader__.load({
     const DIALOG_STACK = [];
     let DIALOG_UID = 0;
 
+    /** True while the dialog it wraps is playing its exit (see usePresence in renderDialogs). */
+    const DialogExit = React.createContext(false);
+
     function Dialog({ title, subtitle, width, raised, onClose, children, footer }) {
+      const exiting = React.useContext(DialogExit);
       const uidRef = useRef(0);
       if (uidRef.current === 0) uidRef.current = ++DIALOG_UID;
       const titleId = `aa-dialog-title-${uidRef.current}`;
@@ -1884,7 +1888,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         {
-          className: `aa-overlay${raised ? ' is-raised' : ''}`,
+          className: `aa-overlay${raised ? ' is-raised' : ''}${exiting ? ' dshp-exit-fade' : ''}`,
           onMouseDown: (event) => {
             if (event.target === event.currentTarget) closeRef.current?.();
           },
@@ -1892,7 +1896,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           {
-            className: `aa-dialog${width === 'wide' ? ' is-wide' : width === 'narrow' ? ' is-narrow' : ''}`,
+            className: `aa-dialog${width === 'wide' ? ' is-wide' : width === 'narrow' ? ' is-narrow' : ''}${exiting ? ' dshp-exit-pop' : ''}`,
             role: 'dialog',
             'aria-modal': 'true',
             'aria-labelledby': titleId,
@@ -3917,6 +3921,10 @@ window.__ModuleLoader__.load({
       const isNarrow = rootSize.width > 0 && rootSize.width < 720;
       const isShort = rootSize.height > 0 && rootSize.height < 520;
 
+      const dialogPresence = usePresence(dialog);
+      const confirmPresence = usePresence(confirm);
+      const importPresence = usePresence(importOpen);
+
       const groups = useMemo(() => {
         const needle = query.trim().toLowerCase();
         let items = [];
@@ -4274,6 +4282,11 @@ window.__ModuleLoader__.load({
       };
 
       const renderDialogs = () => {
+        // Closed dialogs stay mounted for their exit animation; these shadow the live state on purpose.
+        const dialog = dialogPresence.value;
+        const confirm = confirmPresence.value;
+        const importOpen = importPresence.value;
+        const exitWrap = (exiting, key, node) => h(DialogExit.Provider, { key, value: exiting }, node);
         const nodes = [];
         if (dialog && dialog.kind === 'detail') {
           const toggleServer = dialog.detail || dialog.target || {};
@@ -4346,7 +4359,13 @@ window.__ModuleLoader__.load({
             }),
           );
         }
-        return nodes;
+        const exitingByKey = {
+          detail: dialogPresence.exiting,
+          editor: dialogPresence.exiting,
+          import: importPresence.exiting,
+          confirm: confirmPresence.exiting,
+        };
+        return nodes.map((node) => exitWrap(Boolean(exitingByKey[node.key]), `exit-${node.key}`, node));
       };
 
       return h(

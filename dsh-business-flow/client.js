@@ -618,7 +618,10 @@ window.__ModuleLoader__.load({
       .bf-drawer-foot { flex: none; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 16px;
         border-top: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); font-size: 11px; color: var(--dsw-alias-label-tertiary, #8b949e); }
       .bf-overlay { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 24px;
-        background: color-mix(in srgb, #000 32%, transparent); }
+        background: color-mix(in srgb, #000 32%, transparent); animation: bf-fade-in var(--dshp-dur) var(--dshp-ease-out); }
+      .bf-dialog { animation: bf-pop-in var(--dshp-dur) var(--dshp-ease-out); }
+      @keyframes bf-fade-in { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes bf-pop-in { from { opacity: 0; transform: translateY(4px) scale(.985); } to { opacity: 1; transform: none; } }
       .bf-dialog { width: min(420px, 100%); display: flex; flex-direction: column; gap: 10px; padding: 18px 18px 14px; border-radius: 14px;
         border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.14)); background: var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-2, #fff));
         box-shadow: 0 20px 50px rgba(0,0,0,.25); }
@@ -1598,7 +1601,7 @@ window.__ModuleLoader__.load({
         }));
     }
 
-    function ConfirmDialog({ title, body, confirmLabel, cancelLabel, busy, onConfirm, onCancel }) {
+    function ConfirmDialog({ title, body, confirmLabel, cancelLabel, busy, exiting, onConfirm, onCancel }) {
       const cancelRef = useRef(null);
       useEffect(() => {
         cancelRef.current?.focus?.();
@@ -1612,11 +1615,11 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('keydown', onKey, true);
       }, [onCancel]);
       return h('div', {
-        className: 'bf-overlay',
+        className: `bf-overlay${exiting ? ' dshp-exit-fade' : ''}`,
         onClick: (event) => event.stopPropagation(),
         onMouseDown: (event) => { if (event.target === event.currentTarget && !busy) onCancel(); },
       },
-        h('div', { className: 'bf-dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': title },
+        h('div', { className: `bf-dialog${exiting ? ' dshp-exit-pop' : ''}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': title },
           h('div', { className: 'bf-dialog-title' }, title),
           h('div', { className: 'bf-dialog-body' }, body),
           h('div', { className: 'bf-dialog-foot' },
@@ -1624,7 +1627,7 @@ window.__ModuleLoader__.load({
             h('button', { className: 'bf-btn bf-btn-danger', onClick: onConfirm, disabled: busy }, confirmLabel))));
     }
 
-    function HistoryDrawer({ entries, loading, error, currentId, currentProject, onPick, onAskDelete, onClose, onCompare, comparable, t }) {
+    function HistoryDrawer({ entries, loading, error, currentId, currentProject, onPick, onAskDelete, onClose, onCompare, comparable, exiting, t }) {
       const [query, setQuery] = useState('');
       const [collapsed, setCollapsed] = useState(() => new Set());
       const needle = query.trim().toLowerCase();
@@ -1646,7 +1649,10 @@ window.__ModuleLoader__.load({
         else next.add(path);
         return next;
       });
-      return h('aside', { className: 'bf-drawer', role: 'dialog', 'aria-label': t('history'), onClick: (event) => event.stopPropagation() },
+      return h('aside', {
+        className: `bf-drawer${exiting ? ' dshp-exit-drawer' : ''}`, role: 'dialog', 'aria-label': t('history'),
+        onClick: (event) => event.stopPropagation(),
+      },
         h('div', { className: 'bf-drawer-head' },
           h('span', { className: 'bf-drawer-title' }, h(Icon, { d: ICON.history }), t('history')),
           h('span', { className: 'bf-count' }, t('historyCount', { n: entries.length, p: new Set(entries.map((e) => e.projectPath)).size })),
@@ -2239,12 +2245,16 @@ window.__ModuleLoader__.load({
                 className: 'bf-btn bf-btn-primary', onClick: openSession, disabled: busy !== '' || prompt.trim() === '',
               }, busy === 'open' ? t('opening') : t('openSession')))));
 
-        const confirmSpec = confirm === null ? null
-          : confirm.kind === 'entry'
-            ? { title: t('confirmDeleteTitle'), body: t('confirmDeleteBody', { name: confirm.title || '—' }) }
-            : confirm.kind === 'project'
-              ? { title: t('confirmDeleteProjectTitle'), body: t('confirmDeleteProjectBody', { name: confirm.projectPath, n: confirm.count }) }
-              : { title: t('confirmClearTitle'), body: t('confirmClearBody', { n: confirm.count }) };
+        // Overlays stay mounted briefly after closing so they can animate out.
+        const drawerPresence = usePresence(historyOpen);
+        const confirmPresence = usePresence(confirm);
+        const shownConfirm = confirmPresence.value;
+        const confirmSpec = !shownConfirm ? null
+          : shownConfirm.kind === 'entry'
+            ? { title: t('confirmDeleteTitle'), body: t('confirmDeleteBody', { name: shownConfirm.title || '—' }) }
+            : shownConfirm.kind === 'project'
+              ? { title: t('confirmDeleteProjectTitle'), body: t('confirmDeleteProjectBody', { name: shownConfirm.projectPath, n: shownConfirm.count }) }
+              : { title: t('confirmClearTitle'), body: t('confirmClearBody', { n: shownConfirm.count }) };
 
         return h('div', { className: `bf-page${fullscreen === 'page' ? ' is-max' : ''}` },
           h('style', null, sharedPanelCss('.bf-page') + CSS),
@@ -2399,7 +2409,8 @@ window.__ModuleLoader__.load({
                     }, t('refineInPanel')))
                   : null)),
             sidePanel),
-          historyOpen ? h(HistoryDrawer, {
+          drawerPresence.value ? h(HistoryDrawer, {
+            exiting: drawerPresence.exiting,
             entries: history,
             loading: historyLoading,
             error: historyError,
@@ -2415,6 +2426,7 @@ window.__ModuleLoader__.load({
             t,
           }) : null,
           confirmSpec === null ? null : h(ConfirmDialog, {
+            exiting: confirmPresence.exiting,
             title: confirmSpec.title,
             body: confirmSpec.body,
             confirmLabel: t('confirmDelete'),

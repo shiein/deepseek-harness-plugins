@@ -1330,7 +1330,7 @@ window.__ModuleLoader__.load({
     }
 
     function ConfirmDialog(props) {
-      const { title, body, confirmLabel, t, busy, onConfirm, onCancel } = props;
+      const { title, body, confirmLabel, t, busy, onConfirm, onCancel, exiting } = props;
       const cancelRef = useRef(null);
       useEffect(() => {
         if (cancelRef.current) cancelRef.current.focus();
@@ -1345,10 +1345,10 @@ window.__ModuleLoader__.load({
       }, [onCancel]);
       return h(
         'div',
-        { className: 'ah-overlay', onMouseDown: (event) => { if (event.target === event.currentTarget && !busy) onCancel(); } },
+        { className: `ah-overlay${exiting ? ' dshp-exit-fade' : ''}`, onMouseDown: (event) => { if (event.target === event.currentTarget && !busy) onCancel(); } },
         h(
           'div',
-          { className: 'ah-dialog is-confirm', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': title },
+          { className: `ah-dialog is-confirm${exiting ? ' dshp-exit-pop' : ''}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': title },
           h('div', { className: 'ah-dialog-title' }, title),
           h('div', { className: 'ah-dialog-body' }, body),
           h(
@@ -2642,6 +2642,9 @@ window.__ModuleLoader__.load({
         : '';
 
       const rangeControl = h(RangeSelect, { t, value: range, onChange: setRange });
+      // Dialogs stay mounted briefly after closing so they can animate out.
+      const pickerPresence = usePresence(pickerOpen);
+      const confirmPresence = usePresence(confirm);
       const askRemove = (project) => setConfirm({ path: project.path, name: project.name || nameOfPath(project.path) });
       const currentAgent = selection?.kind === 'agent' ? agentMap.get(selection.id) : null;
       const mainBody = (() => {
@@ -2818,13 +2821,19 @@ window.__ModuleLoader__.load({
         }),
         scanning ? h('div', { className: 'ah-progress' }) : h('div', { className: 'ah-progress is-idle' }),
         h('div', { className: 'ah-body' }, h('div', { className: 'ah-main' }, mainBody)),
-        pickerOpen
+        pickerPresence.value
           ? h(
               'div',
-              { className: 'ah-overlay', onMouseDown: (event) => { if (event.target === event.currentTarget) setPickerOpen(false); } },
+              {
+                className: `ah-overlay${pickerPresence.exiting ? ' dshp-exit-fade' : ''}`,
+                onMouseDown: (event) => { if (event.target === event.currentTarget) setPickerOpen(false); },
+              },
               h(
                 'div',
-                { className: 'ah-dialog is-picker', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('action.openProject') },
+                {
+                  className: `ah-dialog is-picker${pickerPresence.exiting ? ' dshp-exit-pop' : ''}`,
+                  role: 'dialog', 'aria-modal': 'true', 'aria-label': t('action.openProject'),
+                },
                 h(
                   'div',
                   { className: 'ah-dialog-head' },
@@ -2838,12 +2847,15 @@ window.__ModuleLoader__.load({
               ),
             )
           : null,
-        confirm
+        confirmPresence.value
           ? h(ConfirmDialog, {
               t,
-              title: confirm.all ? t('opened.clearTitle') : t('opened.removeTitle'),
-              body: confirm.all ? t('opened.clearBody', { count: confirm.count }) : t('opened.removeBody', { name: confirm.name, path: confirm.path }),
-              confirmLabel: confirm.all ? t('opened.clear') : t('opened.remove'),
+              exiting: confirmPresence.exiting,
+              title: confirmPresence.value.all ? t('opened.clearTitle') : t('opened.removeTitle'),
+              body: confirmPresence.value.all
+                ? t('opened.clearBody', { count: confirmPresence.value.count })
+                : t('opened.removeBody', { name: confirmPresence.value.name, path: confirmPresence.value.path }),
+              confirmLabel: confirmPresence.value.all ? t('opened.clear') : t('opened.remove'),
               busy: confirmBusy,
               onConfirm: confirmRemove,
               onCancel: () => { if (!confirmBusy) setConfirm(null); },
@@ -3318,7 +3330,10 @@ html[data-platform=darwin] .ah-header { min-height: max(var(--dshp-header-h), va
 .ah-picker-item:hover { border-color: color-mix(in srgb, var(--ah-accent) 40%, transparent); background: color-mix(in srgb, var(--ah-accent) 5%, var(--dsw-alias-bg-layer-1)); }
 .ah-picker-item:focus-visible { outline: 2px solid var(--ah-accent); outline-offset: 1px; }
 .ah-overlay { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center; padding: 28px;
-  background: color-mix(in srgb, #000 34%, transparent); }
+  background: color-mix(in srgb, #000 34%, transparent); animation: ah-fade-in var(--dshp-dur) var(--dshp-ease-out); }
+.ah-overlay > .ah-dialog { animation: ah-dialog-in var(--dshp-dur) var(--dshp-ease-out); }
+@keyframes ah-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ah-dialog-in { from { opacity: 0; transform: translateY(4px) scale(.985); } to { opacity: 1; transform: none; } }
 .ah-dialog { width: min(440px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 18px 20px 16px; border-radius: 16px;
   border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-2)); box-shadow: 0 24px 60px rgba(0,0,0,.28); }
 .ah-dialog.is-picker { width: min(920px, 100%); height: min(680px, 100%); }
