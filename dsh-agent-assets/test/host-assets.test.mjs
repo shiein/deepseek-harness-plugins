@@ -525,6 +525,25 @@ describe('skills: path safety', { concurrency: false }, () => {
     assert.ok((await statOrUndefined(outside)) !== undefined, 'outside tree must be untouched')
   })
 
+  it('lists a user-scope skill linked from elsewhere read-only', async () => {
+    const source = join(root, 'linked-source')
+    await writeSkillFixture(root, 'linked-source', { description: 'Linked skill', body: 'linked body\n' })
+    await symlink(source, join(userAgentsSkills, 'linked'))
+
+    const result = await skills.list({ workspace })
+    const view = result.skills.find((skill) => skill.name === 'linked')
+    assert.ok(view, 'linked skill is listed')
+    assert.equal(view.editable, false)
+    assert.equal(view.description, 'Linked skill')
+    assert.ok(typeof view.linkTarget === 'string' && view.linkTarget.endsWith('linked-source'))
+
+    const read = await skills.read({ scope: 'user', workspace, name: 'linked' })
+    assert.match(read.skill.body, /linked body/)
+    await expectError(skills.update({ scope: 'user', workspace, name: 'linked', description: 'x' }), 'forbidden')
+    await expectError(skills.remove({ scope: 'user', workspace, name: 'linked' }), 'forbidden')
+    assert.match(await readFile(join(source, 'SKILL.md'), 'utf8'), /Linked skill/)
+  })
+
   it('refuses to read through a SKILL.md symlinked outside the root', async () => {
     const leakyDirectory = join(projectDshSkills, 'leaky')
     await mkdir(leakyDirectory, { recursive: true })

@@ -232,6 +232,8 @@ window.__ModuleLoader__.load({
       'confirm.mcp.title': '删除 MCP 服务',
       'confirm.body': '将永久删除「{name}」，路径：{path}。此操作无法撤销。',
       'confirm.bodyNoPath': '将永久删除「{name}」。此操作无法撤销。',
+      'badge.link': '链接',
+      'badge.linkHint': '链接到 {path}，在那里修改',
       'discard.title': '放弃未保存的修改？',
       'discard.body': '关闭后，这次编辑的内容不会保存。',
       'discard.confirm': '放弃修改',
@@ -471,6 +473,8 @@ window.__ModuleLoader__.load({
       'confirm.mcp.title': 'Delete MCP server',
       'confirm.body': 'This permanently deletes "{name}" at {path}. This cannot be undone.',
       'confirm.bodyNoPath': 'This permanently deletes "{name}". This cannot be undone.',
+      'badge.link': 'Link',
+      'badge.linkHint': 'Links to {path}; edit it there',
       'discard.title': 'Discard unsaved changes?',
       'discard.body': 'Closing now drops what you edited in this dialog.',
       'discard.confirm': 'Discard',
@@ -834,6 +838,7 @@ window.__ModuleLoader__.load({
         path: typeof source.path === 'string' && source.path ? source.path : null,
         dir: typeof source.dir === 'string' && source.dir ? source.dir : null,
         editable: Boolean(source.editable),
+        linkTarget: typeof source.linkTarget === 'string' && source.linkTarget ? source.linkTarget : null,
         shadowed: Array.isArray(source.shadowed)
           ? source.shadowed.filter((entry) => entry && typeof entry === 'object')
           : [],
@@ -1463,6 +1468,9 @@ window.__ModuleLoader__.load({
           h(Badge, { key: 'scope', tone: item.editable ? 'brand' : 'muted' }, t(scopeKey(item.scope))),
         );
         if (item.source) badges.push(h(Badge, { key: 'source', tone: 'muted' }, item.source));
+        if (item.linkTarget) {
+          badges.push(h(Badge, { key: 'link', tone: 'muted', title: t('badge.linkHint', { path: item.linkTarget }) }, t('badge.link')));
+        }
         if (item.shadowed.length > 0) {
           badges.push(
             h(

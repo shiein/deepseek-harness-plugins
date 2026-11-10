@@ -152,12 +152,17 @@ export function createSkills(options = {}) {
         const info = await statIfExists(child.path)
         if (info === undefined || !info.isDirectory()) continue
         const directoryReal = await realPathOrFallback(child.path)
-        if (!isInside(rootReal, directoryReal)) {
+        // A user-scope link (e.g. ~/.agents/skills/x -> ~/src/x) is the user's own set-up: list it
+        // read-only, its SKILL.md fenced to the link's target. A workspace-scope link arrives with a
+        // cloned repository and may point anywhere, so it stays skipped.
+        const linked = !isInside(rootReal, directoryReal) && definition.scope === 'user'
+        if (!isInside(rootReal, directoryReal) && !linked) {
           warnings.push(
             `skipped ${displayPath(child.path)}: resolves outside ${displayPath(definition.path)}`,
           )
           continue
         }
+        const fenceReal = linked ? directoryReal : rootReal
         const skillFile = join(child.path, 'SKILL.md')
         /** @type {Record<string, unknown>} */
         const entry = {
@@ -170,10 +175,11 @@ export function createSkills(options = {}) {
           path: skillFile,
           dir: child.path,
           root: definition.path,
-          editable: definition.readonly !== true,
+          editable: definition.readonly !== true && !linked,
+          ...(linked ? { linkTarget: directoryReal } : {}),
         }
         const skillFileReal = await realPathOrFallback(skillFile)
-        if (!isInside(rootReal, skillFileReal)) {
+        if (!isInside(fenceReal, skillFileReal)) {
           warnings.push(
             `skipped ${displayPath(skillFile)}: resolves outside ${displayPath(definition.path)}`,
           )
@@ -365,6 +371,7 @@ export function createSkills(options = {}) {
       const workspace = resolveWorkspace(input.workspace)
       const located = await locate(scopeRoots(scope, workspace), name)
       if (located === undefined) {
+        await refuseIfLinked(scope, workspace, name, 'update')
         await refuseIfReadonly(scope, workspace, name, 'update')
         fail('not_found', `skill not found: ${scope}/${name}`, 404)
       }
@@ -513,6 +520,7 @@ export function createSkills(options = {}) {
       const workspace = resolveWorkspace(input.workspace)
       const located = await locate(scopeRoots(scope, workspace), name)
       if (located === undefined) {
+        await refuseIfLinked(scope, workspace, name, 'remove')
         await refuseIfReadonly(scope, workspace, name, 'remove')
         fail('not_found', `skill not found: ${scope}/${name}`, 404)
       }
@@ -554,6 +562,20 @@ export function createSkills(options = {}) {
         `cannot ${operation} ${name}: ${displayPath(foreign.directory)} is read-only (third-party agent directory)`,
         403,
       )
+    }
+  }
+
+  /** Throw `forbidden` when `name` is a user-scope link to a folder outside the skill root. */
+  async function refuseIfLinked(scope, workspace, name, operation) {
+    if (scope !== 'user') return
+    for (const root of scopeRoots(scope, workspace)) {
+      const directory = join(root.path, name)
+      if (!isInside(root.path, directory)) continue
+      const info = await statIfExists(directory)
+      if (info === undefined || !info.isDirectory()) continue
+      const target = await realPathOrFallback(directory)
+      if (isInside(await realPathOrFallback(root.path), target)) continue
+      fail('forbidden', `cannot ${operation} ${name}: it links to ${displayPath(target)}; edit it there`, 403)
     }
   }
 
@@ -681,6 +703,7 @@ function toView(entry, shadowed = []) {
     path: entry.path ?? null,
     dir: entry.dir ?? null,
     editable: entry.editable === true,
+    linkTarget: typeof entry.linkTarget === 'string' ? displayPath(entry.linkTarget) : null,
     shadowed: shadowed.map((item) => ({ scope: item.scope, path: item.path ?? null })),
   }
 }
@@ -689,7 +712,7 @@ function toView(entry, shadowed = []) {
 async function loadSkillContent(entry) {
   if (entry.path === null || entry.dir === null) return { body: '', raw: '' }
   if (typeof entry.root === 'string') {
-    const rootReal = await realPathOrFallback(entry.root)
+    const rootReal = typeof entry.linkTarget === 'string' ? entry.linkTarget : await realPathOrFallback(entry.root)
     const fileReal = await realPathOrFallback(entry.path)
     if (!isInside(rootReal, fileReal)) {
       fail('forbidden', `skill file resolves outside its root: ${entry.path}`, 403)
