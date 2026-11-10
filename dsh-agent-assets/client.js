@@ -3704,8 +3704,9 @@ window.__ModuleLoader__.load({
         },
         [openEditor],
       );
+      // Rows carry a singular kind ('skill'); the delete path and the confirmation text key on the tab.
       const handleDeleteItem = useCallback((item) => {
-        setConfirm({ tab: item.kind, target: item });
+        setConfirm({ tab: activeTabRef.current, target: item });
       }, []);
       const handleSelectItem = useCallback((item) => {
         const key = rowKey(activeTabRef.current, item);
