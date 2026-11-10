@@ -104,7 +104,8 @@ No parameters. Diagnostics only.
 ### GET /skill?scope=&name=&workspace=
 
 ```json
-{ "ok": true, "skill": { ...SkillView, "body": "markdown body…", "raw": "full SKILL.md…", "modifiedAt": "ISO" | null } }
+{ "ok": true, "skill": { ...SkillView, "body": "markdown body…", "raw": "full SKILL.md…", "modifiedAt": "ISO" | null,
+  "files": { "files": [{ "path": "scripts/run.sh", "size": 8, "link"?: true }], "truncated": false } } }
 ```
 
 Missing skill → 404 `not_found`.

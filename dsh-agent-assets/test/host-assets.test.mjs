@@ -171,6 +171,21 @@ describe('SKILL.md frontmatter: multi-line scalars', () => {
     assert.equal(parseSkillFile('---\nname: c\ndescription: first\n  second\n---\n').data.description, 'first second')
   })
 
+  it('lists the other files of a skill package without following links', async () => {
+    const directory = join(projectDshSkills, 'files-skill')
+    await mkdir(join(directory, 'scripts'), { recursive: true })
+    await writeFile(join(directory, 'SKILL.md'), '---\nname: files-skill\ndescription: d\n---\n', 'utf8')
+    await writeFile(join(directory, 'scripts', 'run.sh'), 'echo hi\n', 'utf8')
+    await writeFile(join(directory, 'reference.md'), 'ref', 'utf8')
+    await symlink(join(root, 'secret.md'), join(directory, 'outside.md')).catch(() => {})
+    const { skill } = await skills.read({ scope: 'workspace', workspace, name: 'files-skill' })
+    assert.deepEqual(skill.files, {
+      files: [{ path: 'outside.md', size: 0, link: true }, { path: 'reference.md', size: 3 }, { path: 'scripts/run.sh', size: 8 }],
+      truncated: false,
+    })
+    await rm(directory, { recursive: true })
+  })
+
   it('refuses a skill update over a SKILL.md that changed since it was read', async () => {
     const directory = join(projectDshSkills, 'stale-skill')
     await mkdir(directory, { recursive: true })

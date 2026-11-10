@@ -244,6 +244,9 @@ window.__ModuleLoader__.load({
       'badge.linkHint': '链接到 {path}，在那里修改',
       'editor.stale': '这个文件在你打开后已被其他程序修改（例如 Agent）。关闭后重新打开可看到最新内容，或者用你的版本覆盖。',
       'editor.overwrite': '仍然覆盖保存',
+      'detail.section.files': '其他文件（{count}）',
+      'detail.fileLink': '链接',
+      'detail.filesTruncated': '只列出前 200 个文件。',
       'discard.title': '放弃未保存的修改？',
       'discard.body': '关闭后，这次编辑的内容不会保存。',
       'discard.confirm': '放弃修改',
@@ -494,6 +497,9 @@ window.__ModuleLoader__.load({
       'badge.linkHint': 'Links to {path}; edit it there',
       'editor.stale': 'This file was changed by another program (an agent, for example) after you opened it. Reopen it to see the latest version, or overwrite it with yours.',
       'editor.overwrite': 'Overwrite anyway',
+      'detail.section.files': 'Other files ({count})',
+      'detail.fileLink': 'link',
+      'detail.filesTruncated': 'Only the first 200 files are listed.',
       'discard.title': 'Discard unsaved changes?',
       'discard.body': 'Closing now drops what you edited in this dialog.',
       'discard.confirm': 'Discard',
@@ -2072,6 +2078,25 @@ window.__ModuleLoader__.load({
             { label: t('detail.section.content') },
             skill.body ? h('pre', { className: 'aa-pre' }, skill.body) : h('div', { className: 'aa-muted' }, t('detail.emptyBody')),
           ),
+          Array.isArray(skill.files?.files) && skill.files.files.length > 0
+            ? h(
+                FieldBlock,
+                { label: t('detail.section.files', { count: skill.files.files.length }) },
+                h(
+                  'ul',
+                  { className: 'aa-file-list aa-mono' },
+                  skill.files.files.map((file) =>
+                    h(
+                      'li',
+                      { key: file.path },
+                      h('span', { className: 'aa-file-name', title: file.path }, file.path),
+                      h('span', { className: 'aa-muted' }, file.link ? t('detail.fileLink') : formatBytes(file.size, t)),
+                    ),
+                  ),
+                ),
+                skill.files.truncated ? h('div', { className: 'aa-muted' }, t('detail.filesTruncated')) : null,
+              )
+            : null,
         );
       };
 
@@ -4573,6 +4598,10 @@ html[data-platform=darwin] .aa-header { min-height: max(40px, calc(var(--dsh-fra
 .aa-toast.is-error { color: var(--dsw-alias-state-error-primary); }
 .aa-toast-text { color: var(--dsw-alias-label-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .aa-toast-detail { color: var(--dsw-alias-label-tertiary); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aa-file-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 11.5px;
+  max-height: 220px; overflow-y: auto; }
+.aa-file-list li { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+.aa-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aa-toast-action { flex: none; margin-left: 4px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2);
   background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 11.5px; cursor: pointer; }
 .aa-toast-action:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.05)); }

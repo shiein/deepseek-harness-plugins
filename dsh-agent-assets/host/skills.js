@@ -15,7 +15,7 @@
  */
 
 import { basename, join, relative, resolve } from 'node:path'
-import { realpath } from 'node:fs/promises'
+import { readdir, realpath } from 'node:fs/promises'
 import {
   assertScope,
   assertSkillName,
@@ -713,9 +713,56 @@ function toView(entry, shadowed = []) {
   }
 }
 
+const SKILL_FILE_LIMIT = 200
+const SKILL_FILE_SKIP = new Set(['node_modules', '.git', '.DS_Store', '__pycache__'])
+
+/**
+ * Other files of a skill package (scripts, references, assets), relative to its folder, so the
+ * detail view shows what the skill brings besides SKILL.md. Links are listed, never followed.
+ * @returns {Promise<{ files: Array<{ path: string, size: number, link?: true }>, truncated: boolean }>}
+ */
+async function listSkillFiles(directory) {
+  const files = []
+  const stack = ['']
+  let truncated = false
+  while (stack.length > 0) {
+    const relativeDir = stack.pop()
+    let entries
+    try {
+      entries = await readdir(join(directory, relativeDir), { withFileTypes: true })
+    } catch {
+      continue
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      if (SKILL_FILE_SKIP.has(entry.name)) continue
+      const relativePath = relativeDir === '' ? entry.name : `${relativeDir}/${entry.name}`
+      if (relativePath === 'SKILL.md') continue
+      if (entry.isDirectory()) {
+        stack.push(relativePath)
+        continue
+      }
+      if (files.length >= SKILL_FILE_LIMIT) {
+        truncated = true
+        break
+      }
+      if (entry.isSymbolicLink()) {
+        files.push({ path: relativePath, size: 0, link: true })
+        continue
+      }
+      if (!entry.isFile()) continue
+      const info = await statIfExists(join(directory, relativePath))
+      files.push({ path: relativePath, size: info?.size ?? 0 })
+    }
+    if (truncated) break
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path))
+  return { files, truncated }
+}
+
 /** Load `raw` + markdown `body` for a skill entry, refusing symlink escapes. */
 async function loadSkillContent(entry) {
-  if (entry.path === null || entry.dir === null) return { body: '', raw: '', modifiedAt: null }
+  if (entry.path === null || entry.dir === null) return { body: '', raw: '', modifiedAt: null, files: { files: [], truncated: false } }
   if (typeof entry.root === 'string') {
     const rootReal = typeof entry.linkTarget === 'string' ? entry.linkTarget : await realPathOrFallback(entry.root)
     const fileReal = await realPathOrFallback(entry.path)
@@ -729,8 +776,13 @@ async function loadSkillContent(entry) {
   } catch (error) {
     fail('forbidden', `cannot read skill file: ${errorMessage(error)}`, 403)
   }
-  if (raw === undefined) return { body: '', raw: '', modifiedAt: null }
+  if (raw === undefined) return { body: '', raw: '', modifiedAt: null, files: await listSkillFiles(entry.dir) }
   const parsed = parseSkillFile(raw)
   const info = await statIfExists(entry.path)
-  return { body: parsed.body, raw, modifiedAt: info?.isFile() ? info.mtime.toISOString() : null }
+  return {
+    body: parsed.body,
+    raw,
+    modifiedAt: info?.isFile() ? info.mtime.toISOString() : null,
+    files: await listSkillFiles(entry.dir),
+  }
 }
