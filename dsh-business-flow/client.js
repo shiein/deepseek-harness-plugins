@@ -630,6 +630,9 @@ window.__ModuleLoader__.load({
       .bf-dialog-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
       .bf-legend-sep { width: 1px; height: 12px; flex: none; background: var(--dsw-alias-border-l2, rgba(0,0,0,.14)); }
       .bf-edge-label text { font-family: inherit; }
+      .bf-node:focus { outline: none; }
+      .bf-canvas.is-pannable { cursor: grab; }
+      .bf-canvas.is-panning { cursor: grabbing; user-select: none; }
       .bf-edge-label { animation: bf-fade-in var(--dshp-dur) var(--dshp-ease-out); }
       .bf-node { transition: transform .28s var(--dshp-ease-out), opacity var(--dshp-dur) ease; }
       .bf-edge { transition: opacity var(--dshp-dur) ease; }
@@ -1386,6 +1389,7 @@ window.__ModuleLoader__.load({
       const vertical = layout.orientation !== 'horizontal';
       const [hoverNode, setHoverNode] = useState(null);
       const [hoverEdge, setHoverEdge] = useState(null);
+      const [focusedNode, setFocusedNode] = useState(null);
       const ports = useMemo(() => edgePorts(graph, layout), [graph, layout]);
 
       // What the drawing emphasises: a table highlight wins, then the selection, then the hover.
@@ -1502,10 +1506,25 @@ window.__ModuleLoader__.load({
           opacity: dim ? 0.32 : 1,
           style: { cursor: 'pointer', transform: `translate(${p.x}px, ${p.y}px)`, opacity: dim ? 0.32 : 1 },
           onClick: (event) => { event.stopPropagation(); onSelect(n.id); },
+          tabIndex: 0,
+          role: 'button',
+          'aria-label': `${n.name}, ${kindLabel(kind, t)}${n.summary ? `, ${n.summary}` : ''}`,
+          'aria-pressed': selected,
+          onKeyDown: (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            onSelect(selected ? null : n.id);
+          },
+          onFocus: () => setFocusedNode(n.id),
+          onBlur: () => setFocusedNode((current) => (current === n.id ? null : current)),
           onMouseEnter: () => setHoverNode(n.id),
           onMouseLeave: () => setHoverNode(null),
         },
           h('title', null, `${n.name}${n.summary ? `\n${n.summary}` : ''}`),
+          focusedNode === n.id ? h('rect', {
+            className: 'bf-focus-ring', x: -5, y: -5, width: W + 10, height: H + 10, rx: 16, fill: 'none',
+            stroke: ACCENT, strokeWidth: 2,
+          }) : null,
           addedIds?.has(n.id) ? h('rect', {
             x: -3, y: -3, width: W + 6, height: H + 6, rx: 14, fill: 'none',
             stroke: KIND_COLOR.entry, strokeWidth: 1.6, strokeDasharray: '5 4',
@@ -1975,6 +1994,64 @@ window.__ModuleLoader__.load({
           return () => window.cancelAnimationFrame(frame);
         }, [selectedId, focusIds, zoom, layout]);
 
+        // Zoom with Ctrl/⌘ + wheel or a trackpad pinch (sent as ctrl+wheel), keeping the point under the
+        // pointer in place. Native listener: React's wheel handlers are passive and cannot prevent the
+        // page zoom/scroll.
+        const zoomRef = useRef(zoom);
+        zoomRef.current = zoom;
+        useEffect(() => {
+          const el = canvasRef.current;
+          if (el === null || graph === null) return undefined;
+          const onWheel = (event) => {
+            if (!event.ctrlKey && !event.metaKey) return;
+            event.preventDefault();
+            const from = zoomRef.current;
+            const to = Math.min(2, Math.max(MIN_SCALE, Math.round(from * Math.exp(-event.deltaY * 0.01) * 100) / 100));
+            if (to === from) return;
+            const box = el.getBoundingClientRect();
+            const px = event.clientX - box.left;
+            const py = event.clientY - box.top;
+            const anchorX = (el.scrollLeft + px) / from;
+            const anchorY = (el.scrollTop + py) / from;
+            setZoomTouched(true);
+            setZoom(to);
+            window.requestAnimationFrame(() => {
+              el.scrollLeft = anchorX * to - px;
+              el.scrollTop = anchorY * to - py;
+            });
+          };
+          el.addEventListener('wheel', onWheel, { passive: false });
+          return () => el.removeEventListener('wheel', onWheel);
+        }, [graph === null]);
+
+        // Drag the empty canvas (or the drawing's background) to pan; nodes keep their click.
+        const panRef = useRef(null);
+        const [panning, setPanning] = useState(false);
+        const startPan = useCallback((event) => {
+          const el = canvasRef.current;
+          if (el === null || event.button !== 0 || event.target.closest?.('.bf-node, button, .bf-float, .bf-diff')) return;
+          const pan = { x: event.clientX, y: event.clientY, left: el.scrollLeft, top: el.scrollTop, moved: false };
+          panRef.current = pan;
+          const move = (moveEvent) => {
+            const dx = moveEvent.clientX - pan.x;
+            const dy = moveEvent.clientY - pan.y;
+            if (!pan.moved && Math.hypot(dx, dy) < 4) return;
+            if (!pan.moved) { pan.moved = true; setPanning(true); }
+            el.scrollLeft = pan.left - dx;
+            el.scrollTop = pan.top - dy;
+          };
+          const end = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', end);
+            window.removeEventListener('pointercancel', end);
+            setPanning(false);
+            if (!pan.moved) panRef.current = null;
+          };
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', end);
+          window.addEventListener('pointercancel', end);
+        }, []);
+
         // Browser fullscreen of the graph area, with an in-page maximise fallback.
         useEffect(() => {
           const onChange = () => {
@@ -2380,9 +2457,14 @@ window.__ModuleLoader__.load({
                         h('button', { role: 'menuitem', onClick: exportMermaid }, t('exportMermaid')),
                         h('button', { role: 'menuitem', onClick: exportSvg }, t('exportSvg'))) : null))) : null,
                 h('div', {
-                  className: `bf-canvas${graph === null ? ' is-empty' : ''}`,
+                  className: `bf-canvas${graph === null ? ' is-empty' : ' is-pannable'}${panning ? ' is-panning' : ''}`,
                   ref: canvasRef,
                   onClick: (event) => { if (event.target === event.currentTarget) setSelectedId(null); },
+                  onClickCapture: (event) => {
+                    // A drag that panned the canvas must not also clear the selection on release.
+                    if (panRef.current?.moved) { event.stopPropagation(); panRef.current = null; }
+                  },
+                  onPointerDown: startPan,
                 },
                   graph === null
                     ? h('div', { className: 'bf-empty' },
