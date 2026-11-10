@@ -7,9 +7,10 @@
  * All routes are loopback-only.
  */
 
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
@@ -1128,6 +1129,46 @@ function handleHistoryDelete(body) {
   });
 }
 
+/**
+ * How a related file is shown, per platform. Never "run with the default app": a model-listed file in a
+ * cloned project could be a .command / .bat that would execute. macOS opens it in the default text
+ * editor; Windows and Linux reveal it in the file manager.
+ */
+export function revealCommand(file, platform = process.platform) {
+  if (platform === 'darwin') return { command: '/usr/bin/open', args: ['-t', file] };
+  if (platform === 'win32') {
+    const root = process.env.SystemRoot || 'C:\\Windows';
+    return { command: join(root, 'explorer.exe'), args: [`/select,${file}`] };
+  }
+  return { command: 'xdg-open', args: [dirname(file)] };
+}
+
+/** Open one file of the analysed project (fenced to the project root, must be an existing file). */
+async function handleOpenFile(body) {
+  const projectPath = resolveProjectPath(body.projectPath);
+  const rel = typeof body.file === 'string' ? body.file.trim() : '';
+  if (rel === '') throw bizError('open-file requires a file');
+  const full = resolve(projectPath, rel);
+  if (!full.startsWith(`${projectPath}${sep}`)) throw bizError('file is outside the project', 403);
+  let info;
+  try {
+    info = await stat(full);
+  } catch {
+    throw bizError(`file does not exist: ${rel}`, 404);
+  }
+  if (!info.isFile()) throw bizError(`not a file: ${rel}`);
+  // A symlink inside the project must not open a file outside it.
+  const [realRoot, realFile] = await Promise.all([realpath(projectPath), realpath(full)]);
+  if (!realFile.startsWith(`${realRoot}${sep}`)) throw bizError('file is outside the project', 403);
+  const { command, args } = revealCommand(realFile);
+  await new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, { stdio: 'ignore', detached: true, windowsHide: true });
+    child.once('error', (error) => reject(bizError(`cannot open the file: ${error.message}`, 500)));
+    child.once('spawn', () => { child.unref(); resolvePromise(); });
+  });
+  return { opened: rel };
+}
+
 function handlePing(ctx) {
   let configured = false;
   let provider = '';
@@ -1194,6 +1235,7 @@ export function apply(ctx) {
     ['/history/upsert', ['POST'], async (body) => handleHistoryUpsert(body)],
     ['/history/delete', ['POST'], async (body) => handleHistoryDelete(body)],
     ['/history/clear', ['POST'], async () => handleHistoryDelete({ all: true })],
+    ['/open-file', ['POST'], async (body) => handleOpenFile(body)],
   ];
 
   ctx.effect(() => {

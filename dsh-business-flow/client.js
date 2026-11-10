@@ -74,6 +74,8 @@ window.__ModuleLoader__.load({
       updateHint: 'Re-analyze this project and business and update this history record',
       fullscreen: 'Full screen',
       exportMenu: 'Export',
+      openFile: 'Open (macOS: in the text editor; Windows/Linux: show in the file manager)',
+      openFileFail: 'Could not open the file',
       diffCompare: 'Compare',
       diffCompareHint: 'Compare the graph on screen with this earlier analysis',
       diffTitle: 'Changes since {when}',
@@ -201,6 +203,8 @@ window.__ModuleLoader__.load({
       updateHint: '用当前项目与业务重新分析，并更新这条历史记录',
       fullscreen: '全屏',
       exportMenu: '导出',
+      openFile: '打开（macOS 用文本编辑器打开；Windows / Linux 在文件管理器中显示）',
+      openFileFail: '无法打开文件',
       diffCompare: '对比',
       diffCompareHint: '把当前图与这条较早的分析对比',
       diffTitle: '相对 {when} 的变化',
@@ -442,6 +446,10 @@ window.__ModuleLoader__.load({
       .bf-section-label { font-size: 11px; font-weight: 600; color: var(--dsw-alias-label-secondary, #57606a); }
       .bf-files { display: flex; flex-direction: column; gap: 3px; padding-top: 8px;
         border-top: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); max-height: 150px; overflow-y: auto; }
+      .bf-file { width: 100%; text-align: left; border: 0; background: transparent; padding: 0 4px; margin: 0 -4px;
+        border-radius: 5px; cursor: pointer; }
+      .bf-file:hover { color: var(--bf-accent); background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.04)); }
+      .bf-file:focus-visible { outline: 2px solid var(--bf-accent); outline-offset: 0; }
       .bf-file { display: block; font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
         font-size: 11px; line-height: 1.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         color: var(--dsw-alias-label-secondary, #57606a); }
@@ -2061,6 +2069,12 @@ window.__ModuleLoader__.load({
           return () => window.clearTimeout(timer);
         }, [notice]);
 
+        const openFile = useCallback(async (file) => {
+          try {
+            await api('/open-file', { method: 'POST', body: { projectPath: graphProject, file } });
+          } catch (e) { setError(`${t('openFileFail')}: ${e.message}`); }
+        }, [graphProject]);
+
         const copy = useCallback(async () => {
           try {
             await navigator.clipboard.writeText(prompt);
@@ -2123,7 +2137,10 @@ window.__ModuleLoader__.load({
             h(TablesSection, { node: selected, usage, focusTable, setFocusTable, known: tablesKnown, t }),
             selected.files.length > 0 ? h('div', { className: 'bf-files' },
               h('div', { className: 'bf-section-label' }, t('relatedFiles')),
-              selected.files.map((file, index) => h('span', { key: `${file}-${index}`, className: 'bf-file', title: file }, file)))
+              selected.files.map((file, index) => h('button', {
+                key: `${file}-${index}`, className: 'bf-file', title: `${t('openFile')}\n${file}`,
+                onClick: () => openFile(file),
+              }, file)))
               : null),
         ];
 
