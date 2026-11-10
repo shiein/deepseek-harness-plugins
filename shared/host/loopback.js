@@ -1,7 +1,9 @@
 /**
  * Trust fence for a plugin's local HTTP API: only this server's own page, on a loopback socket with
- * an exact loopback Host, gets through. A page on another local port is refused too. The desktop
- * shell forwards the Client's requests without an Origin, and `dsh web` is same-origin.
+ * an exact loopback Host, gets through. A page on another local port is refused too: a browser marks
+ * its requests `Sec-Fetch-Site: same-site` (same host, other port) and may omit Origin on a GET, so
+ * any Sec-Fetch-Site other than `same-origin` / `none` is refused. The desktop shell forwards the
+ * Client's requests without an Origin, and `dsh web` is same-origin.
  */
 
 /** True only for an exactly spelled loopback hostname; a prefix test would accept `127.0.0.1.evil.example`. */
@@ -43,7 +45,8 @@ export function isLoopbackRequest(request, { checkReferer = false } = {}) {
     return false;
   }
   if (!isLoopbackHostname(parsed.hostname)) return false;
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false;
+  const site = request.headers['sec-fetch-site'];
+  if (site !== undefined && site !== 'same-origin' && site !== 'none') return false;
   if (!isSameAuthority(request.headers.origin, parsed.host)) return false;
   if (checkReferer && !isSameAuthority(request.headers.referer, parsed.host)) return false;
   // A form or text/plain POST skips the CORS preflight; the Client only ever sends JSON or no body.

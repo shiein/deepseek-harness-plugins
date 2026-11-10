@@ -142,6 +142,8 @@ test('the loopback fence accepts only this server as the request source', async 
   assert.equal(await statusFor({ origin: 'http://127.0.0.1:5173' }), 403);
   assert.equal(await statusFor({ origin: 'null' }), 403);
   assert.equal(await statusFor({ 'sec-fetch-site': 'cross-site' }), 403);
+  assert.equal(await statusFor({ 'sec-fetch-site': 'same-site' }), 403, 'a page on another local port');
+  assert.equal(await statusFor({ 'sec-fetch-site': 'same-origin' }), 200);
   assert.equal(await statusFor({ 'content-type': 'text/plain' }, 'POST'), 403);
   assert.equal(await statusFor({}, 'POST'), 405, 'a bodyless POST (the Client scan) passes the fence');
 });
