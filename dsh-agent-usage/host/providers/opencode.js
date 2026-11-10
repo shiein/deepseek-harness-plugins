@@ -28,7 +28,7 @@ export const meta = {
   name: 'OpenCode',
   color: '#f97316',
   homepage: 'https://opencode.ai',
-  cacheVersion: 1,
+  cacheVersion: 2, // 2: rows carry the session folder (`session.directory`, or the message `path`)
 };
 
 /**
@@ -86,7 +86,7 @@ function costNum(value) {
  * @param {typeof import('../scan-utils.js')} utils
  * @returns {boolean} whether usage was added
  */
-function addOpenCodeMessage(map, data, fallbackTs, utils, rowType) {
+function addOpenCodeMessage(map, data, fallbackTs, utils, rowType, sessionFolder = '') {
   if (!data || typeof data !== 'object') return false;
   // V1 message rows keep the role in `data.role`; V2 `session_message` rows keep it in
   // the row's `type` column.
@@ -107,8 +107,13 @@ function addOpenCodeMessage(map, data, fallbackTs, utils, rowType) {
     (data.model && typeof data.model.modelID === 'string' && data.model.modelID) ||
     'unknown';
   const ts = Number(data.time && data.time.created) || Number(fallbackTs) || 0;
+  const fromMessage = data.path && typeof data.path === 'object'
+    ? (typeof data.path.cwd === 'string' && data.path.cwd) || (typeof data.path.root === 'string' && data.path.root) || ''
+    : '';
+  const folder = fromMessage || sessionFolder;
   addUsage(map, {
     model,
+    project: folder,
     day: utils.localDay(ts),
     ts,
     input,
@@ -157,6 +162,8 @@ export async function scan(ctx) {
       let dbCellCount = 0;
 
       let rows = [];
+      /** session id → the folder the session ran in (`session.directory`). */
+      let folders = new Map();
       try {
         const db = await utils.openSqliteDatabase(dbPath, { readOnly: true });
         try {
@@ -167,10 +174,13 @@ export async function scan(ctx) {
           }
           // Newer OpenCode builds (V2) moved message rows to `session_message`; read that
           // first so a migrated database never counts the same response from both tables.
-          rows = utils.querySqlite(db, 'SELECT id, type, time_created, data FROM session_message ORDER BY time_created');
+          rows = utils.querySqlite(db, 'SELECT id, session_id, type, time_created, data FROM session_message ORDER BY time_created');
           if (rows.length === 0) {
-            rows = utils.querySqlite(db, 'SELECT id, time_created, data FROM message ORDER BY time_created');
+            rows = utils.querySqlite(db, 'SELECT id, session_id, time_created, data FROM message ORDER BY time_created');
           }
+          folders = new Map(utils.querySqlite(db, 'SELECT id, directory FROM session')
+            .filter((row) => typeof row.directory === 'string' && row.directory !== '')
+            .map((row) => [String(row.id), row.directory]));
         } finally {
           try {
             db.close();
@@ -201,7 +211,8 @@ export async function scan(ctx) {
           } catch {
             continue;
           }
-          if (addOpenCodeMessage(byKey, data, row.time_created, utils, row.type)) dbCellCount += 1;
+          const folder = folders.get(String(row.session_id)) || '';
+          if (addOpenCodeMessage(byKey, data, row.time_created, utils, row.type, folder)) dbCellCount += 1;
         }
         dbCells = finalizeCells([...byKey.values()]);
         if (freshRows.length === rows.length) cache.set(dbPath, fingerprint, dbCells);

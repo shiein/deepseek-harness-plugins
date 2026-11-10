@@ -103,6 +103,8 @@ framework merges across providers too.
   firstTs: 1793682966922,       // epoch ms, optional
   lastTs: 1793682966922,        // epoch ms, optional
   tier: undefined,              // optional: 'fast' | 'standard' | ... when the source reports one
+  project: undefined,           // optional: the session's working folder (cwd); cells are kept apart per
+                                // folder and the snapshot tuple gains a trailing project column
 }
 ```
 

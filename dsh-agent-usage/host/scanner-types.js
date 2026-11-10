@@ -17,6 +17,7 @@
  * @property {number} [firstTs]      Epoch ms of the earliest contribution.
  * @property {number} [lastTs]       Epoch ms of the latest contribution.
  * @property {string} [tier]         Speed/tier reported by the source ('fast', 'standard', ...).
+ * @property {string} [project]      Folder the session ran in, when the source records it ('' / absent = unknown).
  */
 
 /**

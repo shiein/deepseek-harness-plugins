@@ -10,11 +10,23 @@
  *          messages?: number, tier?: string|null}} usage
  * @returns {import('./scanner-types.js').Cell}
  */
+/**
+ * Project folder of a usage row, normalised for grouping: trailing separators dropped; '' = unknown.
+ * @param {unknown} value
+ */
+export function projectOf(value) {
+  if (typeof value !== 'string') return '';
+  const text = value.trim();
+  if (text === '') return '';
+  return text.length > 1 ? text.replace(/[\\/]+$/, '') || text : text;
+}
+
 export function addUsage(map, usage) {
   const model = String(usage.model || 'unknown');
   const day = String(usage.day || '');
   const tier = usage.tier ? String(usage.tier) : '';
-  const key = `${model}\u0000${day}\u0000${tier}`;
+  const project = projectOf(usage.project);
+  const key = `${model}\u0000${day}\u0000${tier}\u0000${project}`;
   let cell = map.get(key);
   if (!cell) {
     cell = {
@@ -27,6 +39,7 @@ export function addUsage(map, usage) {
       messages: 0,
     };
     if (tier) cell.tier = tier;
+    if (project) cell.project = project;
     map.set(key, cell);
   }
   cell.input += toCount(usage.input);
@@ -63,7 +76,8 @@ export function mergeCells(cells) {
   for (const cell of cells) {
     if (!cell) continue;
     const tier = cell.tier ? String(cell.tier) : '';
-    const key = `${cell.model}\u0000${cell.day}\u0000${tier}`;
+    const project = projectOf(cell.project);
+    const key = `${cell.model}\u0000${cell.day}\u0000${tier}\u0000${project}`;
     let target = map.get(key);
     if (!target) {
       target = {
@@ -76,6 +90,7 @@ export function mergeCells(cells) {
         messages: 0,
       };
       if (tier) target.tier = tier;
+      if (project) target.project = project;
       map.set(key, target);
     }
     target.input += toCount(cell.input);

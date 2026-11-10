@@ -17,11 +17,13 @@ background polling.
   with locally readable usage show real numbers, the others are listed honestly as
   *installed but no local usage* or *not installed* (9 / 5 / 11 on the development machine).
 - **One-screen, tabbed layout** — a fixed header + KPI strip + tab bar with a single fill-height
-  pane: **Overview / By agent / By model / By date / Sources**. Every list paginates to its
+  pane: **Overview / By agent / By model / By date / By project / Sources**. Every list paginates to its
   measured pane height, so the page itself never scrolls; the panel is styled with DSH theme
   tokens (`--dsw-alias-*`, `--dsw-font-family`) and matches the Host's panel/tab/table patterns.
-- **Three aggregations** — By agent, by model, by date, plus a daily stacked trend chart
-  (input / output / cache read / cache write).
+- **Four aggregations** — By agent, by model, by date and by project (the folder each session ran
+  in, recorded today by Claude Code, Codex, DeepSeek Harness, OpenCode and Pi; other agents' usage
+  is grouped as "folder not recorded"), plus a daily stacked trend chart (input / output / cache
+  read / cache write). Every table can be exported as CSV.
 - **Token-type granularity** — uncached input, output, cache-read and cache-write are tracked
   separately, so a 95% cache hit rate does not hide the real consumption.
 - **Effective vs cached** — by default the daily chart shows *effective* tokens

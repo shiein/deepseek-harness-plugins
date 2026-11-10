@@ -23,7 +23,7 @@ export const meta = {
   name: 'DeepSeek Harness',
   color: '#4d6bfe',
   homepage: 'https://deepseek.com',
-  cacheVersion: 1,
+  cacheVersion: 2, // 2: rows carry the session folder (header `cwd`)
 };
 
 /**
@@ -71,7 +71,13 @@ export async function scan(ctx) {
           } else {
             text = buffer.toString('utf8');
           }
+          let cwd = '';
           for (const line of text.split('\n')) {
+            if (cwd === '' && line.startsWith('{"type":"session"')) {
+              const header = utils.safeJsonParse(line);
+              if (header && typeof header.cwd === 'string') cwd = header.cwd;
+              continue;
+            }
             if (line === '' || !line.includes('"assistant/message"')) continue;
             const record = utils.safeJsonParse(line);
             if (!record || record.type !== 'assistant/message') continue;
@@ -95,6 +101,7 @@ export async function scan(ctx) {
             const ts = typeof record.time === 'number' ? record.time : Date.parse(record.time || '') || 0;
             addUsage(byKey, {
               model,
+              project: cwd,
               day: utils.localDay(ts),
               ts,
               input,

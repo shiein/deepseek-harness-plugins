@@ -28,7 +28,7 @@ export const meta = {
   color: '#10a37f',
   homepage: 'https://openai.com/codex',
   // v2: skip repeated token_count events whose cumulative total did not change.
-  cacheVersion: 2,
+  cacheVersion: 3, // 3: rows carry the session folder (`cwd`)
 };
 
 /**
@@ -77,16 +77,18 @@ export async function scan(ctx) {
           /** @type {Map<string, import('../scanner-types.js').Cell>} */
           const byKey = new Map();
           let currentModel = 'unknown';
+          let currentCwd = '';
           let previousTotal = '';
           try {
             await utils.readJsonl(
               file.path,
               (line) => {
-                if (!line.includes('"model"') && !line.includes('token_count')) return;
+                if (!line.includes('"model"') && !line.includes('token_count') && !line.includes('"cwd"')) return;
                 const record = utils.safeJsonParse(line);
                 if (!record) return;
                 const payload = record.payload;
                 if (!payload || typeof payload !== 'object') return;
+                if (typeof payload.cwd === 'string' && payload.cwd !== '') currentCwd = payload.cwd;
                 if (record.type === 'turn_context') {
                   if (typeof payload.model === 'string' && payload.model !== '') currentModel = payload.model;
                   return;
@@ -111,6 +113,7 @@ export async function scan(ctx) {
                 const ts = Date.parse(record.timestamp || '') || 0;
                 addUsage(byKey, {
                   model: currentModel,
+                  project: currentCwd,
                   day: utils.localDay(ts),
                   ts,
                   input,

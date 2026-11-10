@@ -63,6 +63,10 @@ window.__ModuleLoader__.load({
       'kpi.messageHint': '{agents} Agent · {models} 模型',
       'tab.trend': '趋势',
       'tab.agent': '按 Agent',
+      'tab.project': '按项目',
+      'table.col.project': '项目',
+      'project.unknown': '未记录项目',
+      'project.unknownHint': '这些 Agent 的用量记录里没有工作目录（目前识别 Claude Code、Codex、DeepSeek Harness、OpenCode、Pi）',
       'tab.model': '按模型',
       'tab.date': '按日期',
       'tab.sources': '数据来源',
@@ -147,6 +151,10 @@ window.__ModuleLoader__.load({
       'kpi.messageHint': '{agents} agents · {models} models',
       'tab.trend': 'Overview',
       'tab.agent': 'By agent',
+      'tab.project': 'By project',
+      'table.col.project': 'Project',
+      'project.unknown': 'Folder not recorded',
+      'project.unknownHint': 'These agents do not record a working folder with their usage (recognised today: Claude Code, Codex, DeepSeek Harness, OpenCode, Pi)',
       'tab.model': 'By model',
       'tab.date': 'By date',
       'tab.sources': 'Sources',
@@ -315,7 +323,13 @@ window.__ModuleLoader__.load({
     }
 
     /** [agent, model, day, input, output, cacheRead, cacheWrite, costUsd, messages, tier] */
-    const CELL = { AGENT: 0, MODEL: 1, DAY: 2, INPUT: 3, OUTPUT: 4, CACHE_READ: 5, CACHE_WRITE: 6, COST: 7, MESSAGES: 8 };
+    const CELL = { AGENT: 0, MODEL: 1, DAY: 2, INPUT: 3, OUTPUT: 4, CACHE_READ: 5, CACHE_WRITE: 6, COST: 7, MESSAGES: 8, TIER: 9, PROJECT: 10 };
+
+    /** Last folder name of a path (either separator). */
+    function folderName(path) {
+      const parts = String(path || '').split(/[\\/]/).filter(Boolean);
+      return parts.length > 0 ? parts[parts.length - 1] : String(path || '');
+    }
 
     function cellTokens(cell) {
       return cell[CELL.INPUT] + cell[CELL.OUTPUT] + cell[CELL.CACHE_READ] + cell[CELL.CACHE_WRITE];
@@ -331,6 +345,7 @@ window.__ModuleLoader__.load({
       const byAgent = new Map();
       const byModel = new Map();
       const byDay = new Map();
+      const byProject = new Map();
 
       for (const cell of scoped) {
         const input = cell[CELL.INPUT];
@@ -366,6 +381,7 @@ window.__ModuleLoader__.load({
         add(byAgent, cell[CELL.AGENT]);
         add(byModel, cell[CELL.MODEL]);
         add(byDay, cell[CELL.DAY]);
+        add(byProject, cell[CELL.PROJECT] || '');
       }
 
       const agentMeta = new Map((snapshot.agents || []).map((agent) => [agent.id, agent]));
@@ -382,6 +398,11 @@ window.__ModuleLoader__.load({
         .filter((row) => row.tokens > 0)
         .sort((a, b) => b.tokens - a.tokens);
       const dayRows = [...byDay.values()].map((entry) => ({ ...entry, label: entry.key })).sort((a, b) => (a.key < b.key ? -1 : 1));
+      // Agents that do not record a working folder land in one '' row, shown as "not recorded".
+      const projectRows = [...byProject.values()]
+        .map((entry) => ({ ...entry, label: entry.key === '' ? '' : folderName(entry.key), path: entry.key }))
+        .filter((row) => row.tokens > 0)
+        .sort((a, b) => b.tokens - a.tokens);
       // The trend chart needs a continuous calendar: a day without usage is a zero bar, not a
       // missing column (otherwise gaps silently compress the x-axis).
       const trendDays = fillDays(dayRows, filters.cutoff);
@@ -391,6 +412,7 @@ window.__ModuleLoader__.load({
         agentRows,
         modelRows,
         dayRows,
+        projectRows,
         trendDays,
         activeAgents: agentRows.length,
         activeModels: modelRows.length,
@@ -942,7 +964,7 @@ window.__ModuleLoader__.load({
         t('table.col.cacheRead'), t('table.col.cacheWrite'), t('table.col.messages'), `${t('table.col.cost')} (USD)`];
       const lines = [header.map(cell).join(',')];
       for (const row of rows) {
-        lines.push([row.label, row.tokens, row.input, row.output, row.cacheRead, row.cacheWrite, row.messages,
+        lines.push([row.path !== undefined ? row.path : row.label, row.tokens, row.input, row.output, row.cacheRead, row.cacheWrite, row.messages,
           Math.round(row.cost * 10000) / 10000].map(cell).join(','));
       }
       // BOM so Excel opens UTF-8 (Chinese agent names) correctly.
@@ -960,6 +982,9 @@ window.__ModuleLoader__.load({
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
+    const TABLE_TITLE = { agent: 'tab.agent', model: 'tab.model', date: 'tab.date', project: 'tab.project' };
+    const NAME_LABEL = { agent: 'filter.agent', model: 'filter.model', date: 'tab.date', project: 'table.col.project' };
+
     function TableTab({ rows, kind, t, locale }) {
       const [fillRef, fillSize] = useMeasuredSize();
       const [page, setPage] = useState(0);
@@ -975,7 +1000,7 @@ window.__ModuleLoader__.load({
       const start = safePage * rowsPerPage;
       const visible = rows.slice(start, start + rowsPerPage);
       const total = rows.reduce((sum, row) => sum + row.tokens, 0) || 1;
-      const nameLabel = kind === 'date' ? t('tab.date') : kind === 'model' ? t('filter.model') : t('filter.agent');
+      const nameLabel = t(NAME_LABEL[kind] || 'filter.agent');
 
       return h(
         'div',
@@ -986,7 +1011,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'au-card-title' },
-            kind === 'date' ? t('tab.date') : kind === 'model' ? t('tab.model') : t('tab.agent'),
+            t(TABLE_TITLE[kind] || 'tab.agent'),
             h('span', { className: 'au-card-meta' }, rows.length),
           ),
           h('span', { className: 'au-spacer' }),
@@ -1055,7 +1080,14 @@ window.__ModuleLoader__.load({
                               h('span', { className: 'au-dot', style: { background: row.color } }),
                               h('span', { className: 'au-ellipsis' }, row.label),
                             )
-                          : h(
+                          : kind === 'project'
+                            ? h(
+                                'span',
+                                { className: 'au-name au-project', title: row.path || t('project.unknownHint') },
+                                h('span', { className: 'au-ellipsis' }, row.label || t('project.unknown')),
+                                row.path ? h('span', { className: 'au-mono au-ellipsis au-subpath' }, row.path) : null,
+                              )
+                            : h(
                               'span',
                               { className: 'au-name' },
                               h('span', { className: 'au-mono au-ellipsis' }, row.label),
@@ -1196,6 +1228,7 @@ window.__ModuleLoader__.load({
       { id: 'agent', key: 'tab.agent' },
       { id: 'model', key: 'tab.model' },
       { id: 'date', key: 'tab.date' },
+      { id: 'project', key: 'tab.project' },
       { id: 'sources', key: 'tab.sources' },
     ];
 
@@ -1481,7 +1514,9 @@ window.__ModuleLoader__.load({
                               ? h(TableTab, { key: 'model', rows: data.modelRows, kind: 'model', t, locale })
                               : tab === 'date'
                                 ? h(TableTab, { key: 'date', rows: data.dayRows, kind: 'date', t, locale })
-                                : h(SourcesTab, { agents: snapshot.agents, t }),
+                                : tab === 'project'
+                                  ? h(TableTab, { key: 'project', rows: data.projectRows, kind: 'project', t, locale })
+                                  : h(SourcesTab, { agents: snapshot.agents, t }),
                       ),
                     ),
           ),
@@ -1580,6 +1615,8 @@ html[data-platform=darwin] .au-header { min-height: max(40px, calc(var(--dsh-fra
 .au-card { min-width: 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); padding: 9px 12px 10px; overflow: hidden; }
 .au-card-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 22px; margin-bottom: 5px; }
 .au-spacer { flex: 1; }
+.au-project { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 0; }
+.au-subpath { font-size: 10.5px; color: var(--dsw-alias-label-tertiary); max-width: 100%; }
 .au-btn-sm { padding: 2px 9px; font-size: 11.5px; min-height: 0; }
 .au-btn-ghost { background: transparent; border-color: transparent; }
 .au-btn-ghost:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.05)); }

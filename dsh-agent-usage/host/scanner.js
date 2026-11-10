@@ -27,7 +27,8 @@ const SCAN_CONCURRENCY = 3;
  * @property {number} pricingVersion
  * @property {string} platform
  * @property {AgentSnapshot[]} agents
- * @property {CellTuple[]} cells       Compact [agent, model, day, input, output, cacheRead, cacheWrite, costUsd, messages, tier]
+ * @property {CellTuple[]} cells       Compact [agent, model, day, input, output, cacheRead, cacheWrite, costUsd, messages, tier,
+ *                                     project] — project is the session's folder, '' when the agent does not record it
  * @property {number} totalTokens
  * @property {number} totalCostUsd
  * @property {number} totalMessages
@@ -163,6 +164,7 @@ export async function runScan(options) {
         round4(normalizedCost),
         cell.messages || 0,
         cell.tier || '',
+        cell.project || '',
       ]);
     }
 

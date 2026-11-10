@@ -23,7 +23,7 @@ export const meta = {
   color: '#d97757',
   homepage: 'https://www.anthropic.com/claude-code',
   // v2: dedupe by message.id + requestId (one API response is written as several JSONL lines).
-  cacheVersion: 2,
+  cacheVersion: 3, // 3: rows carry the session folder (`cwd`)
 };
 
 /** @param {string} envOverride @param {string} home */
@@ -96,6 +96,7 @@ export async function scan(ctx) {
               const ts = Date.parse(record.timestamp || '') || 0;
               addUsage(byKey, {
                 model,
+                project: typeof record.cwd === 'string' ? record.cwd : '',
                 day: utils.localDay(ts),
                 ts,
                 input,

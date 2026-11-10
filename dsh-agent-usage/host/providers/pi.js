@@ -26,7 +26,7 @@ export const meta = {
   name: 'Pi',
   color: '#8b5cf6',
   homepage: 'https://github.com/earendil-works/pi',
-  cacheVersion: 2,
+  cacheVersion: 3, // 3: rows carry the session folder (header `cwd`)
 };
 
 /** @param {unknown} value @returns {number} */
@@ -98,15 +98,21 @@ function sessionDirs(ctx) {
  */
 async function parseSessionFile(filePath, fallbackTs, utils, signal, byKey) {
   let resolvedModel = 'unknown';
+  let cwd = '';
   /** @type {Set<string>} same-file duplicate guard (entry id + timestamp + model) */
   const seen = new Set();
   await utils.readJsonl(
     filePath,
     (line) => {
-      // Cheap prefilter: only these entry kinds can carry usage.
-      if (!line.includes('usage') && !line.includes('model_change') && !line.includes('modelId')) return;
+      // Cheap prefilter: only these entry kinds can carry usage (plus the session header's cwd).
+      const header = cwd === '' && line.startsWith('{"type":"session"');
+      if (!header && !line.includes('usage') && !line.includes('model_change') && !line.includes('modelId')) return;
       const record = utils.safeJsonParse(line);
       if (!record || typeof record !== 'object') return;
+      if (record.type === 'session') {
+        if (typeof record.cwd === 'string') cwd = record.cwd;
+        return;
+      }
 
       if (record.type === 'model_change') {
         const changed = plausibleModelId(record.modelId) || plausibleModelId(record.model);
@@ -152,6 +158,7 @@ async function parseSessionFile(filePath, fallbackTs, utils, signal, byKey) {
       const cost = usage.cost && typeof usage.cost === 'object' ? positive(usage.cost.total) : 0;
       addUsage(byKey, {
         model,
+        project: cwd,
         day: utils.localDay(ts),
         ts,
         input,
