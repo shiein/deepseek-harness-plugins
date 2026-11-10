@@ -25,6 +25,9 @@ window.__ModuleLoader__.load({
       businessHint: 'Describe the business in natural language, e.g. "会员下单支付的完整链路" or "invoice approval flow"',
       analyze: 'Analyze flow',
       analyzing: 'Analyzing…',
+      analyzingFor: 'Analyzing… {s}s',
+      cancelRun: 'Cancel',
+      cancelled: 'Cancelled',
       pingOk: 'Model ready',
       pingNoModel: 'No default model configured',
       pingFail: 'Service check failed',
@@ -132,6 +135,9 @@ window.__ModuleLoader__.load({
       businessHint: '用自然语言描述业务，例如「会员下单支付的完整链路」或「发票审批流程」',
       analyze: '分析业务流程',
       analyzing: '分析中…',
+      analyzingFor: '分析中… {s} 秒',
+      cancelRun: '取消',
+      cancelled: '已取消',
       pingOk: '模型可用',
       pingNoModel: '未配置默认模型',
       pingFail: '服务自检失败',
@@ -283,6 +289,10 @@ window.__ModuleLoader__.load({
       .bf-btn-ghost:hover:not(:disabled) { color: var(--dsw-alias-label-primary, #1f2328); }
       .bf-btn-block { width: 100%; }
       .bf-btn-ask { align-self: stretch; padding: 0 18px; min-width: 116px; }
+      .bf-run { display: flex; align-items: center; gap: 8px; min-width: 116px; justify-content: flex-end; }
+      .bf-run-block { justify-content: space-between; }
+      .bf-run-time { font-size: 12px; color: var(--dsw-alias-label-secondary, #57606a); font-variant-numeric: tabular-nums;
+        white-space: nowrap; }
       .bf-badge { min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px;
         background: color-mix(in srgb, var(--bf-accent) 14%, transparent); color: var(--bf-accent);
         font-size: 10px; font-weight: 600; line-height: 16px; text-align: center; }
@@ -537,8 +547,10 @@ window.__ModuleLoader__.load({
           credentials: 'same-origin',
           cache: 'no-store',
           body: options?.body === undefined ? undefined : JSON.stringify(options.body),
+          ...(options?.signal ? { signal: options.signal } : {}),
         });
       } catch (error) {
+        if (error?.name === 'AbortError') throw error;
         throw new Error(error?.message ?? 'network request failed');
       }
       let payload = null;
@@ -1461,6 +1473,18 @@ window.__ModuleLoader__.load({
         const graphRef = useRef(null);
         /** The live Session of the graph on screen, so its prompt refinements continue there. */
         const analysisSession = useRef('');
+        /** The running analysis or draft request, so the user can cancel it. */
+        const runControl = useRef(null);
+        const [busySince, setBusySince] = useState(0);
+        const [now, setNow] = useState(Date.now());
+        const longRunning = busy === 'analyze' || busy === 'update' || busy === 'draft';
+        useEffect(() => {
+          if (!longRunning) return undefined;
+          const timer = window.setInterval(() => setNow(Date.now()), 1000);
+          return () => window.clearInterval(timer);
+        }, [longRunning]);
+        const elapsed = longRunning && busySince > 0 ? Math.max(0, Math.round((now - busySince) / 1000)) : 0;
+        const cancelRun = useCallback(() => { runControl.current?.abort(); }, []);
 
         const selected = graph?.nodes.find((n) => n.id === selectedId) ?? null;
         const selectedRef = useRef(selectedId);
@@ -1682,10 +1706,16 @@ window.__ModuleLoader__.load({
         }, []);
 
         const runAnalysis = useCallback(async (path, text, keepId) => {
+          const controller = new AbortController();
+          runControl.current = controller;
           setBusy(keepId ? 'update' : 'analyze');
+          setBusySince(Date.now());
           setError('');
           try {
-            const value = await api('/analyze', { method: 'POST', body: { projectPath: path, business: text } });
+            // Aborting closes the request; the Host then stops the agent turn and disposes its Session.
+            const value = await api('/analyze', {
+              method: 'POST', body: { projectPath: path, business: text }, signal: controller.signal,
+            });
             const nextGraph = value.graph ?? null;
             if (nextGraph === null) return;
             analysisSession.current = value.sessionId ?? '';
@@ -1697,8 +1727,11 @@ window.__ModuleLoader__.load({
             setPrompt('');
             setZoomTouched(false);
             await remember({ id, at: Date.now(), projectPath: path, business: text, graph: nextGraph });
-          } catch (e) { setError(e.message); }
-          finally { setBusy(''); }
+          } catch (e) { setError(e?.name === 'AbortError' ? t('cancelled') : e.message); }
+          finally {
+            if (runControl.current === controller) runControl.current = null;
+            setBusy('');
+          }
         }, [remember]);
 
         const analyze = useCallback(() => runAnalysis(projectPath, business.trim(), null), [runAnalysis, projectPath, business]);
@@ -1712,10 +1745,14 @@ window.__ModuleLoader__.load({
           if (!selected) return;
           const nodeId = selected.id;
           const graphAtRequest = graph;
+          const controller = new AbortController();
+          runControl.current = controller;
           setBusy('draft');
+          setBusySince(Date.now());
           setError('');
           try {
             const value = await api('/draft', {
+              signal: controller.signal,
               method: 'POST',
               body: { projectPath: graphProject, business: graph?.business || business, node: selected, graph, requirement, sessionId: analysisSession.current },
             });
@@ -1724,8 +1761,11 @@ window.__ModuleLoader__.load({
             // prompt belongs to the node it was drafted for, so a late answer is dropped.
             if (selectedRef.current !== nodeId || shownGraphRef.current !== graphAtRequest) return;
             setPrompt(value.prompt);
-          } catch (e) { setError(e.message); }
-          finally { setBusy(''); }
+          } catch (e) { setError(e?.name === 'AbortError' ? t('cancelled') : e.message); }
+          finally {
+            if (runControl.current === controller) runControl.current = null;
+            setBusy('');
+          }
         }, [graphProject, business, graph, selected, requirement]);
 
         const openSession = useCallback(async () => {
@@ -1820,10 +1860,14 @@ window.__ModuleLoader__.load({
                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && busy === '' && requirement.trim() !== '') draft();
               },
             }),
-            h('button', {
-              className: 'bf-btn bf-btn-primary bf-btn-block', onClick: draft,
-              disabled: busy !== '' || requirement.trim() === '',
-            }, busy === 'draft' ? t('drafting') : t('draft'))),
+            busy === 'draft'
+              ? h('div', { className: 'bf-run bf-run-block' },
+                h('span', { className: 'bf-run-time', role: 'status' }, `${t('drafting')} ${elapsed}s`),
+                h('button', { className: 'bf-btn', onClick: cancelRun }, t('cancelRun')))
+              : h('button', {
+                className: 'bf-btn bf-btn-primary bf-btn-block', onClick: draft,
+                disabled: busy !== '' || requirement.trim() === '',
+              }, t('draft'))),
           prompt === '' ? null : h('div', { key: 'prompt', className: 'bf-card bf-card-grow' },
             h('div', { className: 'bf-section-label' }, t('promptResult')),
             h('div', { className: 'bf-prompt-box' }, prompt),
@@ -1882,9 +1926,13 @@ window.__ModuleLoader__.load({
                     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !analyzeDisabled) analyze();
                   },
                 }),
-                h('button', {
-                  className: 'bf-btn bf-btn-primary bf-btn-ask', onClick: analyze, disabled: analyzeDisabled,
-                }, busy === 'analyze' ? t('analyzing') : t('analyze'))),
+                busy === 'analyze' || busy === 'update'
+                  ? h('div', { className: 'bf-run' },
+                    h('span', { className: 'bf-run-time', role: 'status' }, t('analyzingFor', { s: elapsed })),
+                    h('button', { className: 'bf-btn', onClick: cancelRun }, t('cancelRun')))
+                  : h('button', {
+                    className: 'bf-btn bf-btn-primary bf-btn-ask', onClick: analyze, disabled: analyzeDisabled,
+                  }, t('analyze'))),
               busy === 'analyze' || busy === 'update' ? h('div', { className: 'bf-progress' }) : null,
               error !== '' ? h('div', { className: 'bf-error' }, error) : null,
               h('div', { className: `bf-graph${fullscreen === 'native' ? ' is-native' : ''}`, ref: graphRef },
