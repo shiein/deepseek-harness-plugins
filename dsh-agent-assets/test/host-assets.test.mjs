@@ -171,6 +171,20 @@ describe('SKILL.md frontmatter: multi-line scalars', () => {
     assert.equal(parseSkillFile('---\nname: c\ndescription: first\n  second\n---\n').data.description, 'first second')
   })
 
+  it('refuses a skill update over a SKILL.md that changed since it was read', async () => {
+    const directory = join(projectDshSkills, 'stale-skill')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'SKILL.md'), '---\nname: stale-skill\ndescription: one\n---\n', 'utf8')
+    const { skill } = await skills.read({ scope: 'workspace', workspace, name: 'stale-skill' })
+    assert.equal(typeof skill.modifiedAt, 'string')
+    const { utimes } = await import('node:fs/promises')
+    await utimes(join(directory, 'SKILL.md'), new Date(), new Date(Date.now() + 5000))
+    await expectError(skills.update({ scope: 'workspace', workspace, name: 'stale-skill', description: 'two',
+      expectedModifiedAt: skill.modifiedAt }), 'stale')
+    await skills.update({ scope: 'workspace', workspace, name: 'stale-skill', description: 'two' })
+    await rm(directory, { recursive: true })
+  })
+
   it('keeps CRLF line endings when a skill is updated', async () => {
     const directory = join(projectDshSkills, 'crlf-skill')
     await mkdir(directory, { recursive: true })
@@ -682,6 +696,23 @@ describe('instructions: read/write/delete', { concurrency: false }, () => {
     assert.equal(instruction.exists, true)
     assert.equal(instruction.content, '# Workspace agents\n')
     assert.equal(instruction.size, Buffer.byteLength('# Workspace agents\n', 'utf8'))
+  })
+
+  it('refuses a write over a file that changed since it was read', async () => {
+    const target = join(instructionWorkspace, 'CLAUDE.local.md')
+    await writeFile(target, 'v1\n', 'utf8')
+    const { instruction } = await instructions.read({ scope: 'workspace', workspace: instructionWorkspace, path: target })
+    await writeFile(target, 'changed by an agent\n', 'utf8')
+    const { utimes } = await import('node:fs/promises')
+    await utimes(target, new Date(), new Date(Date.now() + 5000))
+    await expectError(instructions.write({ scope: 'workspace', workspace: instructionWorkspace, path: target,
+      content: 'mine\n', expectedModifiedAt: instruction.modifiedAt }), 'stale')
+    assert.equal(await readFile(target, 'utf8'), 'changed by an agent\n')
+    await instructions.write({ scope: 'workspace', workspace: instructionWorkspace, path: target, content: 'mine\n' })
+    assert.equal(await readFile(target, 'utf8'), 'mine\n', 'omitting the token overwrites')
+    await expectError(instructions.write({ scope: 'workspace', workspace: instructionWorkspace,
+      path: join(instructionWorkspace, 'AGENTS.local.md'), content: 'x', expectedModifiedAt: 'never' }), 'stale')
+    await rm(target)
   })
 
   it('keeps CRLF line endings of an existing file', async () => {

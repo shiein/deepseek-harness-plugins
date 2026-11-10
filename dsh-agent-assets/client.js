@@ -239,6 +239,8 @@ window.__ModuleLoader__.load({
       'confirm.bodyNoPath': '将永久删除「{name}」。此操作无法撤销。',
       'badge.link': '链接',
       'badge.linkHint': '链接到 {path}，在那里修改',
+      'editor.stale': '这个文件在你打开后已被其他程序修改（例如 Agent）。关闭后重新打开可看到最新内容，或者用你的版本覆盖。',
+      'editor.overwrite': '仍然覆盖保存',
       'discard.title': '放弃未保存的修改？',
       'discard.body': '关闭后，这次编辑的内容不会保存。',
       'discard.confirm': '放弃修改',
@@ -485,6 +487,8 @@ window.__ModuleLoader__.load({
       'confirm.bodyNoPath': 'This permanently deletes "{name}". This cannot be undone.',
       'badge.link': 'Link',
       'badge.linkHint': 'Links to {path}; edit it there',
+      'editor.stale': 'This file was changed by another program (an agent, for example) after you opened it. Reopen it to see the latest version, or overwrite it with yours.',
+      'editor.overwrite': 'Overwrite anyway',
       'discard.title': 'Discard unsaved changes?',
       'discard.body': 'Closing now drops what you edited in this dialog.',
       'discard.confirm': 'Discard',
@@ -1884,6 +1888,18 @@ window.__ModuleLoader__.load({
      * Closing an editor with edits (Esc, the backdrop, Cancel) asks first instead of silently
      * dropping a long SKILL.md / AGENTS.md change.
      */
+    /** A save error; a `stale` one (file changed on disk since it was opened) offers to overwrite. */
+    function SaveError({ t, info, onOverwrite }) {
+      if (info?.code !== 'stale') return h(InlineError, { t, info });
+      return h(
+        'div',
+        { className: 'aa-note aa-note-warn', role: 'alert' },
+        h(IconAlert, { size: 12 }),
+        h('span', null, t('editor.stale')),
+        h('button', { type: 'button', className: 'aa-btn aa-btn-sm', onClick: onOverwrite }, t('editor.overwrite')),
+      );
+    }
+
     function useDiscardGuard(t, dirty, onCancel) {
       const [asking, setAsking] = useState(false);
       const requestClose = useCallback(() => {
@@ -2410,11 +2426,15 @@ window.__ModuleLoader__.load({
         ? displayJoin(shortHomePath(homes), 'skills')
         : workspace ? displayJoin(workspace, '.dsh', 'skills') : `${t('workspace.none')}/.dsh/skills`;
 
-      const handleSave = async () => {
+      const handleSave = async (overwrite = false) => {
         if (!canSave || saving) return;
         setSaving(true);
         setError(null);
         try {
+          // The time the editor read the file: the Host refuses the save when SKILL.md changed since.
+          const guardTime = mode === 'create' || overwrite || initial?.modifiedAt === undefined
+            ? {}
+            : { expectedModifiedAt: initial.modifiedAt };
           await onSubmit({
             op: mode === 'create' ? 'create' : 'update',
             scope,
@@ -2422,6 +2442,7 @@ window.__ModuleLoader__.load({
             description: descriptionTrimmed,
             whenToUse: whenToUse.trim() ? whenToUse.trim() : null,
             body,
+            ...guardTime,
           });
         } catch (saveError) {
           setError(errorInfo(saveError));
@@ -2437,13 +2458,13 @@ window.__ModuleLoader__.load({
           subtitle: mode === 'create' ? undefined : String(target?.name || ''),
           width: 'wide',
           onClose: saving ? () => {} : requestClose,
-          footer: h(FormFooter, { t, saving, canSave, onCancel: requestClose, onSave: handleSave }),
+          footer: h(FormFooter, { t, saving, canSave, onCancel: requestClose, onSave: () => handleSave() }),
         },
         guard,
         h(
           'div',
           { className: 'aa-form' },
-          error ? h(InlineError, { t, info: error }) : null,
+          error ? h(SaveError, { t, info: error, onOverwrite: () => handleSave(true) }) : null,
           h(
             'div',
             { className: 'aa-form-row' },
@@ -2574,12 +2595,15 @@ window.__ModuleLoader__.load({
       const dirty = content !== String(initial?.content || '');
       const { requestClose, guard } = useDiscardGuard(t, dirty && !saving, onCancel);
 
-      const handleSave = async () => {
+      const handleSave = async (overwrite = false) => {
         if (!canSave || saving) return;
         setSaving(true);
         setError(null);
         try {
-          await onSubmit({ op: 'write', scope, path: filePath, content });
+          // A new file must still not exist; an edited one must not have changed since it was read.
+          const expected = mode === 'create' ? null : initial?.modifiedAt;
+          const guardTime = overwrite || expected === undefined ? {} : { expectedModifiedAt: expected };
+          await onSubmit({ op: 'write', scope, path: filePath, content, ...guardTime });
         } catch (saveError) {
           setError(errorInfo(saveError));
         } finally {
@@ -2605,7 +2629,7 @@ window.__ModuleLoader__.load({
             saving,
             canSave,
             onCancel: requestClose,
-            onSave: handleSave,
+            onSave: () => handleSave(),
             onDelete: mode === 'edit' && exists && (target?.editable !== false || initial?.editable !== false)
               ? () => onDelete(target || initial)
               : null,
@@ -2615,7 +2639,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'aa-form' },
-          error ? h(InlineError, { t, info: error }) : null,
+          error ? h(SaveError, { t, info: error, onOverwrite: () => handleSave(true) }) : null,
           mode === 'create'
             ? h(
                 Field,

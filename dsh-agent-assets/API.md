@@ -20,7 +20,7 @@ the other half is written against it.
 - JSON request and response (`content-type: application/json; charset=utf-8`, `cache-control: no-store`).
 - Success: HTTP 200 + `{ "ok": true, ...payload }`.
 - Failure: HTTP 4xx/5xx + `{ "ok": false, "error": { "code": string, "message": string } }`.
-  - `code`: `bad_request` (400), `not_found` (404), `conflict` (409), `forbidden` (403), `internal` (500).
+  - `code`: `bad_request` (400), `not_found` (404), `conflict` (409), `stale` (409), `forbidden` (403), `internal` (500).
   - Two gateway-status exceptions keep the same `bad_request` code: a wrong HTTP method returns
     **405**, and a request body over 4 MiB returns **413**. Both still carry the failure envelope.
   - `message`: short human-readable English diagnostic; the Client renders its own localized text and
@@ -104,7 +104,7 @@ No parameters. Diagnostics only.
 ### GET /skill?scope=&name=&workspace=
 
 ```json
-{ "ok": true, "skill": { ...SkillView, "body": "markdown body…", "raw": "full SKILL.md…" } }
+{ "ok": true, "skill": { ...SkillView, "body": "markdown body…", "raw": "full SKILL.md…", "modifiedAt": "ISO" | null } }
 ```
 
 Missing skill → 404 `not_found`.
@@ -118,7 +118,9 @@ Body: `{ "op": "create" | "update" | "delete", "scope": "user" | "workspace",
 - `create`: 409 `conflict` when a skill with that name already exists in that scope's writable roots.
 - `update`: rewrites the existing `SKILL.md`; `description` is still required (it identifies the
   visible contract of the row), `whenToUse` and `body` are replaced when supplied, and unknown
-  frontmatter keys are preserved verbatim. 404 when absent.
+  frontmatter keys are preserved verbatim. 404 when absent. Optional `expectedModifiedAt` (the
+  `modifiedAt` the editor read): when `SKILL.md` changed since, 409 `stale` and nothing is written;
+  omit it to overwrite. CRLF files keep CRLF.
 - `delete`: removes the whole skill directory (`<root>/<name>/`) recursively; 404 when absent.
 - Validation: `name` matches `^[a-z0-9][a-z0-9-]{0,63}$`; `description` non-empty, single line,
   ≤ 1024 chars; `body` is a string (may be empty); `whenToUse` optional single line.
@@ -193,7 +195,9 @@ Body: `{ "op": "write" | "delete", "scope": "user" | "workspace", "workspace": "
 "path": "/abs/file", "content": "…" }`
 
 - `write` creates parent directories and replaces the file atomically; response
-  `{ "ok": true, "instruction": { ...InstructionView, "content": "…" } }`.
+  `{ "ok": true, "instruction": { ...InstructionView, "content": "…" } }`. Optional
+  `expectedModifiedAt` (ISO string, or `null` for "did not exist"): when the file changed since,
+  409 `stale` and nothing is written. CRLF files keep CRLF.
 - `delete` removes the file (404 when absent) and returns `{ "ok": true, "deleted": true }`.
 - Read-only third-party candidates reject `write`/`delete` with `forbidden`.
 - Directories outside the two candidate sets are rejected (`forbidden`).

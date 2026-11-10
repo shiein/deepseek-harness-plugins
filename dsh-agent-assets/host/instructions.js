@@ -14,6 +14,7 @@
 import { basename, join, relative, resolve, sep } from 'node:path'
 import { realpath } from 'node:fs/promises'
 import {
+  assertUnchangedSince,
   displayPath,
   fail,
   isInside,
@@ -298,6 +299,7 @@ export function createInstructions(options = {}) {
       if (info !== undefined && info.isDirectory()) {
         fail('bad_request', 'instruction path is a directory', 400)
       }
+      assertUnchangedSince(info, input.expectedModifiedAt)
       const previous = info !== undefined && info.isFile() ? await readTextIfExists(candidate.path).catch(() => undefined) : undefined
       try {
         // assertCandidateInside has checked where a link points; keep it a link.

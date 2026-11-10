@@ -29,6 +29,8 @@ export const ERROR_CODES = Object.freeze({
   badRequest: 'bad_request',
   notFound: 'not_found',
   conflict: 'conflict',
+  /** The file changed on disk after the editor read it (optimistic-concurrency check). */
+  stale: 'stale',
   forbidden: 'forbidden',
   internal: 'internal',
 })
@@ -171,6 +173,21 @@ export async function writeTextAtomic(path, text, mode, { followLink = false } =
 export function matchLineEndings(previous, next) {
   if (typeof previous !== 'string' || !previous.includes('\r\n') || next.includes('\r')) return next
   return next.replace(/\n/g, '\r\n')
+}
+
+/**
+ * Refuse a save over a file that changed since the editor read it. `expected` is the `modifiedAt`
+ * the Client was shown (ISO string), `null` for "did not exist"; `undefined` skips the check
+ * (the Client chose to overwrite).
+ * @param {import('node:fs').Stats|undefined} info current stat of the file
+ * @param {string|null|undefined} expected
+ */
+export function assertUnchangedSince(info, expected) {
+  if (expected === undefined) return
+  const current = info !== undefined && info.isFile() ? info.mtime.toISOString() : null
+  if (current !== expected) {
+    fail('stale', 'the file changed on disk after it was opened; reload it, or save again to overwrite', 409)
+  }
 }
 
 /** Remove a file or directory tree, tolerating absence. */

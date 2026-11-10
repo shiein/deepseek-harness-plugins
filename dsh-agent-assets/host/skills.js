@@ -19,6 +19,7 @@ import { realpath } from 'node:fs/promises'
 import {
   assertScope,
   assertSkillName,
+  assertUnchangedSince,
   displayPath,
   fail,
   isInside,
@@ -380,6 +381,7 @@ export function createSkills(options = {}) {
       const skillFile = join(directory, 'SKILL.md')
       await assertRealInside(root.path, directory, 'skill directory resolves outside its root')
       await assertRealInside(root.path, skillFile, 'skill file resolves outside its root')
+      assertUnchangedSince(await statIfExists(skillFile), input.expectedModifiedAt)
       let raw
       try {
         raw = await readTextIfExists(skillFile)
@@ -711,7 +713,7 @@ function toView(entry, shadowed = []) {
 
 /** Load `raw` + markdown `body` for a skill entry, refusing symlink escapes. */
 async function loadSkillContent(entry) {
-  if (entry.path === null || entry.dir === null) return { body: '', raw: '' }
+  if (entry.path === null || entry.dir === null) return { body: '', raw: '', modifiedAt: null }
   if (typeof entry.root === 'string') {
     const rootReal = typeof entry.linkTarget === 'string' ? entry.linkTarget : await realPathOrFallback(entry.root)
     const fileReal = await realPathOrFallback(entry.path)
@@ -725,7 +727,8 @@ async function loadSkillContent(entry) {
   } catch (error) {
     fail('forbidden', `cannot read skill file: ${errorMessage(error)}`, 403)
   }
-  if (raw === undefined) return { body: '', raw: '' }
+  if (raw === undefined) return { body: '', raw: '', modifiedAt: null }
   const parsed = parseSkillFile(raw)
-  return { body: parsed.body, raw }
+  const info = await statIfExists(entry.path)
+  return { body: parsed.body, raw, modifiedAt: info?.isFile() ? info.mtime.toISOString() : null }
 }

@@ -121,6 +121,20 @@ function optionalString(body, key) {
   return value
 }
 
+/**
+ * Optional optimistic-concurrency token: absent skips the check, null means "the file did not exist".
+ * @returns {string|null|undefined}
+ */
+function expectedModifiedAt(body) {
+  if (!Object.prototype.hasOwnProperty.call(body, 'expectedModifiedAt')) return undefined
+  const value = body.expectedModifiedAt
+  if (value === null) return null
+  if (typeof value !== 'string' || value === '') {
+    throw new AssetsError('bad_request', 'expectedModifiedAt must be an ISO time string or null', 400)
+  }
+  return value
+}
+
 /** Method gate. */
 function requireMethod(request, method) {
   if (request.method !== method) {
@@ -388,6 +402,7 @@ export function apply(ctx) {
           description: requireString(body, 'description'),
           whenToUse: optionalString(body, 'whenToUse'),
           body: optionalString(body, 'body') ?? '',
+          expectedModifiedAt: expectedModifiedAt(body),
         })
         return result
       }
@@ -439,6 +454,7 @@ export function apply(ctx) {
           workspace,
           path,
           content: optionalString(body, 'content') ?? '',
+          expectedModifiedAt: expectedModifiedAt(body),
         })
         return result
       }
