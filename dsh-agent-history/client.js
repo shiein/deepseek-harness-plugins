@@ -15,6 +15,68 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
+
+    // <shared-client:ui-kit>
+    // GENERATED from shared/client/ui-kit.js. Edit that file, then run: node scripts/sync-shared.mjs
+    /*
+     * Client pieces every panel shares. Each plugin's client.js is one self-contained module, so
+     * scripts/sync-shared.mjs inlines this file between the `<shared-client:ui-kit>` markers; edit it
+     * here, then run `node scripts/sync-shared.mjs`. Expects `React` in scope.
+     */
+
+    /**
+     * Tokens and motion rules shared by every panel (`root` is the panel's root selector):
+     * - one header height, motion durations and easing for all four panels;
+     * - exit animations for overlays (`dshp-exit-*` classes, paired with usePresence);
+     * - prefers-reduced-motion: animations and transitions collapse to an instant change.
+     */
+    function sharedPanelCss(root) {
+      return `
+    ${root} { --dshp-header-h: 52px; --dshp-dur-fast: .12s; --dshp-dur: .16s; --dshp-ease-out: cubic-bezier(.2, .8, .2, 1); }
+    ${root} .dshp-exit-fade { animation: dshp-fade-out var(--dshp-dur) var(--dshp-ease-out) forwards; pointer-events: none; }
+    ${root} .dshp-exit-pop { animation: dshp-pop-out var(--dshp-dur) var(--dshp-ease-out) forwards; pointer-events: none; }
+    ${root} .dshp-exit-drawer { animation: dshp-drawer-out var(--dshp-dur) var(--dshp-ease-out) forwards; pointer-events: none; }
+    @keyframes dshp-fade-out { from { opacity: 1; } to { opacity: 0; } }
+    @keyframes dshp-pop-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(4px) scale(.985); } }
+    @keyframes dshp-drawer-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(16px); } }
+    @media (prefers-reduced-motion: reduce) {
+      ${root} *, ${root} *::before, ${root} *::after {
+        animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important; scroll-behavior: auto !important;
+      }
+    }
+    `;
+    }
+
+    function prefersReducedMotion() {
+      try {
+        return Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      } catch {
+        return false;
+      }
+    }
+
+    /**
+     * Keeps an overlay mounted for `ms` after `value` turns falsy, flagged `exiting`, so it can play an
+     * exit animation instead of vanishing. `value` may be a boolean or the object the overlay renders
+     * from (the last one is kept while exiting).
+     * @returns {{ value: any, exiting: boolean }}
+     */
+    function usePresence(value, ms = 160) {
+      const [kept, setKept] = React.useState(value || null);
+      const live = Boolean(value);
+      React.useEffect(() => {
+        if (live) {
+          setKept(value);
+          return undefined;
+        }
+        if (!kept) return undefined;
+        const timer = setTimeout(() => setKept(null), prefersReducedMotion() ? 0 : ms);
+        return () => clearTimeout(timer);
+      }, [live, value]);
+      return { value: live ? value : kept, exiting: !live && Boolean(kept) };
+    }
+    // </shared-client:ui-kit>
     const { useCallback, useEffect, useMemo, useRef, useState } = React;
 
     const NS = 'agent-history';
@@ -2699,7 +2761,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'ah-root', ref: rootRef },
-        h('style', null, STYLES),
+        h('style', null, sharedPanelCss('.ah-root') + STYLES),
         h(
           'div',
           { className: 'ah-header', 'data-window-drag': true },
@@ -3137,8 +3199,8 @@ window.__ModuleLoader__.load({
 /* ---- Layout + density overrides (one screen: only inner regions scroll) ---- */
 .ah-root { font-size: 13.5px; line-height: 1.55; --ah-accent: var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary)); }
 .ah-root *, .ah-root *::before, .ah-root *::after { box-sizing: border-box; }
-.ah-header { min-height: 60px; gap: 14px; padding: 10px 22px; }
-html[data-platform=darwin] .ah-header { min-height: max(60px, var(--dsh-frame-top-clearance, 0px)); padding-left: max(22px, calc(var(--dsh-frame-leading-clearance, 0px) + 8px)); }
+.ah-header { min-height: var(--dshp-header-h); gap: 14px; padding: 10px 22px; }
+html[data-platform=darwin] .ah-header { min-height: max(var(--dshp-header-h), var(--dsh-frame-top-clearance, 0px)); padding-left: max(22px, calc(var(--dsh-frame-leading-clearance, 0px) + 8px)); }
 .ah-brand-icon { width: 34px; height: 34px; border-radius: 10px; flex: none; display: inline-flex; align-items: center; justify-content: center;
   color: var(--ah-accent); background: color-mix(in srgb, var(--ah-accent) 12%, transparent); }
 .ah-title { font-size: 16.5px; }
@@ -3335,8 +3397,8 @@ html[data-platform=darwin] .ah-header { min-height: max(60px, var(--dsh-frame-to
 @media (max-width: 1180px) { .ah-header-meta { display: none; } }
 @media (max-width: 900px) { .ah-title, .ah-header-divider { display: none; } .ah-switcher-btn { min-width: 0; } .ah-switcher-pop { width: min(460px, 86vw); } }
 /* ---- Recent-projects tab strip (one compact row under the header) ---- */
-.ah-header { min-height: 56px; }
-html[data-platform=darwin] .ah-header { min-height: max(56px, var(--dsh-frame-top-clearance, 0px)); }
+.ah-header { min-height: var(--dshp-header-h); }
+html[data-platform=darwin] .ah-header { min-height: max(var(--dshp-header-h), var(--dsh-frame-top-clearance, 0px)); }
 .ah-strip { flex: none; display: flex; align-items: center; gap: 6px; height: 38px; padding: 0 16px 0 18px;
   border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); }
 .ah-strip-tabs { flex: 1; min-width: 0; height: 28px; display: flex; flex-wrap: wrap; gap: 4px; overflow: hidden; align-items: center; }

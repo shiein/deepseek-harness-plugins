@@ -13,6 +13,68 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
+
+    // <shared-client:ui-kit>
+    // GENERATED from shared/client/ui-kit.js. Edit that file, then run: node scripts/sync-shared.mjs
+    /*
+     * Client pieces every panel shares. Each plugin's client.js is one self-contained module, so
+     * scripts/sync-shared.mjs inlines this file between the `<shared-client:ui-kit>` markers; edit it
+     * here, then run `node scripts/sync-shared.mjs`. Expects `React` in scope.
+     */
+
+    /**
+     * Tokens and motion rules shared by every panel (`root` is the panel's root selector):
+     * - one header height, motion durations and easing for all four panels;
+     * - exit animations for overlays (`dshp-exit-*` classes, paired with usePresence);
+     * - prefers-reduced-motion: animations and transitions collapse to an instant change.
+     */
+    function sharedPanelCss(root) {
+      return `
+    ${root} { --dshp-header-h: 52px; --dshp-dur-fast: .12s; --dshp-dur: .16s; --dshp-ease-out: cubic-bezier(.2, .8, .2, 1); }
+    ${root} .dshp-exit-fade { animation: dshp-fade-out var(--dshp-dur) var(--dshp-ease-out) forwards; pointer-events: none; }
+    ${root} .dshp-exit-pop { animation: dshp-pop-out var(--dshp-dur) var(--dshp-ease-out) forwards; pointer-events: none; }
+    ${root} .dshp-exit-drawer { animation: dshp-drawer-out var(--dshp-dur) var(--dshp-ease-out) forwards; pointer-events: none; }
+    @keyframes dshp-fade-out { from { opacity: 1; } to { opacity: 0; } }
+    @keyframes dshp-pop-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(4px) scale(.985); } }
+    @keyframes dshp-drawer-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(16px); } }
+    @media (prefers-reduced-motion: reduce) {
+      ${root} *, ${root} *::before, ${root} *::after {
+        animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important; scroll-behavior: auto !important;
+      }
+    }
+    `;
+    }
+
+    function prefersReducedMotion() {
+      try {
+        return Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      } catch {
+        return false;
+      }
+    }
+
+    /**
+     * Keeps an overlay mounted for `ms` after `value` turns falsy, flagged `exiting`, so it can play an
+     * exit animation instead of vanishing. `value` may be a boolean or the object the overlay renders
+     * from (the last one is kept while exiting).
+     * @returns {{ value: any, exiting: boolean }}
+     */
+    function usePresence(value, ms = 160) {
+      const [kept, setKept] = React.useState(value || null);
+      const live = Boolean(value);
+      React.useEffect(() => {
+        if (live) {
+          setKept(value);
+          return undefined;
+        }
+        if (!kept) return undefined;
+        const timer = setTimeout(() => setKept(null), prefersReducedMotion() ? 0 : ms);
+        return () => clearTimeout(timer);
+      }, [live, value]);
+      return { value: live ? value : kept, exiting: !live && Boolean(kept) };
+    }
+    // </shared-client:ui-kit>
     const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
     const EN = {
@@ -295,9 +357,9 @@ window.__ModuleLoader__.load({
         font-size: 13px; line-height: 1.45; font-family: inherit; -webkit-font-smoothing: antialiased; }
       .bf-page *, .bf-page *::before, .bf-page *::after { box-sizing: border-box; }
       .bf-head { position: relative; flex: none; display: flex; flex-wrap: nowrap; gap: 10px;
-        align-items: center; min-height: 48px; padding: 8px 16px;
+        align-items: center; min-height: var(--dshp-header-h); padding: 8px 16px;
         border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08)); }
-      html[data-platform=darwin] .bf-head { min-height: max(48px, var(--dsh-frame-top-clearance, 0px));
+      html[data-platform=darwin] .bf-head { min-height: max(var(--dshp-header-h), var(--dsh-frame-top-clearance, 0px));
         padding-left: max(16px, calc(var(--dsh-frame-leading-clearance, 0px) + 8px)); }
       .bf-brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 650;
         font-size: 14px; white-space: nowrap; flex: none; }
@@ -2185,7 +2247,7 @@ window.__ModuleLoader__.load({
               : { title: t('confirmClearTitle'), body: t('confirmClearBody', { n: confirm.count }) };
 
         return h('div', { className: `bf-page${fullscreen === 'page' ? ' is-max' : ''}` },
-          h('style', null, CSS),
+          h('style', null, sharedPanelCss('.bf-page') + CSS),
           h('div', { className: 'bf-head', 'data-window-drag': true },
             h('span', { className: 'bf-brand' },
               h('span', { className: 'bf-brand-icon' }, h('svg', {
