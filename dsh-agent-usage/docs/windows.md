@@ -48,9 +48,12 @@ override it with `DSH_AGENT_USAGE_DATA_DIR`.
    using it would look in the wrong directory. macOS/Linux keep `HOME` precedence.
 2. **UTF-8 BOM and CRLF tolerated.** Windows editors and PowerShell write BOMs / CRLF; `readText`,
    `readJsonl` and `safeJsonParse` strip them before JSON parsing.
-3. **Transient SQLite locks are retried.** `state.vscdb` / `sessions.db` can be held by a running
-   app; read-only opens retry `SQLITE_BUSY`/`SQLITE_LOCKED` three times, then the provider degrades
-   to a warning instead of failing the scan.
+3. **SQLite locks and disk pressure are retried, then survived.** `state.vscdb` / `sessions.db` can
+   be held by a running app, and another app can briefly fill the disk while it rewrites its own
+   store; read-only connections wait on a 5 s busy timeout and retry `SQLITE_BUSY`/`SQLITE_LOCKED`/
+   `SQLITE_FULL` opens. If a provider read still fails, the dashboard keeps that provider's last
+   successful numbers and labels them cached data (status `stale`) instead of dropping the agent,
+   with the error shown in the source list.
 4. **Quoted / `~\` config paths.** `expandPath` strips surrounding quotes and expands
    `%APPDATA%`, `${ENV}`, `~` and `~\` (Windows users paste quoted paths).
 5. **Path building only through `node:path`.** No hardcoded `/`; `%APPDATA%`, `%LOCALAPPDATA%` and

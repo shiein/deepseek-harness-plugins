@@ -356,7 +356,15 @@ export async function scan(ctx) {
     let note = 'message_nodes metrics, deduplicated by message id; unchanged since last scan';
     if (!cells) {
       const previous = typeof cache.peek === 'function' ? cache.peek(databasePath)?.state : undefined;
-      const updated = await updateState(utils, databasePath, previous);
+      let updated;
+      try {
+        updated = await updateState(utils, databasePath, previous);
+      } catch (error) {
+        // Raw SQLite text ("database or disk is full") says nothing about which store failed; the
+        // scanner reports this line in the source list, so name the file.
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`${databasePath}: ${detail}`, { cause: error });
+      }
       cells = cellsFromState(utils, updated.state);
       cache.set(databasePath, fingerprint, cells, updated.state);
       note = updated.mode === 'incremental'

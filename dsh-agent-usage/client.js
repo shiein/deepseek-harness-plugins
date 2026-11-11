@@ -165,6 +165,7 @@ window.__ModuleLoader__.load({
       'sources.status.not-installed': '未安装',
       'sources.status.error': '读取失败',
       'sources.status.broken': '插件异常',
+      'sources.status.stale': '沿用上次数据',
       'sources.warn': '提示',
       'footer.pricing': '价目表 v{version}',
       'footer.pricingHint': '按公开 API 价格估算（美元 / 百万 token）；插件配置的 prices 字段可覆盖或补充单价',
@@ -253,6 +254,7 @@ window.__ModuleLoader__.load({
       'sources.status.not-installed': 'Not installed',
       'sources.status.error': 'Read error',
       'sources.status.broken': 'Plugin error',
+      'sources.status.stale': 'Cached data',
       'sources.warn': 'Note',
       'footer.pricing': 'price table v{version}',
       'footer.pricingHint': 'Estimated from public API list prices (USD per 1M tokens); the plugin config field prices overrides or adds rates',
@@ -743,6 +745,7 @@ window.__ModuleLoader__.load({
         'not-installed': 'sources.status.not-installed',
         error: 'sources.status.error',
         broken: 'sources.status.broken',
+        stale: 'sources.status.stale',
       };
       return h('span', { className: `au-badge au-badge-${status}` }, t(labels[status] || 'sources.status.error'));
     }
@@ -1184,7 +1187,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    const STATUS_ORDER = { ok: 0, empty: 1, error: 2, broken: 3, 'not-installed': 4 };
+    const STATUS_ORDER = { ok: 0, stale: 1, empty: 2, error: 3, broken: 4, 'not-installed': 5 };
 
     function SourcesTab({ agents, t }) {
       const [fillRef, fillSize] = useMeasuredSize();
@@ -1219,7 +1222,8 @@ window.__ModuleLoader__.load({
               'span',
               { className: 'au-card-meta' },
               t('sources.count', {
-                readable: sorted.filter((agent) => agent.status === 'ok').length,
+                // Stale entries still carry numbers, so they count as adapters with data.
+                readable: sorted.filter((agent) => agent.status === 'ok' || agent.status === 'stale').length,
                 total: sorted.length,
               }),
             ),
@@ -1776,7 +1780,7 @@ html[data-platform=darwin] .au-header { min-height: max(40px, calc(var(--dsh-fra
 .au-source-warn { margin-left: auto; color: var(--dsw-alias-state-warn-primary); cursor: help; }
 .au-badge { flex: none; border: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); border-radius: 999px; padding: 0 7px; font-size: 9.5px; line-height: 1.7; white-space: nowrap; }
 .au-badge-ok { color: var(--dsw-alias-state-success-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 42%, transparent); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 8%, transparent); }
-.au-badge-empty { color: var(--dsw-alias-state-warn-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 42%, transparent); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, transparent); }
+.au-badge-empty, .au-badge-stale { color: var(--dsw-alias-state-warn-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 42%, transparent); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, transparent); }
 .au-badge-error, .au-badge-broken { color: var(--dsw-alias-state-error-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 42%, transparent); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent); }
 .au-state { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; padding: 16px; text-align: center; }
 .au-state-title { font-size: 14px; font-weight: 600; }

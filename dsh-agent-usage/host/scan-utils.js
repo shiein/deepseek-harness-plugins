@@ -352,24 +352,29 @@ export function localDay(tsMs) {
 /**
  * Open a SQLite database read-only through Node's builtin `node:sqlite`.
  *
- * Other applications keep these databases open (WAL writers on Windows take brief locks), so a
- * transient `SQLITE_BUSY`/`SQLITE_LOCKED` is retried a few times before the provider degrades to a
- * warning. The connection itself is always read-only.
+ * Other applications keep these databases open (WAL writers on Windows take brief locks), so the
+ * connection waits up to `timeout` ms inside SQLite for a lock (statements take locks too, not only
+ * the open), and a transient `SQLITE_BUSY`/`SQLITE_LOCKED`/`SQLITE_FULL` seen at open is retried a
+ * few times. `SQLITE_FULL` ("database or disk is full") is transient here: another application can
+ * briefly exhaust the disk while it rewrites its own store, and this reader only touches the WAL
+ * index. The connection itself is always read-only.
  * @param {string} path
- * @param {{readOnly?: boolean}} [options]
+ * @param {{readOnly?: boolean, timeout?: number}} [options]
  * @returns {Promise<import('node:sqlite').DatabaseSync>}
  */
 export async function openSqliteDatabase(path, options = {}) {
   const sqlite = await import('node:sqlite');
   const readOnly = options.readOnly !== false;
+  // node:sqlite maps this to SQLite's busy timeout; without it another writer's lock fails at once.
+  const timeout = Number.isFinite(options.timeout) ? Number(options.timeout) : 5000;
   let lastError;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      return new sqlite.DatabaseSync(path, { readOnly });
+      return new sqlite.DatabaseSync(path, { readOnly, timeout });
     } catch (error) {
       lastError = error;
       const detail = `${error?.code ?? ''} ${error?.message ?? error}`;
-      const transient = /SQLITE_BUSY|SQLITE_LOCKED|database is locked|EBUSY|EPERM/i.test(detail);
+      const transient = /SQLITE_BUSY|SQLITE_LOCKED|SQLITE_FULL|database is locked|database or disk is full|EBUSY|EPERM/i.test(detail);
       if (!transient || attempt === 2) throw error;
       await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
     }

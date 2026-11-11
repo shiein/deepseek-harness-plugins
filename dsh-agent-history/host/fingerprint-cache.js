@@ -95,6 +95,36 @@ export class FingerprintCache {
   }
 
   /**
+   * Every row cached for a provider, whatever its fingerprint: the last successful parse of each
+   * file. The scanner uses it to keep a provider's history visible when a later scan of it fails
+   * (a locked or momentarily unreadable store must not erase numbers the user already saw).
+   * @param {string} providerId
+   * @returns {any[]}
+   */
+  allRows(providerId) {
+    const provider = this.providers.get(providerId);
+    if (!provider) return [];
+    const rows = [];
+    for (const entry of provider.files.values()) {
+      const value = entry[this.rowsKey];
+      if (Array.isArray(value)) rows.push(...value);
+    }
+    return rows;
+  }
+
+  /**
+   * File paths cached for a provider, in insertion order. Together with `allRows` this lets the
+   * scanner describe a provider that failed this scan using its last successful read.
+   * @param {string} providerId
+   * @returns {string[]}
+   */
+  filesOf(providerId) {
+    const provider = this.providers.get(providerId);
+    if (!provider) return [];
+    return [...provider.files.keys()];
+  }
+
+  /**
    * @param {string} providerId
    * @param {string} filePath
    * @param {string} fingerprint

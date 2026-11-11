@@ -72,7 +72,10 @@ Verified against real local data on the development machine (macOS):
 The dashboard's **Data sources** section lists every adapter with its exact data directory, file
 count and status, so it is always clear which numbers are real and which tool has nothing readable
 locally. No token numbers are ever invented: an agent without locally readable usage reports zero
-cells plus a warning explaining why.
+cells plus a warning explaining why. If an adapter that did have data fails on one scan — a store
+locked by the app that owns it, or a disk that is momentarily full while another program rewrites
+it — the dashboard keeps that adapter's last successful numbers and marks them **cached data**
+instead of dropping the agent; the error is shown next to it.
 
 ## How refresh works
 

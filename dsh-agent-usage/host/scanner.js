@@ -41,7 +41,9 @@ const SCAN_CONCURRENCY = 3;
  * @property {string} name
  * @property {string} color
  * @property {string} [homepage]
- * @property {'ok'|'empty'|'not-installed'|'error'|'broken'} status
+ * @property {'ok'|'empty'|'not-installed'|'error'|'broken'|'stale'} status
+ *   `stale`: the provider failed this scan, so the cells cached by its last successful scan are
+ *   shown instead of dropping the agent; `error` in that case explains why.
  * @property {number} cells
  * @property {number} tokens
  * @property {number} costUsd
@@ -113,13 +115,14 @@ export async function runScan(options) {
     let errorMessage;
     let status = 'ok';
     let queryFailures = [];
+    /** Warnings the provider collected before it returned or threw. */
+    const warned = [];
 
     if (provider.error || typeof provider.scan !== 'function') {
       status = 'broken';
       errorMessage = String(provider.error?.message || provider.error || 'provider module failed to load');
     } else {
       try {
-        const warned = [];
         const context = makeScanContext({
           providerId,
           config,
@@ -140,7 +143,27 @@ export async function runScan(options) {
       } catch (error) {
         status = 'error';
         errorMessage = error?.stack ? String(error.stack).split('\n')[0] : String(error);
+        warnings.push(...warned);
         warnings.push(errorMessage);
+        // A transient read failure — another app holding a lock, or briefly filling the disk while
+        // it rewrites its own store — must not erase numbers the user already saw. Reuse the cells
+        // cached by this provider's last successful scan and report them as stale; the error stays
+        // visible in the source list.
+        const cachedCells = cachedCellsOf(cache, providerId);
+        if (cachedCells.length > 0) {
+          providerCells = cachedCells;
+          status = 'stale';
+          const cachedFiles = cachedFilesOf(cache, providerId);
+          sources = [{
+            label: `${provider.meta?.name || providerId} (last successful scan)`,
+            path: cachedFiles[0] || providerId,
+            exists: true,
+            files: cachedFiles.length,
+            bytes: 0,
+            note: 'the store could not be read this scan; these numbers are from the scan cache',
+          }];
+          warnings.push(`stale: showing the last successful scan (${errorMessage})`);
+        }
       }
     }
 
@@ -201,8 +224,12 @@ export async function runScan(options) {
 
   // Keep the cache bounded to providers that are actually installed.
   const installedIds = agents.filter((agent) => agent.status !== 'not-installed').map((agent) => agent.id);
-  const failedIds = agents.filter((agent) => agent.status === 'error' || agent.status === 'broken').map((agent) => agent.id);
-  cache.prune(installedIds, failedIds);
+  // A provider whose read failed — even one still served from stale cells — reported only part of
+  // its files, so its cache entries must survive: one transient error must not force a full re-parse.
+  const degradedIds = agents
+    .filter((agent) => agent.status === 'error' || agent.status === 'broken' || agent.status === 'stale')
+    .map((agent) => agent.id);
+  cache.prune(installedIds, degradedIds);
   await cache.save();
 
   const totalTokens = tuples.reduce((sum, tuple) => sum + tuple[3] + tuple[4] + tuple[5] + tuple[6], 0);
@@ -265,4 +292,32 @@ async function writeSnapshot(dataDir, snapshot) {
 /** @param {number} value */
 function round4(value) {
   return Math.round(value * 10000) / 10000;
+}
+
+/**
+ * Cells this provider's last successful scans left in the cache, or [] when it never succeeded.
+ * @param {ScanCache} cache
+ * @param {string} providerId
+ * @returns {import('./scanner-types.js').Cell[]}
+ */
+function cachedCellsOf(cache, providerId) {
+  try {
+    return typeof cache.allRows === 'function' ? cache.allRows(providerId) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * File paths the provider's cache knows about ([] when it never succeeded).
+ * @param {ScanCache} cache
+ * @param {string} providerId
+ * @returns {string[]}
+ */
+function cachedFilesOf(cache, providerId) {
+  try {
+    return typeof cache.filesOf === 'function' ? cache.filesOf(providerId) : [];
+  } catch {
+    return [];
+  }
 }

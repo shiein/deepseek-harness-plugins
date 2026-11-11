@@ -46,7 +46,12 @@ export async function scan(ctx) { ... }
 
 A provider MUST NOT throw for "not installed" or unreadable data: return zero cells, an
 `sources` entry with `exists: false`, and optionally a warning. Only genuinely unexpected errors
-may throw; the framework records them per provider.
+may throw; the framework records them per provider (status `error`). When the scan cache still
+holds cells from that provider's last successful scan, those cells are used and the status becomes
+`stale` instead of dropping the agent: a transient lock or a momentarily full disk must not erase
+numbers the user already saw. The original error stays in `error`/`warnings`, and the cached
+entries are kept (never pruned) so the next failed scan can fall back again. Providers whose data
+genuinely disappeared report `not-installed`/`empty` instead, which does prune the cache.
 
 ### ScanContext
 
@@ -135,14 +140,17 @@ utils.endOfLastNewline(buffer)        // last '\n' index + 1 (for partial-tail h
 utils.localDay(tsMs)                  // 'YYYY-MM-DD' in local time
 utils.isZstd(buffer)                  // bool (magic 0x28 0xB5 0x2F 0xFD)
 utils.zstdDecompressAll(buffer)       // Buffer; handles multi-frame (DSH session logs), throws on garbage
-utils.openSqliteDatabase(path, {readOnly=true}) // Promise<DatabaseSync> from node:sqlite
+utils.openSqliteDatabase(path, {readOnly=true, timeout=5000}) // Promise<DatabaseSync>, busy timeout
 utils.querySqlite(db, sql, params=[]) // all rows as plain objects
 utils.safeJsonParse(line)             // object|null (never throws)
 ```
 
 SQLite notes: open read-only, always `try/finally` `db.close()`. A live app may keep a WAL file;
 read-only opening is fine for `state.vscdb`/`opencode.db` on macOS and Windows as long as the
-parent directory is readable. Wrap in try/catch and degrade to a warning.
+parent directory is readable. The connection waits for a writer's lock up to `timeout` ms, and a
+transient `SQLITE_BUSY`/`SQLITE_LOCKED`/`SQLITE_FULL` at open is retried. Wrap reads in try/catch
+and degrade to a warning; when a whole provider read fails, the scanner serves its last cached
+cells as `stale`.
 
 ## Cache protocol (important)
 
@@ -178,9 +186,10 @@ Providers must run unchanged on Windows 10/11 (x64 and arm64). Follow these rule
   `env.home` (`USERPROFILE`), `env.appData` (`APPDATA`) and `env.localAppData` (`LOCALAPPDATA`).
 - Always tolerate UTF-8 BOM and CRLF: use `utils.readJsonl`, `utils.readText` and
   `utils.safeJsonParse`, which strip them. Do not call `JSON.parse` on raw bytes.
-- Open SQLite only through `utils.openSqliteDatabase` (read-only, transient `SQLITE_BUSY` retried);
-  always `close()` in `finally`. Include `-wal` in the cache fingerprint but not the `-shm` mtime
-  (a read-only open bumps it on this platform).
+- Open SQLite only through `utils.openSqliteDatabase` (read-only, busy timeout, transient
+  `SQLITE_BUSY`/`SQLITE_LOCKED`/`SQLITE_FULL` retried); always `close()` in `finally`. Include
+  `-wal` in the cache fingerprint but not the `-shm` mtime (a read-only open bumps it on this
+  platform).
 - No external binaries and no shell-outs (`zstd.exe`, `sqlite3.exe`, PowerShell): use `node:zlib`
   and `node:sqlite`.
 - Keep per-file failures non-fatal: a locked or unreadable file is skipped with a warning.
