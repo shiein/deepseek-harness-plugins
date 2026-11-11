@@ -7,6 +7,7 @@
  */
 import { createHash } from 'node:crypto'
 import { relative } from 'node:path'
+import { isAbsoluteFile } from '../vite/paths.ts'
 import { parseEntryRegistrations } from './entry-replay.ts'
 import type { EntryReplayResult } from './entry-replay.ts'
 import type { ReactMajor } from './detect.ts'
@@ -19,12 +20,17 @@ export interface GeneratedSetup {
   replay: EntryReplayResult
 }
 
-interface EmitOptions { importPath?: (file: string) => string }
+interface EmitOptions {
+  importPath?: (file: string) => string
+  /** 只供单测模拟 Windows 路径（`C:\\x`）；运行时取当前平台。 */
+  platform?: NodeJS.Platform
+}
 
 /** 生成模块源码：第三方与业务 Provider 重放，叶组件留空由预览目标挂载。 */
 export function generateSetupDraft(replay: EntryReplayResult, options: EmitOptions = {}): string {
   const draft = replay.draft
   const importPath = options.importPath ?? ((file: string) => file)
+  const absolute = (file: string) => isAbsoluteFile(file, options.platform)
   const needed = new Set<string>()
   for (const layer of draft.layers) {
     if (layer.kind === 'provider' || layer.kind === 'router') for (const name of layer.imports) needed.add(name)
@@ -48,13 +54,13 @@ export function generateSetupDraft(replay: EntryReplayResult, options: EmitOptio
     for (const binding of defaults) parts.push(binding.local)
     if (named.length) parts.push('{ ' + named.map(binding => binding.imported === binding.local
       ? binding.local : binding.imported + ' as ' + binding.local).join(', ') + ' }')
-    const specifier = item.resolvedSource !== item.source && item.resolvedSource.startsWith('/')
+    const specifier = item.resolvedSource !== item.source && absolute(item.resolvedSource)
       ? importPath(item.resolvedSource) : item.source
     lines.push('import ' + parts.join(', ') + ' from ' + JSON.stringify(specifier))
   }
   for (const item of draft.imports) {
     if (item.bindings.length || item.excluded) continue
-    const specifier = item.resolvedSource.startsWith('/') ? importPath(item.resolvedSource) : item.source
+    const specifier = absolute(item.resolvedSource) ? importPath(item.resolvedSource) : item.source
     lines.push('import ' + JSON.stringify(specifier))
   }
   const emittedDeclarations = new Set<string>()

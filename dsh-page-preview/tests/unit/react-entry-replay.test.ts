@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { parseEntryRegistrations } from '../../src/adapters/react/entry-replay.ts'
 import { buildGeneratedSetup, generateSetupDraft } from '../../src/adapters/react/generated-setup.ts'
+import { viteResolvableImport } from '../../src/adapters/vite/paths.ts'
 const execute = promisify(execFile)
 
 async function fixture(t: { after(callback: () => Promise<void>): void }) {
@@ -62,6 +63,28 @@ createRoot(document.getElementById('root')).render(
     assert.ok(draft.indexOf(order[index - 1]!) < draft.indexOf(order[index]!),
       order[index] + ' must wrap ' + order[index - 1])
   assert.doesNotMatch(draft, /BrowserRouter|App\.jsx|import React/)
+})
+
+test('Windows-resolved imports stay absolute in the generated setup (C:\\ is absolute there)', async t => {
+  const { root, put } = await fixture(t)
+  await put('src/main.jsx', `import { createRoot } from 'react-dom/client'
+import LocalWrapper from './LocalWrapper.js'
+import './styles/base.css'
+import App from './App.jsx'
+createRoot(document.getElementById('root')).render(<LocalWrapper><App /></LocalWrapper>)`)
+  await put('src/LocalWrapper.js', 'export default function LocalWrapper(props) { return props.children }')
+  await put('src/styles/base.css', 'body { margin: 0 }')
+  await put('src/App.jsx', 'export default function App() { return null }')
+  const result = await parseEntryRegistrations(root, 'src/main.jsx')
+  // Re-home the resolved paths as Windows would report them (drive letter, backslashes).
+  const windows = (file: string) => 'C:\\proj' + file.slice(root.length).replace(/\//g, '\\')
+  const imports = result.draft.imports.map(item => item.resolvedSource.startsWith(root)
+    ? { ...item, resolvedSource: windows(item.resolvedSource) } : item)
+  const replay = { ...result, draft: { ...result.draft, imports } }
+  const draft = generateSetupDraft(replay, { importPath: viteResolvableImport, platform: 'win32' })
+  assert.match(draft, /import LocalWrapper from "C:\/proj\/src\/LocalWrapper\.js"/)
+  assert.match(draft, /import "C:\/proj\/src\/styles\/base\.css"/)
+  assert.doesNotMatch(draft, /from "\.\/LocalWrapper\.js"|import "\.\/styles/)
 })
 
 test('RouterProvider marks the data-router style; HashRouter also maps to the in-memory context', async t => {

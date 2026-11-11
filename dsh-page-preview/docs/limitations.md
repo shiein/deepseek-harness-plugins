@@ -26,6 +26,9 @@
   解析与判定有合成单测（`tests/unit/winproc.test.ts`），PowerShell 调用每次约数百毫秒，停止/对账比 POSIX 慢；
   中间进程已退出的孙进程无法再归属（与 POSIX 的 setsid 逃逸同类），计为无法覆盖。能力按 `unverified_toolchain`
   如实保持 `unknown`。
+  路径：Vite 资源准入把 `/@fs/` 请求、模块图键与计划文件统一成 Vite 的文件键形式（Windows 为 `C:/a/b`），React 生成
+  setup 按平台判断绝对路径（2026-11-11 修复；`tests/unit/vite-paths.test.ts` 以 `path.win32` 语义模拟，未实机）。
+  Windows 上 Runner 只从 PATH 找真实的 `node.exe`（Node ≥ 22.18），不使用 DSH 自带的 `node.cmd`。
 
 ## 3. 首版明确不做的事
 

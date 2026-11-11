@@ -29,7 +29,8 @@ import type { ProjectMock } from './project-mock.ts'
 import { record, viteApi } from './api.ts'
 import type { VitePlugin, ViteServer } from './api.ts'
 import { hasUpgradeGate, isOwnedHmrUpgrade } from './network.ts'
-import { VITE_PAGE_PATH, VITE_HMR_PATH, VITE_VIRTUAL_PREFIX, viteVirtualUrl } from './paths.ts'
+import { VITE_PAGE_PATH, VITE_HMR_PATH, VITE_VIRTUAL_PREFIX, viteFsUrl, viteFsUrlFile, viteGraphFile,
+  viteVirtualUrl } from './paths.ts'
 import { isViteScenarioUpdate, parseViteWorkerInput, parseViteHandlerReply,
   parseViteScenarioUpdate } from './worker-protocol.ts'
 import type { ViteWorkerInput, ViteWorkerOutput } from './worker-protocol.ts'
@@ -365,7 +366,8 @@ export async function runViteWorker(hooks: ViteWorkerHooks): Promise<void> {
       }) : []
       const virtualUrls = new Set([...sources.modules.keys()]
         .map(id => viteVirtualUrl(id.slice(VITE_VIRTUAL_PREFIX.length))))
-      const viteEnv = '/@fs/' + (await realpath(join(metadata.directory, 'dist/client/env.mjs'))).replace(/^\//, '')
+      // Vite 客户端按 normalizePath 后的地址请求（Windows 为 /@fs/C:/…），比较前必须同样规范化。
+      const viteEnv = viteFsUrl(await realpath(join(metadata.directory, 'dist/client/env.mjs')))
       const browserFile = async (pathname: string) => {
         const file = await findStaticFile(viteServer.config.root, pathname)
           ?? (viteServer.config.publicDir
@@ -384,12 +386,13 @@ export async function runViteWorker(hooks: ViteWorkerHooks): Promise<void> {
         // Vite 延迟解析 dynamic import，首次目标/setup/style 请求尚未出现在模块图；只放行计划中的真实文件。
         let pathname: string
         try { pathname = decodeURIComponent(url.pathname) } catch { return false }
+        // 模块图键与计划文件统一成 Vite 的文件键形式（Windows：C:/a/b），否则 Windows 上永远不匹配。
         const candidate = pathname.startsWith('/@fs/')
-          ? '/' + pathname.slice('/@fs/'.length).replace(/^\//, '')
-          : resolve(viteServer.config.root, '.' + pathname)
+          ? viteFsUrlFile(pathname)
+          : viteGraphFile(resolve(viteServer.config.root, '.' + pathname))
         // 未知请求只查现有图；getModuleByUrl 会触发项目 resolveId，不能用于业务请求的准入判断。
         if (viteServer.moduleGraph.fileToModulesMap.get(candidate)?.size) return true
-        if (sources.exposedFiles.includes(candidate)) return true
+        if (sources.exposedFiles.some(file => viteGraphFile(file) === candidate)) return true
         const staticDestinations = ['image', 'style', 'font', 'audio', 'video', 'script',
           'worker', 'sharedworker', 'serviceworker']
         if (!destination || !staticDestinations.includes(destination)) return false
