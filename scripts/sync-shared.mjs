@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCANNERS = ['dsh-agent-history', 'dsh-agent-usage'];
 const TARGETS = {
-  'loopback.js': ['dsh-agent-assets', 'dsh-business-flow', ...SCANNERS],
+  'loopback.js': ['dsh-agent-assets', 'dsh-business-flow', 'dsh-data-masking', ...SCANNERS],
   'concurrency.js': SCANNERS,
   'context.js': SCANNERS,
   'fingerprint-cache.js': SCANNERS,
@@ -49,7 +49,7 @@ for (const [name, plugins] of Object.entries(TARGETS)) {
 // Client pieces: inlined into each client.js between `// <shared-client:NAME>` markers, indented to
 // sit inside the module factory.
 const CLIENT_TARGETS = {
-  'ui-kit.js': ['dsh-business-flow', 'dsh-agent-assets', 'dsh-agent-history', 'dsh-agent-usage'],
+  'ui-kit.js': ['dsh-business-flow', 'dsh-agent-assets', 'dsh-agent-history', 'dsh-agent-usage', 'dsh-data-masking'],
 };
 for (const [name, plugins] of Object.entries(CLIENT_TARGETS)) {
   const id = name.replace(/\.js$/, '');

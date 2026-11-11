@@ -1,0 +1,6 @@
+# Bundle patch: one Host plugin row that masks every model request sent through ctx.llm and serves
+# the settings API at /api/dsh-data-masking/*, plus the Client module (sidebar entry and page).
+# Rules and dictionaries live in $DSH_HOME/data-masking/, never in this file.
+- insert:
+    - id: data-masking
+      name: '@local/dsh-data-masking'

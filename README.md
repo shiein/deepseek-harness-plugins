@@ -1,6 +1,6 @@
 # DeepSeek Harness Plugins
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）桌面版编写的 6 个本地插件，每个都是独立的 profile bundle。前 5 个在 Web GUI 左侧栏增加入口，Host 端 HTTP 接口只接受本机回环地址请求；`dsh-page-preview` 为 Agent 提供页面预览工具，并在右侧栏显示预览面板。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）桌面版编写的 7 个本地插件，每个都是独立的 profile bundle。Host 端 HTTP 接口只接受本机回环地址请求。`dsh-page-preview` 为 Agent 提供页面预览工具，`dsh-data-masking` 对模型请求做脱敏，两者的界面都在会话右侧栏；其余插件在 Web GUI 左侧栏增加入口。
 
 | 插件 | 包名 | 作用 |
 |---|---|---|
@@ -9,6 +9,7 @@
 | [Agent 历史对话](./dsh-agent-history) | `@local/dsh-agent-history` | 扫描本机 Claude Code、Codex、DSH、OpenCode、Gemini CLI、Cursor 等二十多种 AI 编程 Agent 的会话，按项目合并成多 Agent 时间轴或按 Agent 浏览，可一键在原 Agent 中继续对话 |
 | [Agent Token 用量](./dsh-agent-usage) | `@local/dsh-agent-usage` | 从本地会话和用量文件统计各 Agent 的 Token 消耗，按 Agent、模型、日期汇总，并按 API 价格估算费用 |
 | [网盘备份维护](./dsh-maintenance-backup) | `@local/dsh-maintenance-backup` | 把 DSH 配置、技能和本地插件工程备份到夸克网盘：立即 / 定时 / 变更触发备份、云端快照预览，以及两阶段可回滚还原 |
+| [数据脱敏](./dsh-data-masking) | `@local/dsh-data-masking` | 发给模型前把区域、部门、术语、人员、地址、ID 段等敏感信息替换为占位符，回复时自动还原；可配置词库与正则规则、在线预览、查看拦截记录，同时阻止受保护会话上传原始 Session Log、拦截携带敏感数据的出网工具调用。不覆盖 ACP Agent |
 | [页面预览](./dsh-page-preview) | `dsh-page-preview` | 在隔离子进程中用项目自己的构建器（static / 已有服务 / 项目命令 / Vue 3 + Vite / Vue CLI / React + Vite）预览真实页面，可注入身份、权限、路由和接口 Mock，改代码后刷新验证。仍在迭代，需先构建 |
 
 两个扫描类插件（历史对话、Token 用量）在 `worker_threads` 中执行扫描，不阻塞 Host；大型数据源（如 Devin CLI 数据库）增量读取。各插件的功能、接口、数据位置和限制见其目录下的 README。
@@ -18,6 +19,7 @@
 - 基于 DSH 桌面版 `0.2.2-rc.1`（macOS arm64）开发。插件依赖 DSH 内部服务和 Client 槽位，DSH 升级后可能需要适配。
 - `dsh-agent-history`、`dsh-agent-usage`、`dsh-maintenance-backup` 同时适配 macOS 和 Windows 路径，Windows 上的验证程度见各自 README。
 - `dsh-business-flow` 需要 profile 中配置可用的默认模型。
+- `dsh-data-masking` 依赖 DSH `0.2.2-rc.1` 的 `llm/stream` waterfall 和非公开的 `LlmRuntime.adapterStream()`；DSH 升级后若该接口变化，插件会在脱敏开启时阻止模型请求，而不是放行原文。
 - `dsh-maintenance-backup` 需要安装并授权夸克网盘技能（`~/.dsh/skills/quarkclouddrive`）。
 - `dsh-page-preview` 为 TypeScript 工程，依赖锁定 DSH `0.2.2-rc.1` 的 npm 包；安装前先在其目录运行 `npm install && npm run build`（构建产物 `lib/`、`browser/` 不入库）。macOS arm64 实测，Linux 仅在 Docker 中验证，Windows 已实现但未实机验收。
 
@@ -40,7 +42,7 @@
 
 ## 目录结构
 
-前 5 个插件为纯 JavaScript，结构大致相同：
+除 `dsh-page-preview` 外的插件为纯 JavaScript，结构大致相同：
 
 ```
 <plugin>/
@@ -61,6 +63,6 @@
 
 ## 说明
 
-- 均为个人插件，未发布到 npm；前 5 个使用 `@local/` 作用域。
+- 均为个人插件，未发布到 npm；除 `dsh-page-preview` 外使用 `@local/` 作用域。
 - `dsh-page-preview` 是从其独立本地仓库导出的快照，不含提交历史。
 - 部分测试脚本和文档包含作者本机路径，在其他机器上运行测试前需先修改。

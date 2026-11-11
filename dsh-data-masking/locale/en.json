@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Data Masking",
+    "description": "Replace regions, departments, terms, people, addresses and ID segments with placeholders before any model request, restore them in the reply; configurable dictionaries, rules and interception history."
+  }
+}
