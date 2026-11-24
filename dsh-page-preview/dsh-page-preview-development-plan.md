@@ -69,7 +69,7 @@ v1.2 的边界和措辞已经比较严谨，但几处约束只写了“必须如
 6. **测试工具链：**批准把 `docs/toolchains/` 下的清单安装到 `tests/toolchains/<组合>/`，约束见 `docs/vue-test-toolchain-dependencies.md`（2026-11-01 批准 vue26-cli、vue27-cli、vue3-resolvers 三份；2026-11-02 追加批准 vue3-self-contained、vue3-unverified-vite6 两份）。安装脚本 `scripts/install-toolchains.mjs` 作为 `pretest` 幂等复现（`--ignore-scripts`、独立 lock），测试门槛优先显式 `DSH_PREVIEW_TEST_MODULES`、缺省回退仓库内 `vue3-self-contained`，CI 环境下跳过即失败。
 7. **工作顺序以 §16 的 v1.4 调整为准**：先完成 P0（`docs/development-progress.md`），再做网络旁路加固、影响分析和自动触发。
 8. **执行批准为会话级（2026-11-03 Aesc 决策，取代 §15 第 1 条与 R2-1 中「链终止即消费」的表述）。**用户在官方审批弹窗中批准后，同一 DSH 会话对同一工作区、同一项目、同一执行指纹持续有效，预览停止后再次打开不重复询问；执行项变化（新指纹）、其他会话、DSH/Host 重启都重新询问，用户拒绝不产生授权。授权只存于 Host 内存、不落盘，批准指纹随 `start` IPC 传给 Runner 并在执行前重核。会话审批策略为 `never`（如 Full access 预设）时官方服务确定性拒绝，插件如实提示切换权限预设，不绕过。弹窗文案如实说明上述有效范围（官方按钮文案仍为「允许一次」）。
-9. **完全访问会话放行与侧边栏自动展示（2026-11-03 Aesc 决策）。**会话沙箱为 `danger-full-access`（Full access 与 Auto 预设）时，执行项按用户的权限选择放行、不弹窗，结果带 `approved_by_permission_preset` 诊断；沙箱模式经 DSH `sandboxPolicy.resolve({ session })` 读取，读不到按未放行处理。Client 跟随屏幕上的会话，把新出现且可达的预览自动在 DSH Browser 页签打开一次；`open` 在有跟随者时等待侧边栏加载文档后返回，并以 `preview_shown_in_sidebar` 告知 Agent 结束。同工作区另一 DSH 会话的预览由新会话按账本完整清理后接管（`preview_taken_over` 诊断；残留时仍 busy）。Vite 依赖预构建缓存放在插件数据目录 `build-cache/<应用根哈希>/vite`，跨预览复用（插件自有长期缓存，不写入目标项目、不登记为单次预览资源）。
+9. **完全访问会话放行与侧边栏自动展示（2026-11-03 Aesc 决策）。**会话沙箱为 `danger-full-access`（Full access 与 Auto 预设）时，执行项按用户的权限选择放行、不弹窗，结果带 `approved_by_permission_preset` 诊断；沙箱模式经 DSH `sandboxPolicy.resolve({ session })` 读取，读不到按未放行处理。Client 跟随屏幕上的会话，把新出现且可达的预览自动在 DSH Browser 页签打开一次；`open` 有跟随者时先自动打开可达预览。普通打开请求短等文档加载与隔离页面挂载反馈，随后报告当前观测。同工作区另一 DSH 会话的预览由新会话按账本完整清理后接管（`preview_taken_over` 诊断；残留时仍 busy）。Vite 依赖预构建缓存放在插件数据目录 `build-cache/<应用根哈希>/vite`，跨预览复用（插件自有长期缓存，不写入目标项目、不登记为单次预览资源）。
 10. **初始化由插件自动完成（2026-11-03 Aesc 决策，取代第 5 条的「草稿须用户审阅后保存」）。**项目未配置 `runtime.setup` 时，插件从入口自动生成 setup 并直接使用：重放第三方与业务的 use/component/directive/全局属性、样式与副作用导入（按原顺序），`createApp` 包在顶层初始化函数里时整体搬运其顶层调用链：`createApp(...)` 换成预览 app、去掉 `mount`，传递调用初始化器的顶层函数与顶层调用语句原样保留（R5-1d——登录/接口前置流程按入口执行，发出的请求由场景 fixture 应答、无 fixture 如实 `unmatched_request`，不伪造已登录）；链上搬不动的函数/语句逐项进计划诊断与 `knownDifferences`，并回退为只跑初始化器。业务路由在运行时换成无守卫的空路由（按 vue-router 实例形状判定）。生成源码只在 Runner 内作为模块加载（Vite 虚拟模块 / CLI 本预览临时目录），不写入项目、不进工具输出；其摘要记为计划 `generatedSetup { entry, hash }` 并入执行指纹审批（完全访问会话按第 9 条放行），worker 启动前重新生成核对，入口改动后需重新审批。项目配置了 setup 时以项目为准。无法重放（语法错误、找不到唯一 Vue 应用、初始化引用入口内其他函数或条件创建）时仍返回手写 setup 的形态提示。同时：Vite 正则/非字面量别名只记匹配范围、命中者交给项目构建器解析；入口 HTML 的内联经典脚本不再阻断入口推断，预览文档沿用入口 HTML 的 `<html>`/`<body>` 静态属性与内联经典脚本；bootstrap 把跨源 fetch/XHR 改写到同源 `/__dsh_preview/remote/<origin>/…`，由自有 Mock 按 fixture `origin` 匹配，未命中明确 `unmatched_request` 并带原 origin，永不转发。业务数据仍需场景 fixture（本轮不自动生成）。
 11. **Vue 2 / Vue CLI 开放场景（2026-11-03 Aesc 决策）。**`page_preview_open`/`refresh` 的 `scenario` 在 `vue-cli` 宿主放行（open 带场景、refresh 带或不带场景），fixture/handlers/原子换绑与 Vite 同机制；`assertions` 与 `navigation`（含场景内携带 `route`）在 CLI 仍拒绝。能力声明与执行分离不变：CLI 的 `scenarioApply`/`scenarioReset`/`refresh` 均保持 `unknown`（非已验证组合、无浏览器侧证据），HTTP/进程级证据见 `docs/evidence/2026-11-03-cli-toolchain-scenario.md`。
 
@@ -140,6 +140,12 @@ v1.2 的边界和措辞已经比较严谨，但几处约束只写了“必须如
 
 文件只是入口之一。路由、组件导出、HTML 入口、已有 story、预览目标 ID、本地服务地址都可以表达目标；文件没有默认导出时不得强行按默认组件加载。
 
+宿主提供命令服务时，`/page-review` 可直接接收工作区相对文件、注册目标 ID、Vue 静态路由或页面标题。
+标题优先使用 `meta.title`，其次匹配视图文件顶部注释的首行标题。
+可用 `项目ID:目标` 指定应用，或用 `--scenario 场景ID` 选择已配置场景。默认回报挂载，
+`--verify` 可在工具等待窗口内等项目断言。匹配不唯一时返回提示，
+命令复用 `page_preview_open` 的执行审批和场景规则，保留项目已配置的断言。
+
 ### 2.3 展示范围与执行策略分开
 
 **展示范围 `scope`：**`page` 表示业务页面，`component` 表示局部组件，`shell` 表示包含应用布局和导航。默认优先 `page`，但适配器必须声明是否支持。
@@ -181,7 +187,9 @@ flowchart TD
 
 2026-11-09 依赖升至 `0.2.2-rc.1`（`cordis ~4.1.0`），与桌面版一致。`src/` 无需改动，类型检查通过；变化在宿主组合：`ToolRuntime.execute` 改为批处理入口，工具执行器（`dsh-tool-executor-native`）和 `ApprovalService` 依赖的 `sessionProjections` 成为独立服务，桌面版自带，测试组合经 `tests/support/execute-tool.ts` 接入官方实现。全量测试通过，桌面版实机待验证。
 
-官方示例使用 `apply(ctx)` 注册能力；需要工具服务时声明 `inject = ['tools']`，通过 `defineTool()` 和 `ctx.tools.register()` 定义工具。`inject` 是依赖声明，不是所有插件都必须拥有的固定字段。实现时依赖锁定版本的类型定义。[DSH Tool API](https://deepseek-harness.github.io/deepseek-harness/en/develop/basic/tool)
+官方示例使用 `apply(ctx)` 注册能力；需要工具服务时声明 `inject = ['tools']`，通过 `defineTool()` 和 `ctx.tools.register()` 定义工具。`inject` 是依赖声明，不是所有插件都必须拥有的固定字段。实现时依赖锁定版本的类型定义。锁定的 `dsh-commands@0.2.2-rc.1` 提供 `commands.register`。
+`/page-review` 通过 Agent 的 `followup` 创建活动轮次，在 `agent/pre-step` 执行预览并消费自己的消息，
+让官方执行审批处于可审计轮次内。该步不用模型定位目标。 [DSH Tool API](https://deepseek-harness.github.io/deepseek-harness/en/develop/basic/tool)
 
 `session/event` 与 `tools/result` 属于宿主事件；`turn/*` 等是会话事件类型，不能直接假设存在同名 Cordis 事件。以会话事件中的轮次结束信号触发分析；`turn/end` 的确切载荷、异常结束和重放语义在 Phase 0 对照目标 SDK 验证。[DSH 事件系统](https://deepseek-harness.github.io/deepseek-harness/en/develop/framework/events)
 
@@ -219,7 +227,7 @@ flowchart TD
 
 | 工具 | 输入 | 输出要求 |
 | --- | --- | --- |
-| `page_preview_open` | `projectId?`、`target?`、`scope?`、`strategy?`、`scenario?`、`viewport?`、`requirements?`、`writeSetupTo?` | 执行计划、状态、能力、诊断；已确认服务归属和可达时可提供地址，同时注明目标是否就绪。未配置 setup 时自动使用从入口生成的 setup（计划 `generatedSetup`，§0.3 第 10 条）；仅当入口无法重放时 `setupDraft` 给出草稿路径、分类注册项与可粘贴的 `configSnippet`；`writeSetupTo` 经官方审批弹窗由用户确认后把草稿写入项目内相对路径（只创建新文件，已存在一律不覆盖）并回传 `installedTo`；有 Client 跟随调用者会话时（侧边栏会自动在 Browser 页签加载新预览），等待至多 20 秒直到侧边栏加载文档（不等首次渲染文本），已有时附 `pageText`，并以 `preview_shown_in_sidebar` 诊断告知 Agent 任务完成、无需轮询或截图。省略 `target` 时先返回本轮影响分析的候选（R3-4，写完文件后不带 target 调用即"预览刚改的地方"）；没有本轮候选才退回结构发现，分析降级时附 `impact_incomplete`；两种情况都只返回候选（`needs_selection`），不自动选择，即使候选只有一个。`pageText` 只投影可证明为挂载后采集的观测：早于挂载信号（isolated）或文档加载证据（static）的观测不当作页面文本输出，改由 `page_text_pending` 诊断如实标注"尚未采集到"，hint 指向 `page_preview_status`；不增加等待（2026-11-03 决策 P-A） |
+| `page_preview_open` | `projectId?`、`target?`、`scope?`、`strategy?`、`scenario?`、`waitFor?`、`viewport?`、`requirements?`、`writeSetupTo?` | 执行计划、状态、能力、诊断；已确认服务归属和可达时可提供地址，同时注明目标是否就绪。未配置 setup 时自动使用从入口生成的 setup（计划 `generatedSetup`，§0.3 第 10 条）；仅当入口无法重放时 `setupDraft` 给出草稿路径、分类注册项与可粘贴的 `configSnippet`；`writeSetupTo` 经官方审批弹窗由用户确认后把草稿写入项目内相对路径（只创建新文件，已存在一律不覆盖）并回传 `installedTo`；有 Client 跟随调用者会话时（侧边栏会自动在 Browser 页签加载新预览），可达后自动打开，最多再等 5 秒收集文档及隔离页面挂载反馈（不另等页面文本）。`preview_shown_in_sidebar` 区分文档已加载、挂载已观察、挂载待确认和挂载失败。`waitFor: 'mount'` 回报当前挂载状态，已配置断言继续执行；`waitFor: 'assertions'`（工具缺省）保持原有断言等待窗口。结果附 `timing`（本次 Host 开销）和已知场景名；快照的 `startupTiming` 记录 Runner 启动里程碑，`verification` 表示项目断言当前进度。省略 `target` 时先返回本轮影响分析的候选（R3-4，写完文件后不带 target 调用即"预览刚改的地方"）；没有本轮候选才退回结构发现，分析降级时附 `impact_incomplete`；两种情况都只返回候选（`needs_selection`），不自动选择，即使候选只有一个。`pageText` 只投影可证明为挂载后采集的观测：早于挂载信号（isolated）或文档加载证据（static）的观测不当作页面文本输出，改由 `page_text_pending` 诊断如实标注"尚未采集到"，hint 指向 `page_preview_status`；不增加等待（2026-11-03 决策 P-A） |
 | `page_preview_status` | `previewId?`、`detail?` | 当前状态、就绪证据、产物新旧、实际能力及最近诊断；只读，不启动或修复服务。省略 `previewId` 时列出调用者在当前工作区拥有的预览摘要，用于上下文压缩后找回 ID。摘要含未命中业务请求计数（`unmatchedCount`/`unmatchedDropped`）；`detail: true` 且指定 `previewId` 时附 `unmatched` 汇总与 `fixtureDraft` 草稿（§7.2；草稿含 `envelopeHint` 包装建议（R6-1）与 `contexts`/`contextLimited` 调用点上下文（R6-2））。省略 `previewId` 时附本轮影响分析的 `suggestions`（R3-4：最多 3 条，`suggestionsOmitted` 记被截断数；未完成过分析的会话该字段缺失） |
 | `page_preview_refresh` | `previewId`、`scenario?` | 重新加载调用者自己预览的文档（手动兜底；编译成功后经 `/__dsh_preview/build` 同源长轮询自动刷新，通常无需调用）。省略 `scenario` 时重读当前场景数据（fixture/场景数据编辑生效，§7.4）；给出时切换为另一个已配置场景。`handlers`/`setup`/`command`/`env` 变化或 handler 绑定不同一律 `config_changed_needs_approval`，未知场景 `config_invalid`，均要求重新 `open`。返回刷新后的预览摘要与最近诊断；编译失败如实 `stale`，不提升 freshness |
 | `page_preview_capture` | `previewId`、`fullPage?` | 本地截图及采集范围；没有截图能力时返回 `unsupported_capability` |
@@ -308,6 +316,9 @@ setup 样式诊断补充：`setup_missing_styles` 表示已配置 `runtime.setup
 内部计划补充：PreviewPlan.route 为可选的导航上下文（path/params/query），文件/组件选择器仍定位实际模块。此字段不增加工具入参；对外 plan/detail 按实际提供。当前静态文件绑定尚未实现时明确拒绝，不静默丢弃 route；纯 route 选择器的导航上下文必须一致。
 
 公开计划使用 DisplayedPreviewPlan：static/attach 进程字段保持原值；managed 只显示 kind/executable/cwd 和 executionDetailsOmitted:["args","env"]，不返回参数/环境值，不用空数组冒充真实命令。完整可执行 PreviewPlan 仅保留在受信 Host/Runner，用户确认界面可检查当前命令；展示类型不可作为 Runner 启动输入。本版前没有已实现的公开 managed 消费方需要迁移。
+
+详细工具结果的文本投影包含有界的未命中列表、Mock 草稿与调用点位置。草稿正文超过预算时，文本列出部分条目和显式占位符，结构化值仍保留原草稿。
+场景写入的文本结果同时显示保存状态和 `applied.status`；保存成功时应用仍可单独失败。
 
 **面向 Agent 的输出预算。**默认结果只给摘要：状态、目标、策略、能力的缺失项、`freshness`、最多 N 条诊断（N 待定，建议 5～10）以及截断计数。候选证据、完整能力表和完整日志通过 `detail: true` 或 `status` 按需读取，避免每次调用都占用大量上下文。P1-11 起 `output.render` 产出紧凑文本摘要（状态行 + 预览/候选/占用者 + 逐条诊断，诊断带 previewId 与 hint），不再向模型回显整段 JSON；结构化值仍由 schema 承载。所有 hint 必须是 Agent 可执行的下一步（调用某工具、修改配置/文件、请用户操作），不得出现 "Inspect the local browser" 类指示（§5 第 12 条）。
 
@@ -400,6 +411,8 @@ iframe 中加载的 `127.0.0.1:<port>` 与 DSH Client 是否同站，取决于 C
 优先复用项目已经验证可用的预览方式，其次选择满足需求的最小运行方式。`auto` 只在满足要求和已有授权的计划中选择；隔离失败后可提出原项目运行方案，但不得悄悄扩大进程、网络或数据访问范围。
 
 ### 6.2 执行计划与预检
+
+`waitFor` 只控制 Host 等待首次挂载反馈还是断言结果。Planner 的目标要求、Runner 的断言和就绪期限仍按执行计划处理。
 
 2026-11-01 已验精确 Vue/Vite SFC 路径可保留显式 exportName 并挂载原命名组件，未选择 default 作为替代。普通 JS 模块/JSX 和其他工具版本仍无执行证据；组件库部分样本和限制见 `docs/vue-named-sfc-antdv.md`。
 
@@ -675,7 +688,7 @@ capability 表中的“运行错误采集”“目标就绪断言”“浏览器
 - 有写交互时，插件只提供**按场景隔离、可重置的内存存储**，以及加载项目 handler 模块（例如 `preview/handlers.js`）的入口。增删改语义由项目 handler 读写这份存储来实现，插件不从路径或类型通用地推导 CRUD 行为。没有 handler 的写请求按声明的静态响应返回，诊断中注明“写操作不会反映到后续读取”，不伪造持久化。
 - **默认实现选择：**`isolated` 与 `static` 路径优先在自有服务中用同源 Mock 中间件处理 fixture，再配合 6.8 的 CSP 阻断跨源请求，不依赖载体对 Service Worker 的支持。项目代码通过环境变量或配置把 API 基址指向跨源地址时，由项目绑定改为预览来源。只有项目已经使用 MSW 时才复用其 worker，并在 Phase 0 确认 iframe 中能注册 Service Worker。
 - 未命中业务请求明确失败并列出诊断，不静默返回空对象或转发真实后端。
-- **fixture 草稿与占位标记（R3-1）。**未命中请求按预览聚合成 `UnmatchedSnapshot`（method/origin/pathname/query 键名/次数/时间，上限 64 条唯一键，超出计 `dropped`；不记录 query 值、请求体、headers、凭据）。`status detail` 据此生成 `fixtureDraft`。**数据来源分层（R5-1b，R5-fix1 修正）**：草稿生成时按 §7.2 上文顺序只读项目来源填响应体——① 项目已有 mock/fixture 数据（`mock`/`mocks`/`fixtures`/`__mocks__` 等候选目录下的 `.json`，按目录相对路径映射请求路径、`.<method>` 文件后缀限定方法，命中即原样取用）；② OpenAPI/Swagger 文档（文件名含 `openapi`/`swagger` 的 `.json`/`.yaml`，路径含 `{param}` 模板按段匹配）：只有显式写出的 `example`/`examples` 才算真实数据可填响应体；只有 schema 可取样时（本地 `$ref` 解析 ≤4 层的有界样本）不替换占位，取样结构列入 `fixtureDraft.shapeHints` 并注明"值为示例、非真实数据"供 Agent 参考。R5-fix1 删除了按 URL 派生 TS 类型名的第三层（只扫前 120 个 `.ts` 文件、顺序不固定、精度低）与 schema 取样直填响应体的做法——两者都会让合成值绕过占位保护被当作 Mock 写回。命中即写真实来源 `provenance`（`Copied from project mock data file …` / `Copied from the explicit example in OpenAPI …`）；未命中或仅有 shapeHint 时响应体仍为占位标记 `__DSH_PREVIEW_FILL_RESPONSE__`，`provenance` 预填模板注明"由观察到的未命中请求起草"；Agent 必须核对填写并在 `provenance` 写明来源。收集失败（根不可达等）不阻断 status，草稿保持占位。类型和字段名不证明业务语义。`validateConfig` 深度拒绝仍含占位标记的响应体（`config_invalid`，路径指到具体 fixture），未填写的草稿不得被粘贴后当作 mock 成功。观察到的跨源未命中单独列入 `fixtureDraft.crossOrigin` 报告（R5-1c 起也按原 `origin` 生成 fixture——预检已放行显式 `origin` 字段，经同源 remote 通道按原 origin 匹配；纯跨源场景不再强制 `businessPaths`，有同源 fixture 或 handlers 时仍必需）。写方法（POST/PUT/PATCH/DELETE）未命中同时列入 `fixtureDraft.handlerDrafts`：可改造成 `scenario.handlers` default 数组条目的模板，注明"写操作不会反映到后续读取，除非 handler 读写 store"。`businessPaths` 按草稿路径的共同前缀归纳，只是建议，Agent 需核对。**写回（R5-1a）：**Agent 填好数据后调用 `page_preview_write_scenario` 把场景写回 `page-preview.config.json`——仍含占位标记、同名场景已存在或项目由 local/explicit 配置时拒绝；只在用户经官方审批确认后写；已存在文件写前在插件 dataDir 的 `config-backups/<工作区路径哈希>/` 备份（每工作区留最近 10 份，可回滚，dataDir 未配置时如实拒绝，R5-F4），且 commit 前复核 plan 依据的原文件哈希（审批窗口内被改即拒绝，R5-F3）；写回只改配置文件，不写业务源码。**响应包装（R6-1）：**场景可声明 `envelope` 模板（§8），声明后 `fixtureDraft` 的响应体占位标记语义即 data 位置，`configSnippet` 原样带上 envelope，fixture 条目不重复包装；未声明时 `status` 只读扫描源码（有界、脱敏、不进 node_modules/不读 .env*），同一接收者上 `X.code !== N`/`X.code === 0|200` 与 `X.data` 读取都成立才给出 `fixtureDraft.envelopeHint` 模板建议与文件/行/片段证据——只是建议，不自动写入场景，证据不全不给。**调用点上下文（R6-2）：**`status detail` 同处对源码树只读扫描一次（有界：文件数、单文件字节、总耗时、每条目 site/consumer 条数；`.vue` 取 `<script>`；不读 `.env*`、不进 node_modules 等排除目录），为每个未命中条目给出 `fixtureDraft.contexts`：路径字面量命中的请求函数位置与脱敏片段（`match` 标注 exact / 静态模板前缀 / baseURL 前缀不一致的确定性后缀兜底——只认"未命中路径以字面量结尾且边界恰在 /"）、调用方位置与返回值属性链（如 `data.menuList`）、仅当调用点显式写出响应类型时经 TypeScript checker 展开的 `typeHint`（any/unknown 不给，不按 URL 或符号名猜）；收集触顶或失败置 `contextLimited` 并出 `context_incomplete` 信息性诊断，不阻断 status；contexts 只进草稿、永远不作为响应体。**一轮补数据（R6-3、R6-4）：**`unmatched` 汇总附 `lastNewEntryAt`/`sinceLastNewEntryMs`（距最近一次新增未命中键的毫秒数，重复命中不挪动）与可执行 `hint`——Agent 轮询至该值不再增长即视为首屏请求到齐；随后 `write_scenario { mode:'merge', applyTo }` 一次把填好的 fixture 追加进既有场景并就地生效（Vite worker 经 refresh+scenario 原会话换绑，未命中列表随场景应用清空；无换绑能力的适配器如实报 `unsupported`、写入本身仍成立）。
+- **fixture 草稿与占位标记（R3-1）。**未命中请求按预览聚合成 `UnmatchedSnapshot`（method/origin/pathname/query 键名/次数/时间，上限 64 条唯一键，超出计 `dropped`；不记录 query 值、请求体、headers、凭据）。`status detail` 据此生成 `fixtureDraft`。**数据来源分层（R5-1b，R5-fix1 修正）**：草稿生成时按 §7.2 上文顺序只读项目来源填响应体——① 项目已有 mock/fixture 数据（`mock`/`mocks`/`fixtures`/`__mocks__` 等候选目录下的 `.json`，按目录相对路径映射请求路径、`.<method>` 文件后缀限定方法，命中后使用来源数据并对凭据保留待填占位）；② OpenAPI/Swagger 文档（文件名含 `openapi`/`swagger` 的 `.json`/`.yaml`，路径含 `{param}` 模板按段匹配）：只有显式写出的 `example`/`examples` 才算真实数据可填响应体；只有 schema 可取样时（本地 `$ref` 解析 ≤4 层的有界样本）不替换占位，取样结构列入 `fixtureDraft.shapeHints` 并注明"值为示例、非真实数据"供 Agent 参考。R5-fix1 删除了按 URL 派生 TS 类型名的第三层（只扫前 120 个 `.ts` 文件、顺序不固定、精度低）与 schema 取样直填响应体的做法——两者都会让合成值绕过占位保护被当作 Mock 写回。命中即写真实来源 `provenance`（`Copied from project mock data file …` / `Copied from the explicit example in OpenAPI …`）；未命中或仅有 shapeHint 时响应体仍为占位标记 `__DSH_PREVIEW_FILL_RESPONSE__`，`provenance` 预填模板注明"由观察到的未命中请求起草"；Agent 必须核对填写并在 `provenance` 写明来源。收集失败（根不可达等）不阻断 status，草稿保持占位。类型和字段名不证明业务语义。`validateConfig` 深度拒绝仍含占位标记的响应体（`config_invalid`，路径指到具体 fixture），未填写的草稿不得被粘贴后当作 mock 成功。观察到的跨源未命中单独列入 `fixtureDraft.crossOrigin` 报告（R5-1c 起也按原 `origin` 生成 fixture——预检已放行显式 `origin` 字段，经同源 remote 通道按原 origin 匹配；纯跨源场景不再强制 `businessPaths`，有同源 fixture 或 handlers 时仍必需）。写方法（POST/PUT/PATCH/DELETE）未命中同时列入 `fixtureDraft.handlerDrafts`：可改造成 `scenario.handlers` default 数组条目的模板，注明"写操作不会反映到后续读取，除非 handler 读写 store"。`businessPaths` 按草稿路径的共同前缀归纳，只是建议，Agent 需核对。**写回（R5-1a）：**Agent 填好数据后调用 `page_preview_write_scenario` 把场景写回 `page-preview.config.json`——仍含占位标记、同名场景已存在或项目由 local/explicit 配置时拒绝；只在用户经官方审批确认后写；已存在文件写前在插件 dataDir 的 `config-backups/<工作区路径哈希>/` 备份（每工作区留最近 10 份，可回滚，dataDir 未配置时如实拒绝，R5-F4），且 commit 前复核 plan 依据的原文件哈希（审批窗口内被改即拒绝，R5-F3）；写回只改配置文件，不写业务源码。**响应包装（R6-1）：**场景可声明 `envelope` 模板（§8），声明后 `fixtureDraft` 的响应体占位标记语义即 data 位置，`configSnippet` 原样带上 envelope，fixture 条目不重复包装；未声明时 `status` 只读扫描源码（有界、脱敏、不进 node_modules/不读 .env*），同一接收者上 `X.code !== N`/`X.code === 0|200` 与 `X.data` 读取都成立才给出 `fixtureDraft.envelopeHint` 模板建议与文件/行/片段证据——只是建议，不自动写入场景，证据不全不给。**调用点上下文（R6-2）：**`status detail` 同处对源码树只读扫描一次（有界：文件数、单文件字节、总耗时、每条目 site/consumer 条数；`.vue` 取 `<script>`；不读 `.env*`、不进 node_modules 等排除目录），为每个未命中条目给出 `fixtureDraft.contexts`：路径字面量命中的请求函数位置与脱敏片段（`match` 标注 exact / 静态模板前缀 / baseURL 前缀不一致的确定性后缀兜底——只认"未命中路径以字面量结尾且边界恰在 /"）、调用方位置与返回值属性链（如 `data.menuList`）、仅当调用点显式写出响应类型时经 TypeScript checker 展开的 `typeHint`（any/unknown 不给，不按 URL 或符号名猜）；收集触顶或失败置 `contextLimited` 并出 `context_incomplete` 信息性诊断，不阻断 status；contexts 只进草稿、永远不作为响应体。**一轮补数据（R6-3、R6-4）：**`unmatched` 汇总附 `lastNewEntryAt`/`sinceLastNewEntryMs`（距最近一次新增未命中键的毫秒数，重复命中不挪动）与可执行 `hint`——首屏仍有请求时可额外查一次；稳定时使用 `write_scenario` 的 `applyTo` 在当前预览应用填好的 fixture，已有场景用 `mode:'merge'` 追加，新场景用 `mode:'create'` 创建（Vite worker 经 refresh+scenario 原会话换绑，未命中列表随场景应用清空；无换绑能力的适配器如实报 `unsupported`、写入本身仍成立）。
 - GraphQL、SSE、WebSocket、浏览器原生桥接按实际使用单独声明支持；HTTP Mock 不自动覆盖这些能力。
 - 模块替身应有明确列表、加载时机与测试，尽量替换外部服务边界，不替换正在验证的业务页面逻辑。
 
@@ -850,6 +863,11 @@ stopping → failed                                     （曾失败的会话清
 `reachable` 表示服务归属已确认且可访问，可供用户打开，但目标是否正确渲染尚无证据。只能观察已有服务时可以停留在这个状态，不伪造挂载信号。`ready` 表示目标满足计划中的渲染就绪条件，不表示业务验收通过；`degraded` 仍须满足目标关键条件，只允许已声明的非关键缺失。权限初始化、必要数据或目标本身失败时进入 `failed`。
 
 就绪证据区分三层：服务可达、目标文档加载、目标挂载/指定断言成立。适配器可提供目标完成信号，或在有控制能力的展示上下文执行项目配置的可见性/内容断言；必须核对目标和当前场景，不能只检查通用 `#app` 容器存在。没有验证能力就记录 `unverified`，不在超时后自动标记成功。
+`startupTiming` 用同一 Runner 的单调时钟记录首次服务可达、文档加载、挂载反馈、断言结束（通过或达到期限）的累计毫秒。
+`timing` 是本次 Host 请求的单独耗时；复用已有预览时仍保留原 Runner 启动里程碑。
+隔离预览的 `targetMounted.mountSignal` 可记录
+浏览器实际报告的挂载或失败。它独立于就绪断言。初始化失败立即回传错误，已启动的服务可供诊断；
+如有计划断言，继续遵循原目标期限。断言超时附最后一次观察中未通过的断言序号和类型。
 
 不把固定等待数秒或全局 `networkidle` 当作通用就绪条件；持续轮询、SSE 等页面应使用目标自身的完成条件和有界超时。[Playwright 页面加载状态](https://playwright.dev/docs/api/class-page#page-wait-for-load-state)
 
@@ -1153,6 +1171,8 @@ React 一行和 Tier 2 冒烟不阻塞首个可用里程碑。这些是有限代
 | 同一选择器对象键顺序变化，或推断候选随后被选中 | 派生 ID 稳定；推断候选保留原选择器，不声称派生 ID 已登记到配置 |
 | 两个应用存在同名目标，或工具路径的基准不同 | 按固定路径规则解析；缺少应用选择时返回歧义，不猜测 |
 | 仓库配置与插件本地配置使用同一项目 ID | 显示唯一生效来源，不拼接两份场景/命令；单次覆盖可追溯 |
+| 普通预览在断言仍未通过时收到挂载反馈 | 按 `waitFor:'mount'` 返回已知挂载和 `verification: pending`；同一预览继续收集断言，超时语义与显式验证一致 |
+| 通过工具文本补 Mock 并就地应用 | 显示脱敏草稿、未命中路径、调用点和保存/应用各自状态；Chrome 在同一预览读取到新 fixture |
 | 配置含未知字段/版本、重复项目或目标 ID、缺失默认场景、策略冲突 | 明确返回字段路径和约束，不忽略错误，不回显环境或任意配置值 |
 | 配置路径使用 POSIX/Windows/UNC 绝对路径，或 URL 目标越过配置来源/携带凭据 | 结构或语义校验拒绝；相对路径的真实范围仍由文件系统校验，不将结构通过当作执行授权 |
 | 仓库配置已存在但损坏、是目录或符号链接断链 | 明确失败，不回退到本地配置；显式来源失败同样不回退 |

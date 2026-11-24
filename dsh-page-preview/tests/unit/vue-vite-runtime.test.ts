@@ -1,7 +1,7 @@
 /** 真 Vite 执行器（方案 §6.5、§6.8、§9.2、§15.3）；自有样本，使用显式已有依赖，不执行来源项目配置。 */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { access, readFile, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { access, readFile, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { vueViteAdapter } from '../../src/adapters/vue/vite/index.ts'
@@ -165,6 +165,25 @@ test('dependency pre-bundles persist in the plugin build cache and are reused by
   t.after(async () => { if (running) await running.stop(); await f.cleanup() })
   f.input.buildCacheRoot = join(f.root, 'plugin-build-cache')
   const metadata = join(f.input.buildCacheRoot, 'vite', 'deps', '_metadata.json')
+  const optimizedIncludes = join(f.root, 'optimized-includes.json')
+  const viteConfig = await readFile(join(f.appRoot, 'vite.config.mjs'), 'utf8')
+  await f.put('vite.config.mjs', viteConfig.replace('plugins: [', `plugins: [{ name: 'optimizer-probe',
+    configResolved(config) { writeFileSync(${JSON.stringify(optimizedIncludes)},
+      JSON.stringify(config.optimizeDeps.include)) } }, `))
+  await symlink(await realpath(join(modules, 'ant-design-vue')), join(f.appRoot, 'node_modules/ant-design-vue'))
+  const manifest = JSON.parse(await readFile(join(f.appRoot, 'package.json'), 'utf8'))
+  manifest.dependencies['ant-design-vue'] = '4.2.5'
+  await f.put('package.json', JSON.stringify(manifest))
+  await f.put('src/main.js', `import {createApp} from 'vue'
+    import App from './Target.vue'
+    import Antd from 'ant-design-vue'
+    createApp(App).use(Antd).mount('#app')`)
+  const planned = await vueViteAdapter.plan(f.input, {
+    projectId: 'vue-app', targetId: 'actual', scope: 'component', selector: { kind: 'file', path: 'src/Target.vue' },
+  })
+  assert.equal(planned.kind, 'plan')
+  assert.ok(planned.plan.generatedSetup)
+  f.input.plan = planned.plan
   const mountText = async (url: string) => {
     const chrome = await launchChrome(t)
     try {
@@ -178,15 +197,18 @@ test('dependency pre-bundles persist in the plugin build cache and are reused by
     } finally { await chrome.close() }
   }
   running = await vueViteAdapter.start(f.input)
+  assert.ok(JSON.parse(await readFile(optimizedIncludes, 'utf8')).includes('ant-design-vue'),
+    'the generated setup dependency must be known to the optimizer before navigation')
   assert.match(await mountText(running.url), /Real adapter target/, 'deps served from the cache root are allowed')
   assert.deepEqual(await running.stop(), { residual: [] })
   running = undefined
   await access(metadata)
   const before = await readFile(metadata, 'utf8')
+  assert.ok(JSON.parse(before).optimized['ant-design-vue'])
   f.input.previewId = 'vue-vite-owned-fixture-second'
   running = await vueViteAdapter.start(f.input)
   assert.match(await mountText(running.url), /Real adapter target/)
-  assert.equal(JSON.parse(await readFile(metadata, 'utf8')).hash, JSON.parse(before).hash,
+  assert.equal(JSON.parse(await readFile(metadata, 'utf8')).browserHash, JSON.parse(before).browserHash,
     'the second preview reuses the same optimized dependency set')
   assert.deepEqual(await running.stop(), { residual: [] })
   running = undefined

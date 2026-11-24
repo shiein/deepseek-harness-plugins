@@ -95,13 +95,22 @@ test('overlapping adapters need configuration and a selected plan failure never 
   assert.equal(calls.includes('larger:plan'), false)
 })
 
-test('scenario selection is explicit then target default and route/viewport context survives planning', async t => {
+test('scenario selection is explicit then target default then project default', async t => {
   const { input } = await setup(t)
+  input.config.project.defaultScenario = 'projDefault'
   input.config.project.targets![0]!.defaultScenario = 'default'
-  input.config.project.scenarios = { default: { route: { path: '/default' } }, explicit: { route: { path: '/explicit' } } }
+  input.config.project.scenarios = {
+    projDefault: { route: { path: '/project-default' } },
+    default: { route: { path: '/default' } },
+    explicit: { route: { path: '/explicit' } },
+  }
   input.viewport = { width: 390, height: 844 }
   const defaults = await buildPlan(input)
   assert.ok(defaults.kind === 'plan' && defaults.plan.scenario === 'default' && defaults.plan.route?.path === '/default')
+  delete input.config.project.targets![0]!.defaultScenario
+  const projectDefault = await buildPlan(input)
+  assert.ok(projectDefault.kind === 'plan' && projectDefault.plan.scenario === 'projDefault'
+    && projectDefault.plan.route?.path === '/project-default')
   input.scenario = 'explicit'
   input.target.route = { path: '/selected', query: { tab: 'details' } }
   const selected = await buildPlan(input)

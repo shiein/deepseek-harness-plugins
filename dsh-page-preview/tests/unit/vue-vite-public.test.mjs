@@ -630,11 +630,14 @@ test('public file navigation preserves explicit scenario route and compiles the 
   assert.equal((await f.invoke('stop', {previewId:opened.preview.previewId})).stopped[0].state, 'stopped')
 })
 
-test('with a sidebar follower, open returns once the sidebar loaded the document and says the task is done',
+test('quick open reports mount before assertions and the same preview then verifies in Chrome',
   { ...options, skip: integrationSkip || !chromeAvailable(), timeout: 60000 }, async t => {
   // 2026-11-03 实机：没有浏览器证据时 Agent 自己开 Chrome 截图验证约 60 秒。这里用真实 Chrome 扮演
   // DSH 侧边栏 Browser（Client auto-open 在预览可达时加载地址），open 应直接带回挂载证据与页面文本。
   const f = await setup(t)
+  f.project.targets = [{ id: 'assert-later', selector: openArgs.target, scope: 'component',
+    assertions: [{ kind: 'text-present', text: 'PROOF_AFTER_OPEN' }] }]
+  await f.save()
   f.ctx.on('approval/request', async () => 'allowed-once')
   const release = f.registry.trackFollower('vue-public-user')
   const chrome = await launchChrome(t)
@@ -646,14 +649,58 @@ test('with a sidebar follower, open returns once the sidebar loaded the document
     void chrome.navigate(message.url)
   })
   const started = Date.now()
-  const opened = await f.invoke('open', openArgs)
+  const opened = await f.invoke('open', { ...openArgs, waitFor: 'mount' })
   assert.equal(opened.status, 'ok')
   assert.equal(navigated, true, 'the simulated sidebar loaded the preview')
   assert.ok(Date.now() - started < 10000, 'returns as soon as the page rendered, not at the wait ceiling')
   assert.equal(opened.preview.readiness.documentLoaded.status, 'proven', JSON.stringify(opened.preview.readiness))
-  // 2026-11-03 Aesc：打开侧边栏即结束，不等首次渲染文本；诊断明确告诉 Agent 任务已完成。
+  assert.equal(opened.preview.readiness.targetMounted.mountSignal, 'observed')
+  assert.equal(opened.preview.readiness.targetMounted.status, 'unverified')
+  assert.equal(opened.preview.verification, 'pending')
+  assert.equal(typeof opened.timing.approvalMs, 'number')
+  assert.equal(typeof opened.preview.startupTiming.serviceReadyMs, 'number')
+  assert.equal(typeof opened.preview.startupTiming.documentLoadedMs, 'number')
+  assert.equal(typeof opened.preview.startupTiming.mountFeedbackMs, 'number')
+  assert.equal(opened.preview.startupTiming.assertionSettledMs, undefined)
   assert.ok(opened.diagnostics.some(value => value.code === 'preview_shown_in_sidebar'
-    && /do not wait, poll status, sleep/.test(value.hint ?? '')))
+    && /browser mount signal was observed/.test(value.message)))
+  await chrome.evaluate('document.body.append("PROOF_AFTER_OPEN")')
+  let latest
+  for (let attempt = 0; attempt < 100; attempt++) {
+    latest = await f.invoke('status', { previewId: opened.preview.previewId })
+    if (latest.preview.verification === 'passed') break
+    await delay(25)
+  }
+  assert.equal(latest?.preview.verification, 'passed')
+  assert.equal(latest.preview.state, 'ready')
+  assert.equal(typeof latest.preview.startupTiming.assertionSettledMs, 'number')
+  assert.ok(latest.preview.startupTiming.assertionSettledMs >= opened.preview.startupTiming.mountFeedbackMs)
+  t.diagnostic(`quick open ${opened.timing.totalMs} ms; ${JSON.stringify(latest.preview.startupTiming)}`)
+  assert.equal((await f.invoke('stop', { previewId: opened.preview.previewId })).stopped[0].state, 'stopped')
+})
+
+test('a loaded document with an explicit mount failure returns the real error and keeps the preview available',
+  { ...options, skip: integrationSkip || !chromeAvailable(), timeout: 60000 }, async t => {
+  const f = await setup(t)
+  f.project.runtime.setup = 'mount-failure.js'
+  await f.put('mount-failure.js', 'export default { install() { throw new Error("MOUNT_FIXTURE_FAILED") } }')
+  await f.save()
+  f.ctx.on('approval/request', async () => 'allowed-once')
+  const release = f.registry.trackFollower('vue-public-user')
+  const chrome = await launchChrome(t)
+  t.after(async () => { release(); await chrome.close() })
+  let navigated = false
+  f.client.onMessage(message => {
+    if (message.type !== 'state' || navigated || !message.url || message.state !== 'reachable') return
+    navigated = true
+    void chrome.navigate(message.url)
+  })
+  const opened = await f.invoke('open', openArgs)
+  assert.equal(opened.status, 'error', JSON.stringify(opened))
+  assert.equal(opened.preview.readiness.documentLoaded.status, 'proven')
+  assert.equal(opened.preview.readiness.targetMounted.mountSignal, 'failed')
+  assert.ok(opened.diagnostics.some(value => value.code === 'runtime_error' && /MOUNT_FIXTURE_FAILED/.test(value.message)))
+  assert.ok(opened.preview.url)
   assert.equal((await f.invoke('stop', { previewId: opened.preview.previewId })).stopped[0].state, 'stopped')
 })
 

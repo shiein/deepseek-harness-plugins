@@ -8,12 +8,14 @@
 
 import type { Diagnostic, Freshness, PageTextObservation, PreviewOccupant, PreviewPlan, ReadinessEvidence, ResultStatus, SessionState } from './contracts.ts'
 import type { UnmatchedSnapshot } from './unmatched.ts'
+import type { PreviewStartupTiming } from './preview-timing.ts'
 
 export interface RunnerSnapshot {
   previewId: string
   state: SessionState
   freshness: Freshness
   readiness: ReadinessEvidence
+  startupTiming?: PreviewStartupTiming
   url?: string
   pageText?: PageTextObservation
   /** 当前生效的场景名（R3-2）：switchScenario 后随状态更新；Host 不得用打开时的 plan 值谎报。 */

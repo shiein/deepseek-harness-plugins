@@ -13,7 +13,12 @@ export function sameDocumentUrl(reported: string, expected: string): boolean {
 
 export function assertionEvidence(assertions: readonly TargetAssertion[] | undefined, report: BrowserReport, expectedUrl: string): Evidence | undefined {
   if (report.kind !== 'assertions' || !assertions?.length || report.results.length !== assertions.length || !sameDocumentUrl(report.url, expectedUrl)) return undefined
-  return report.results.every(Boolean)
-    ? { status: 'proven', detail: 'All configured target assertions passed in the same browser observation' }
-    : { status: 'unverified', detail: 'Configured target assertions have not all passed together' }
+  const pending = assertions.flatMap(({ kind }, index) => report.results[index] ? [] : [`#${index + 1} ${kind}`])
+  if (!pending.length) return {
+    status: 'proven', detail: 'All configured target assertions passed in the same browser observation',
+  }
+  const shown = pending.slice(0, 12)
+  const omitted = pending.length - shown.length
+  return { status: 'unverified', detail: 'Pending assertions: ' + shown.join(', ')
+    + (omitted ? ` and ${omitted} more` : '') }
 }

@@ -157,27 +157,36 @@ function emitBrowserReport(
     }
     return
   }
-  if (report.kind === 'target-mounted' && !plan.readiness.assertions?.length) {
+  if (report.kind === 'target-mounted') {
     ctx.emit({ type: 'evidence', layer: 'targetMounted', evidence: { status: 'unverified',
-      detail: spec.framework + ' mounted signal received; target assertions are not configured on this path' } })
+      mountSignal: 'observed' } })
     return
   }
-  if (report.kind === 'runtime-error' || report.kind === 'unhandled-rejection') {
+  if (report.kind === 'runtime-error' || report.kind === 'unhandled-rejection' || report.kind === 'target-mount-failed') {
     ctx.emit({ type: 'diagnostic', diagnostic: { code: DiagnosticCode.runtimeError, phase: 'ready',
       message: spec.framework + ' preview reported a runtime error: ' + report.message
         + (report.stack ? '\n' + report.stack : ''),
       ...(report.kind === 'runtime-error' && report.source ? { location: { request: report.source } } : {}),
       hint: 'Fix the reported error in the target source; forwarded message and stack frames are redacted project text',
     } })
+    if (report.kind === 'target-mount-failed') {
+      ctx.emit({ type: 'evidence', layer: 'targetMounted', evidence: { status: 'unverified', mountSignal: 'failed' } })
+    }
     return
   }
-  if (report.kind === 'csp-violation') ctx.emit({ type: 'diagnostic', diagnostic: {
-    code: DiagnosticCode.blockedRequest, phase: 'ready',
-    message: spec.framework + ' preview resource/connection was blocked by its controlled response policy: '
-      + report.directive,
-    location: { request: report.blockedURI },
-    hint: 'Declare the required data source as a same-origin scenario fixture; blocked requests are never forwarded',
-  } })
+  if (report.kind === 'csp-violation') {
+    const connect = report.directive.startsWith('connect-src')
+    ctx.emit({ type: 'diagnostic', diagnostic: {
+      code: DiagnosticCode.blockedRequest, phase: 'ready',
+      message: spec.framework + ' preview resource/connection was blocked by its controlled response policy: '
+        + report.directive,
+      location: { request: report.blockedURI },
+      hint: connect
+        ? 'Declare the required data source as a same-origin scenario fixture; blocked requests are never forwarded'
+        : 'External assets are blocked by mock-only CSP and are not rewritten by bootstrap; '
+          + 'use local/data assets or ignore if cosmetic',
+    } })
+  }
 }
 
 export async function startWorkerHost<Out extends { type: string }>(
@@ -232,12 +241,11 @@ export async function startWorkerHost<Out extends { type: string }>(
         label + ' source/config/toolchain bindings changed before execution: ' + drifted.join(', '))
     }
   }
-  await verifyPlan()
   if (!ctx.verifyExecution) {
     throw problem(DiagnosticCode.configChangedNeedsApproval, 'The Runner execution verifier is not connected')
   }
   const verifyExecution = ctx.verifyExecution.bind(ctx)
-  await verifyExecution()
+  await Promise.all([verifyPlan(), verifyExecution()])
   check()
   let directory: string | undefined
   let pathEntry: string | undefined
@@ -348,8 +356,7 @@ export async function startWorkerHost<Out extends { type: string }>(
           if (unexpected) throw new Error('Unexpected handler verification request')
           handlerVerificationRequested = true
           void (async () => {
-            await verifyExecution()
-            await verifyPlan()
+            await Promise.all([verifyExecution(), verifyPlan()])
             check()
             if (executorFailure) throw executorFailure
             await api.send({ type: 'handlers-verified' })
@@ -373,8 +380,7 @@ export async function startWorkerHost<Out extends { type: string }>(
       } catch (error) { fail(error) }
     })
     await beforeDeadline(boot.promise)
-    await verifyExecution()
-    await verifyPlan()
+    await Promise.all([verifyExecution(), verifyPlan()])
     check()
     await api.send({ type: 'start', previewId: ctx.previewId, workspaceRoot: ctx.workspaceRoot,
       appRoot: ctx.appRoot, temporaryRoot: directory, project: ctx.config.project, plan,
@@ -397,8 +403,7 @@ export async function startWorkerHost<Out extends { type: string }>(
     const owned = probe.ok && !!body && typeof body === 'object'
       && 'previewId' in body && body.previewId === ctx.previewId
     if (!owned) throw problem(DiagnosticCode.ownershipUnverified, label + ' authenticated listener probe failed')
-    await verifyExecution()
-    await verifyPlan()
+    await Promise.all([verifyExecution(), verifyPlan()])
     check()
     if (executorFailure) throw executorFailure
     started = true

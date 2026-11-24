@@ -4,6 +4,7 @@ import { PAGE_TEXT_LIMIT } from './contracts.ts'
 import type { RunnerReply, RunnerSnapshot, RunnerToHost } from './ipc.ts'
 import { isSessionState } from './state-machine.ts'
 import type { UnmatchedRequestEntry, UnmatchedSnapshot } from './unmatched.ts'
+import { startupTimingSchema } from './preview-timing.ts'
 
 export function parseRunnerMessage(value: unknown): RunnerToHost {
   const message = record(value)
@@ -34,12 +35,15 @@ export function parseRunnerMessage(value: unknown): RunnerToHost {
         secrets: array(message.secrets).map(text) }
     case 'state': {
       fields(message, ['type', 'previewId', 'state', 'freshness', 'readiness'],
-        ['url', 'pageText', 'unmatched', 'scenario'])
+        ['url', 'pageText', 'unmatched', 'scenario', 'startupTiming'])
       if (!isSessionState(message.state)) invalid()
+      const timing = message.startupTiming === undefined ? undefined : startupTimingSchema.safeParse(message.startupTiming)
+      if (timing?.success === false) invalid()
       return {
         type: 'state', previewId: id(message.previewId), state: message.state,
         freshness: choice(message.freshness, ['current', 'stale', 'unverified']),
         readiness: readiness(message.readiness),
+        ...(timing?.data === undefined ? {} : { startupTiming: timing.data }),
         ...(message.url === undefined ? {} : { url: text(message.url) }),
         ...(message.pageText === undefined ? {} : { pageText: pageText(message.pageText) }),
         ...(message.unmatched === undefined ? {} : { unmatched: unmatched(message.unmatched) }),
@@ -65,7 +69,8 @@ function reply(value: unknown): RunnerReply {
   }
   if (item.previews !== undefined) result.previews = array(item.previews).map(value => {
     const snapshot = record(value)
-    fields(snapshot, ['previewId', 'state', 'freshness', 'readiness'], ['url', 'pageText', 'unmatched', 'scenario'])
+    fields(snapshot, ['previewId', 'state', 'freshness', 'readiness'],
+      ['url', 'pageText', 'unmatched', 'scenario', 'startupTiming'])
     const message = parseRunnerMessage({ ...snapshot, type: 'state' })
     if (message.type !== 'state') return invalid()
     const { type: _type, ...parsed } = message
@@ -120,8 +125,13 @@ function readiness(value: unknown): ReadinessEvidence {
 
 function evidence(value: unknown): Evidence {
   const item = record(value)
-  fields(item, ['status'], ['detail', 'at'])
-  return { status: choice(item.status, ['proven', 'failed', 'unverified']), ...(item.detail === undefined ? {} : { detail: text(item.detail) }), ...(item.at === undefined ? {} : { at: text(item.at) }) }
+  fields(item, ['status'], ['detail', 'at', 'mountSignal'])
+  return {
+    status: choice(item.status, ['proven', 'failed', 'unverified']),
+    ...(item.detail === undefined ? {} : { detail: text(item.detail) }),
+    ...(item.at === undefined ? {} : { at: text(item.at) }),
+    ...(item.mountSignal === undefined ? {} : { mountSignal: choice(item.mountSignal, ['observed', 'failed']) }),
+  }
 }
 
 function diagnostic(value: unknown): Diagnostic {

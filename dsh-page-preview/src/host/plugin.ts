@@ -22,6 +22,7 @@ import { registerTools } from './tools/index.ts'
 import { TurnTracker } from './turn-tracker.ts'
 import { requestExecutionApproval } from './execution-approval.ts'
 import { requestConfigWriteApproval, requestSetupWriteApproval } from './setup-write-approval.ts'
+import { registerPageReviewCommand } from './page-review.ts'
 import { DEFAULT_TRIGGER_MODE, TRIGGER_MODES } from './trigger.ts'
 import type { TriggerMode } from './trigger.ts'
 
@@ -70,8 +71,8 @@ export function apply(ctx: Context, config: Config = {}) {
     fullAccess: exec => sessionHasFullAccess(ctx, exec),
     requestSetupWrite: (caller, projectId, file, exec) =>
       requestSetupWriteApproval(ctx.get('approval'), caller, projectId, file, exec),
-    requestConfigWrite: (caller, projectId, scenario, exec) =>
-      requestConfigWriteApproval(ctx.get('approval'), caller, projectId, scenario, exec),
+    requestConfigWrite: (caller, projectId, scenario, exec, mode) =>
+      requestConfigWriteApproval(ctx.get('approval'), caller, projectId, scenario, exec, mode),
   })
   // dsh-working-directory 未列为直接依赖：经 ctx.get 取服务，get(session) 同步返回有效绝对目录；
   // 服务缺失只是失去相对写路径的归位，tools/result 提取退回 meta.path/绝对参数。
@@ -81,10 +82,11 @@ export function apply(ctx: Context, config: Config = {}) {
     const session = exec.agent?.session
     if (!session || workingDirectory === undefined) return undefined
     try { return workingDirectory.get(session) } catch { return undefined }
-  })
+  }, config.trigger === undefined ? {} : { triggerMode: config.trigger })
   new PanelService(ctx, registry)
 
   registerTools(ctx, registry)
+  ctx.plugin({ inject: ['commands'], apply: scope => registerPageReviewCommand(scope, registry, dataDir) })
 
   ctx.on('session/event', (session, event) => tracker.onSessionEvent(session, event))
   ctx.on('session/disposed', session => { impact.forget(session.id); registry.disposeSession(session.id) })

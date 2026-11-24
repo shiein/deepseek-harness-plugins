@@ -42,7 +42,7 @@
 
 - 默认 `mock-only`：未命中的业务请求明确 `unmatched_request`（404），不转发真实后端、不返回空对象（方案 §0.3 第 5 条）。
 - `page_preview_status { previewId, detail: true }` 返回按 (method, origin, path) 聚合的未命中列表与 `fixtureDraft` 草稿（R3-1）；草稿带 `placeholder` 标记，需 Agent/用户填真实数据，占位标记未清除的场景会被 `config_invalid` 拒绝。
-- 项目已有 Mock 设施（vite-plugin-mock/mockjs/msw 等）只读识别并经 `project_mock_detected` 报告，插件不 import/执行它们（R3-3，D1）。
+- 项目已有 Mock 设施经只读识别并报告 `project_mock_detected`：Vite 预览中，自包含于 `mockPath` 内的 `vite-plugin-mock`（R5-1e）会在 `temporaryRoot` 副本上加载并仅处理 `businessPaths` 之外的请求，检出 `msw` 时放行 Service Worker 注册；其余情形（如越出 `mockPath` 触发 `project_mock_unavailable`、mockjs 或 Vue CLI 路径）不执行项目 Mock 代码。同源 HTTP fixture 须落入 `scenario.businessPaths` 声明范围内，否则预检报 `config_invalid`。
 - `.env*` 一律不读不写；vue-cli 项目经 `service.loadEnv` 拦截不进入预览进程（README 17 行验收）。
 - `turn/end` 影响分析只读：不执行项目代码、不进 `.env*`；`impact_incomplete` 表示分析降级。
 

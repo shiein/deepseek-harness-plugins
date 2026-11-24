@@ -27,6 +27,6 @@ export function postMountPageText(
 
 function mountBoundary(readiness: ReadinessEvidence, strategy: Strategy): string | undefined {
   const evidence = strategy === 'static' ? readiness.documentLoaded : readiness.targetMounted
-  if (evidence.status === 'failed') return undefined
+  if (evidence.status === 'failed' || evidence.mountSignal === 'failed') return undefined
   return evidence.at
 }

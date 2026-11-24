@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto'
 import { realpath } from 'node:fs/promises'
 import { join } from 'node:path'
-import { ConfigLoadError } from '../shared/config/loader.ts'
+import { ConfigLoadError, loadEffectiveConfigs } from '../shared/config/loader.ts'
 import type { EffectiveProjectConfig } from '../shared/config/loader.ts'
 import {
   collectExecutionItems, executionFingerprint, requiresExecutionApproval, runsProjectBuildConfig,
@@ -101,7 +101,7 @@ export class RunnerController {
           workspaceRoot: this.workspaceRoot, appRoot, ownerSessionId: message.ownerSessionId, config, profile, ledger: this.ledger,
           buildCacheRoot: join(this.dataDir, 'build-cache',
             createHash('sha256').update(appRoot).digest('hex').slice(0, 32)),
-          verifyExecution: () => this.verifyCurrentExecution(message.plan, message.configFile, message.approval),
+          verifyExecution: () => this.verifyCurrentExecution(message.plan, message.configFile, message.approval, config),
         })
         if (result.kind === 'created' || result.kind === 'reused') {
           // R3-2：场景更新凭据只挂会话，不进适配器可见的 StartContext。
@@ -184,12 +184,29 @@ export class RunnerController {
     }
   }
   private async verifyCurrentExecution(
-    plan: PreviewPlan, configFile: string | undefined, approval?: { fingerprint: string },
+    plan: PreviewPlan, configFile: string | undefined, approval: { fingerprint: string } | undefined,
+    initialConfig: EffectiveProjectConfig,
   ): Promise<void> {
-    const selected = (await loadWorkspaceProjects(this.workspaceRoot, configFile, { dataDir: this.dataDir })).find(value => value.config.project.id === plan.projectId)
-    if (!selected) throw problem(DiagnosticCode.configInvalid, 'config', 'Configured project disappeared before execution')
-    await this.verifyApproval(selected.config, plan, approval)
-    if (fingerprintJson(selected.config.project) !== plan.fingerprints.config) throw problem(DiagnosticCode.configInvalid, 'config', 'Configuration changed before execution; create a fresh plan')
+    const configured = await loadEffectiveConfigs(this.workspaceRoot, configFile, { dataDir: this.dataDir })
+    let selected = configured.find(value => value.project.id === plan.projectId)
+    if (!selected) {
+      if (initialConfig.source.kind !== 'detected') {
+        throw problem(DiagnosticCode.configInvalid, 'config', 'Configured project disappeared before execution')
+      }
+      const appRoot = await resolveProjectPath(this.workspaceRoot, initialConfig.project.root)
+      for (const other of configured) {
+        if (await resolveProjectPath(this.workspaceRoot, other.project.root) === appRoot) {
+          throw problem(DiagnosticCode.configInvalid, 'config',
+            'Configuration changed before execution; create a fresh plan')
+        }
+      }
+      selected = initialConfig
+    }
+    await this.verifyApproval(selected, plan, approval)
+    if (fingerprintJson(selected.project) !== plan.fingerprints.config) {
+      throw problem(DiagnosticCode.configInvalid, 'config',
+        'Configuration changed before execution; create a fresh plan')
+    }
   }
   /** 无法归属到单个会话的命令失败的脱敏来源：全部存活会话密钥并集，加 start 目标项目的 env 值。 */
   private async logSecrets(startProject: EffectiveProjectConfig['project'] | undefined): Promise<string[]> {

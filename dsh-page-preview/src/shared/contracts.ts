@@ -6,6 +6,7 @@
  */
 
 import type { FixtureDraft } from './fixture-draft.ts'
+import type { OpenTiming, PreviewStartupTiming } from './preview-timing.ts'
 import type { UnmatchedSnapshot } from './unmatched.ts'
 
 export type Strategy = 'static' | 'isolated' | 'project' | 'attach'
@@ -105,6 +106,8 @@ export type EvidenceStatus = 'proven' | 'failed' | 'unverified'
 export interface Evidence {
   status: EvidenceStatus
   detail?: string
+  /** 隔离预览的框架挂载观察，独立于完整目标断言是否通过。 */
+  mountSignal?: 'observed' | 'failed'
   /** ISO 8601 */
   at?: string
 }
@@ -220,6 +223,9 @@ export interface PreviewSummary {
   /** 只列 status 非 supported 的能力，减少上下文占用。 */
   capabilityGaps: Array<{ name: string; capability: Capability }>
   readiness: ReadinessEvidence
+  /** 已配置的目标断言当前进度。没有断言或预览已停止时可缺省。 */
+  verification?: 'pending' | 'passed' | 'failed'
+  startupTiming?: PreviewStartupTiming
   /** 未命中业务请求的唯一条数（>0 才出现；detail=true 可取汇总与 fixture 草稿，§7.2、R3-1）。 */
   unmatchedCount?: number
   /** 超出汇总上限被丢弃的唯一条数（>0 才出现）。 */
@@ -277,6 +283,8 @@ export interface PreviewOccupant {
 }
 
 export interface OpenResult extends ToolResultBase {
+  timing?: OpenTiming
+  availableScenarios?: string[]
   preview?: PreviewSummary
   candidates?: Candidate[]
   plan?: DisplayedPreviewPlan

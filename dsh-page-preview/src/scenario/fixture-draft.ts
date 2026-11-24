@@ -17,6 +17,7 @@
 
 import type { HttpFixture } from '../shared/config/schema.ts'
 import type { EnvelopeConfig } from '../shared/envelope.ts'
+import type { Redactor } from '../shared/redact.ts'
 import {
   FIXTURE_PLACEHOLDER,
   type CallSiteContext,
@@ -52,7 +53,53 @@ export interface DraftOptions {
   contexts?: CallSiteContext[]
   /** R6-2：收集触顶时置 true（同时由调用方产生可见诊断）。 */
   contextLimited?: boolean
+  /** Host 输出边界的脱敏器；被遮盖的值仍是需要用户填写的占位。 */
+  redact?: Redactor['text']
 }
+
+const FIXTURE_SECRET_SEGMENTS = new Set([
+  'TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PWD', 'AUTH', 'AUTHORIZATION',
+  'COOKIE', 'SESSION', 'PRIVATE', 'CREDENTIAL', 'CREDENTIALS', 'DSN', 'SALT', 'SIGNATURE',
+])
+const FIXTURE_SECRET_SUFFIX = /(TOKEN|SECRET)$/
+const FIXTURE_KEY_PREFIXES = new Set([
+  'API', 'ACCESS', 'SECRET', 'PRIVATE', 'SIGNING', 'CLIENT', 'ENCRYPTION',
+  'APP', 'MASTER', 'SESSION', 'AUTH', 'JWT', 'SSH', 'GPG',
+])
+const FIXTURE_COMPOUND_KEY = /^(?:API|ACCESS|SECRET|PRIVATE|SIGNING|CLIENT|ENCRYPTION|APP|MASTER|SESSION|AUTH|JWT)KEY$/
+const FIXTURE_CONFIG_SEGMENTS = new Set([
+  'ENABLE', 'ENABLED', 'DISABLE', 'DISABLED', 'MODE', 'TYPE', 'TIMEOUT', 'TTL',
+  'EXPIRE', 'EXPIRES', 'EXPIRY', 'MAX', 'MIN', 'COUNT', 'SIZE', 'LENGTH', 'URL', 'URI', 'PATH', 'HOST', 'PORT',
+  'NAME', 'VERSION', 'PREFIX', 'HEADER', 'FIELD',
+])
+
+function sensitiveFixtureKey(name: string): boolean {
+  const segments = name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean)
+  if (segments.some(segment => FIXTURE_CONFIG_SEGMENTS.has(segment))) return false
+  if (segments.some(segment => FIXTURE_SECRET_SEGMENTS.has(segment) || FIXTURE_SECRET_SUFFIX.test(segment))) {
+    return true
+  }
+  return (segments.includes('KEY') && segments.some(segment => FIXTURE_KEY_PREFIXES.has(segment)))
+    || segments.some(segment => FIXTURE_COMPOUND_KEY.test(segment))
+}
+
+function draftValue(value: unknown, redact: Redactor['text'], key?: string): unknown {
+  if (value === null || typeof value === 'boolean') return value
+  if (key !== undefined && sensitiveFixtureKey(key)) return FIXTURE_PLACEHOLDER
+  if (typeof value === 'string' || typeof value === 'number') {
+    const original = String(value)
+    return redact(original, original.length) === original ? value : FIXTURE_PLACEHOLDER
+  }
+  if (Array.isArray(value)) return value.map(item => draftValue(item, redact))
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => {
+      const safeName = redact(name, name.length)
+      return [safeName, safeName === name ? draftValue(item, redact, name) : FIXTURE_PLACEHOLDER]
+    }))
+  }
+  return value
+}
+
 export function draftFixtures(scenario: string, entries: readonly UnmatchedForDraft[], maxFixtures = 20,
   resolve?: (entry: DraftSourceEntry) => FixtureSource | undefined, options: DraftOptions = {}): FixtureDraft {
   const sameOrigin: UnmatchedForDraft[] = []
@@ -67,6 +114,8 @@ export function draftFixtures(scenario: string, entries: readonly UnmatchedForDr
   const sorted = [...sameOrigin].sort((a, b) => b.count - a.count || compareKey(a, b))
   const kept = sorted.slice(0, Math.max(0, maxFixtures))
   const omitted = sorted.length - kept.length
+  const { redact } = options
+  const safeValue = (value: unknown) => redact === undefined ? value : draftValue(value, redact)
   const shapeHints: FixtureShapeHint[] = []
   const draft = (entry: UnmatchedForDraft): HttpFixture => {
     const source = resolve?.({ method: entry.method.toUpperCase(), path: entry.path })
@@ -74,7 +123,8 @@ export function draftFixtures(scenario: string, entries: readonly UnmatchedForDr
       shapeHints.push({
         method: entry.method.toUpperCase(), path: entry.path,
         ...(entry.origin === undefined ? {} : { origin: entry.origin }),
-        shape: source.shapeHint.shape, provenance: source.shapeHint.provenance,
+        shape: safeValue(source.shapeHint.shape),
+        provenance: redact?.(source.shapeHint.provenance) ?? source.shapeHint.provenance,
       })
     }
     const hit = source !== undefined && 'body' in source ? source : undefined
@@ -82,10 +132,9 @@ export function draftFixtures(scenario: string, entries: readonly UnmatchedForDr
       ...(entry.origin === undefined ? {} : { origin: entry.origin }),
       method: entry.method.toUpperCase(),
       path: entry.path,
-      ...(entry.queryKeys.length ? { query: Object.fromEntries(entry.queryKeys.map(key => [key, ''])) } : {}),
-      response: { status: 200, body: hit === undefined ? FIXTURE_PLACEHOLDER : hit.body },
-      provenance: hit?.provenance
-        ?? 'Drafted from an observed unmatched request; describe the real data source here',
+      response: { status: 200, body: hit === undefined ? FIXTURE_PLACEHOLDER : safeValue(hit.body) },
+      provenance: hit === undefined ? 'Drafted from an observed unmatched request; describe the real data source here'
+        : redact?.(hit.provenance) ?? hit.provenance,
     }
   }
   const fixtures: HttpFixture[] = [...kept.map(draft), ...remoteSorted.map(draft)]
@@ -94,13 +143,15 @@ export function draftFixtures(scenario: string, entries: readonly UnmatchedForDr
     ...(businessPaths.length ? { businessPaths } : {}),
     http: fixtures,
     // 场景已声明 envelope 时原样带上（Agent 粘贴片段即还原包装语义）；fixture body 保持 data 占位。
-    ...(options.envelope === undefined ? {} : { envelope: options.envelope }),
+    ...(options.envelope === undefined ? {} : { envelope: safeValue(options.envelope) }),
   }
   return {
     scenario,
     fixtures,
     ...(shapeHints.length ? { shapeHints } : {}),
-    ...(options.envelopeHint === undefined ? {} : { envelopeHint: options.envelopeHint }),
+    ...(options.envelopeHint === undefined ? {} : {
+      envelopeHint: { ...options.envelopeHint, template: safeValue(options.envelopeHint.template) },
+    }),
     ...(options.contexts === undefined ? {} : { contexts: options.contexts }),
     ...(options.contextLimited === undefined ? {} : { contextLimited: options.contextLimited }),
     businessPaths,

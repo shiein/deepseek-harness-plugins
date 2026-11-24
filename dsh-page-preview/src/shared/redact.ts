@@ -116,7 +116,8 @@ export async function collectEnvPairs(root: string): Promise<EnvPair[]> {
 }
 
 /** 敏感键名按分段判定（BYPASS 不含 PASS 段）；段以 KEY/TOKEN/SECRET 结尾（APIKEY、ACCESSTOKEN）同样敏感。 */
-const SECRET_SEGMENTS = new Set(['KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'PWD', 'AUTH', 'COOKIE',
+const SECRET_SEGMENTS = new Set(['KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'PWD',
+  'AUTH', 'AUTHORIZATION', 'COOKIE',
   'SESSION', 'PRIVATE', 'CREDENTIAL', 'CREDENTIALS', 'DSN', 'SALT', 'SIGNATURE'])
 const SECRET_SUFFIX = /(KEY|TOKEN|SECRET)$/
 /** 键名同时带配置语义段时（AUTH_ENABLED、SESSION_TIMEOUT、TOKEN_TTL）值是开关/数值/地址，不按键名判密钥。 */
@@ -127,7 +128,7 @@ const BOOLEAN_VALUE = /^(true|false)$/i
 const NUMBER_VALUE = /^-?[\d.]+$/
 const PLAIN_ORIGIN = /^[a-z][a-z0-9+.-]*:\/\/[a-z0-9._~-]+(:\d{1,5})?\/?$/i
 
-function sensitiveName(name: string): boolean {
+export function sensitiveName(name: string): boolean {
   const segments = name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean)
   if (segments.some(segment => CONFIG_SEGMENTS.has(segment))) return false
   return segments.some(segment => SECRET_SEGMENTS.has(segment) || SECRET_SUFFIX.test(segment))

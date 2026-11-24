@@ -31,6 +31,10 @@ const styles = {
   dismiss: { flex: 'none', padding: '0 4px', border: 'none', background: 'none', cursor: 'pointer', font: 'inherit',
     color: 'inherit', lineHeight: '1.2' },
   row: { display: 'flex', gap: '6px', alignItems: 'baseline', flexWrap: 'wrap' as const },
+  select: { marginTop: '4px', color: 'var(--dsw-alias-label-primary, inherit)',
+    background: 'var(--dsw-alias-button-elevated-fill, transparent)',
+    border: '1px solid var(--dsw-alias-border-l2, #8886)', borderRadius: 'var(--dsw-radius-sm, 3px)',
+    padding: '1px 6px', fontSize: '12px' },
   diag: { margin: '8px 0 0', paddingLeft: '16px', color: 'var(--dsw-alias-state-warn-tertiary, #a80)' },
 } as const
 
@@ -66,15 +70,37 @@ export function PreviewPanel(props: PreviewPanelProps) {
   }
   useEffect(() => {
     const control = new AbortController()
-    const stream = props.follow(control.signal)
+    const delays = [500, 1000, 2000, 4000, 8000]
+    let attempt = 0
+    let disconnected = false
     void (async () => {
-      try {
-        for await (const item of stream) if (!control.signal.aborted) setSnapshot(item)
-      } catch (failure) {
-        if (!control.signal.aborted) setError(String(failure))
+      while (!control.signal.aborted) {
+        const stream = props.follow(control.signal)
+        try {
+          for await (const item of stream) {
+            if (control.signal.aborted) break
+            attempt = 0
+            if (disconnected) { disconnected = false; setError(undefined) }
+            setSnapshot(item)
+          }
+        } catch (failure) {
+          if (control.signal.aborted) break
+          disconnected = true
+          setError(t('reconnecting') + ': ' + String(failure))
+        } finally {
+          stream.dispose()
+        }
+        if (control.signal.aborted) break
+        const wait = delays[Math.min(attempt, delays.length - 1)]!
+        attempt += 1
+        await new Promise<void>(resolve => {
+          const onAbort = () => { clearTimeout(timer); resolve() }
+          const timer = setTimeout(() => { control.signal.removeEventListener('abort', onAbort); resolve() }, wait)
+          control.signal.addEventListener('abort', onAbort, { once: true })
+        })
       }
     })()
-    return () => { control.abort(); stream.dispose() }
+    return () => { control.abort() }
   }, [props.follow])
   const e = createElement
   return e('section', { style: styles.section },
@@ -90,7 +116,12 @@ export function PreviewPanel(props: PreviewPanelProps) {
             e('strong', null, preview.targetId),
             e('span', { style: styles.badge, title: preview.state }, badgeLabel(t, 'state', preview.state)),
             e('span', { style: styles.badge, title: preview.freshness }, badgeLabel(t, 'freshness', preview.freshness))),
-          e('div', { style: styles.meta }, [preview.projectId, preview.scope, preview.strategy, readinessLabel(preview)].join(' · ') + (preview.scenario === undefined ? '' : ' · ' + preview.scenario)),
+          e('div', { style: styles.meta }, [preview.projectId, preview.scope, preview.strategy, readinessLabel(preview),
+            preview.readiness.targetMounted.mountSignal === undefined ? undefined
+              : t('mount.' + preview.readiness.targetMounted.mountSignal),
+            preview.scenario === undefined ? t('scenario.none') : `${t('scenario.active')} ${preview.scenario}`,
+            preview.verification === undefined ? undefined : t('verification.' + preview.verification),
+          ].filter(value => value !== undefined).join(' · ')),
           preview.url === undefined ? null : e('div', { style: styles.row },
             e('button', {
               style: styles.link,
@@ -100,15 +131,50 @@ export function PreviewPanel(props: PreviewPanelProps) {
             e('button', { style: styles.button, onClick: () => copyUrl(preview.url!) },
               copiedUrl === preview.url ? t('copied') : t('copyUrl'))),
           preview.capabilityGaps.length === 0 ? null : e('div', { style: styles.meta }, preview.capabilityGaps.map(gap => gap.name + ':' + gap.status).join(', ')),
-          stoppable(preview.state) ? e('button', {
-            style: styles.button,
-            disabled: pending.has('stop:' + preview.previewId),
-            'aria-busy': pending.has('stop:' + preview.previewId),
-            onClick: () => run('stop:' + preview.previewId, async () => {
-              const reply = await props.stop(preview.previewId)
-              return reply.ok ? undefined : reply.error.message
-            }),
-          }, pending.has('stop:' + preview.previewId) ? t('working') : t('stop')) : null))),
+          e('div', { style: styles.row },
+            ['reachable', 'ready', 'degraded', 'updating'].includes(preview.state) ? e('button', {
+              style: styles.button,
+              disabled: pending.has('refresh:' + preview.previewId),
+              'aria-busy': pending.has('refresh:' + preview.previewId),
+              onClick: () => run('refresh:' + preview.previewId, async () => {
+                const reply = await props.refresh({ previewId: preview.previewId })
+                if (!reply.ok) return reply.error.message
+                return reply.value.status === 'ok' ? undefined
+                  : reply.value.diagnostics.map(value => value.message).join('; ') || reply.value.status
+              }),
+            }, pending.has('refresh:' + preview.previewId) ? t('working') : t('refresh')) : null,
+            preview.availableScenarios?.length && ['reachable', 'ready', 'degraded', 'updating'].includes(preview.state)
+              ? e('select', {
+                  style: styles.select,
+                  value: preview.scenario ?? '',
+                  disabled: pending.has('refresh:' + preview.previewId),
+                  'aria-label': t('switchScenario'),
+                  onChange: (event: unknown) => {
+                    const scenario = (event as { target?: { value?: string } }).target?.value
+                    if (!scenario) return
+                    run('refresh:' + preview.previewId, async () => {
+                      const reply = await props.refresh({ previewId: preview.previewId, scenario })
+                      if (!reply.ok) return reply.error.message
+                      return reply.value.status === 'ok' ? undefined
+                        : reply.value.diagnostics.map(value => value.message).join('; ') || reply.value.status
+                    })
+                  },
+                },
+                preview.scenario === undefined
+                  ? [e('option', { key: '', value: '', disabled: true }, t('switchScenario')),
+                     ...preview.availableScenarios.map(name => e('option', { key: name, value: name }, name))]
+                  : preview.availableScenarios.map(name => e('option', { key: name, value: name }, name)))
+              : null,
+            stoppable(preview.state) ? e('button', {
+              style: styles.button,
+              disabled: pending.has('stop:' + preview.previewId),
+              'aria-busy': pending.has('stop:' + preview.previewId),
+              onClick: () => run('stop:' + preview.previewId, async () => {
+                const reply = await props.stop(preview.previewId)
+                return reply.ok ? undefined : reply.error.message
+              }),
+            }, pending.has('stop:' + preview.previewId) ? t('working')
+              : preview.state === 'cleanup_failed' ? t('retryStop') : t('stop')) : null)))),
     // R5-6（D2-b）：建议候选可一键打开——点击即授权意图；执行指纹审批仍在 Host
     // 经官方弹窗请求，面板不建第二份事实源也不跳过审批。
     snapshot === undefined ? null : (() => {
@@ -141,7 +207,9 @@ export function PreviewPanel(props: PreviewPanelProps) {
         e('div', { style: styles.header }, t('unmatched')),
         e('ul', { style: styles.diag }, rows.map((row, index) => e('li', { key: index },
           e('span', null, row.label),
-          e('span', { style: styles.badge }, '×' + row.count)))),
+          e('span', { style: styles.badge }, '×' + row.count),
+          row.items?.length ? e('ul', { style: styles.meta }, row.items.map((item, idx) =>
+            e('li', { key: idx }, item.method + ' ' + item.path + ' (×' + item.count + ')'))) : null))),
         e('div', { style: styles.meta }, t('unmatchedHint')))
     })(),
     snapshot === undefined || snapshot.diagnostics.length === 0 ? null : e('div', null,

@@ -17,18 +17,20 @@ export function writeScenarioTool(registry: SessionRegistry) {
       'not contain the fixture-draft placeholder; existing scenario names are never overwritten in ' +
       'create mode. In merge mode the named scenario must exist: http fixtures are appended only when ' +
       'their (method, origin, path, query) key is new, other scenario-level fields may only be added, ' +
-      'and any conflict rejects the whole write with the conflicting keys listed. With applyTo set to ' +
+      'In upsert mode it creates the scenario if absent, else unions businessPaths, updates given fields, ' +
+      'and replaces matching fixtures in place while appending new ones. With applyTo set to ' +
       'a previewId, a successful write is applied in place through the existing refresh+scenario path. ' +
       'The user confirms the write in the DSH approval dialog; an existing config file is backed up first.',
     parameters: {
       projectId: { type: 'string', required: true },
       scenario: { type: 'string', required: true,
-        description: 'Scenario name to create or, in merge mode, the existing scenario to append to.' },
+        description: 'Scenario name to create or, in merge/upsert mode, the scenario to update.' },
       definition: { type: 'object', required: true, additionalProperties: true,
         description: 'The scenario object (businessPaths, http fixtures, identity, etc.) with real data filled in.' },
-      mode: { type: 'string', enum: ['create', 'merge'],
+      mode: { type: 'string', enum: ['create', 'merge', 'upsert'],
         description: "create (default): write a new scenario, existing names are refused; " +
-          "merge: append new fixture keys and new scenario-level fields to an existing scenario." },
+          "merge: append new fixture keys and new scenario-level fields to an existing scenario; " +
+          "upsert: create if missing, else update fields and replace/append matching fixtures." },
       applyTo: { type: 'string',
         description: 'Optional previewId to switch to the written scenario in place after a successful write.' },
     },

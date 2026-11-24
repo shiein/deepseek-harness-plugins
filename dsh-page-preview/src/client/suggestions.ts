@@ -25,6 +25,7 @@ export interface SuggestionRow {
 export interface UnmatchedRow {
   label: string
   count: number
+  items?: PanelPreview['unmatchedItems']
 }
 
 /** 建议行：projectId · selector 摘要 + 关系链 + 证据强度 + 来源标签；未分析过返回空数组。 */
@@ -45,6 +46,7 @@ export function unmatchedRows(previews: readonly PanelPreview[]): UnmatchedRow[]
       label: preview.targetId
         + (preview.unmatchedDropped ? ' (+' + preview.unmatchedDropped + ' dropped)' : ''),
       count: preview.unmatchedCount ?? 0,
+      ...(preview.unmatchedItems?.length ? { items: preview.unmatchedItems } : {}),
     }))
     .sort((a, b) => b.count - a.count)
 }

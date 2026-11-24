@@ -1066,12 +1066,26 @@ test('write_scenario merge appends new keys; applyTo reports honest outcomes', o
   assert.equal(unowned.status, 'ok')
   assert.equal(unowned.applied?.status, 'not_found')
   assert.equal(JSON.parse(await readFile(file, 'utf8')).projects[0].scenarios.guest.http.length, 3)
+
+  // upsert 替换匹配键的既有 fixture 并追加新 fixture。
+  const upserted = await f.writeScenario({ projectId: 'site', scenario: 'guest', mode: 'upsert',
+    definition: {
+      businessPaths: ['/api/**', '/rpc/**'],
+      http: [
+        { method: 'GET', path: '/api/a', response: { status: 200, body: { a: 99 } } },
+        { method: 'GET', path: '/rpc/info', response: { status: 200, body: { v: 1 } } },
+      ],
+    } })
+  assert.equal(upserted.status, 'ok')
+  const updated = JSON.parse(await readFile(file, 'utf8')).projects[0].scenarios.guest
+  assert.deepEqual(updated.businessPaths, ['/api/**', '/rpc/**'])
+  assert.equal(updated.http.length, 4)
+  assert.deepEqual(updated.http[0].response.body, { a: 99 })
   await f.stop({ previewId })
 })
 
-// R6-F3：hint 按稳定阈值分支——低于 UNMATCHED_SETTLE_MS 建议稍后复查，达到阈值
-// 改为可执行的填表+写回步骤（带 mode:'merge' 与 applyTo）。用注入时间源，不真等。
-test('unmatched hint switches from re-check to fill-and-write at the settle threshold', options, async t => {
+// 背景仍有请求才需要复查，两种阶段都带写回入口。用注入时间源，无需实际等待。
+test('unmatched hint offers write-back directly with optional re-check before the settle threshold', options, async t => {
   let now = Date.now()
   const f = await setup(t, undefined, { now: () => now })
   const configured = {
@@ -1098,11 +1112,13 @@ test('unmatched hint switches from re-check to fill-and-write at the settle thre
   now = lastNew + 500
   const soon = await f.status({ previewId, detail: true })
   assert.equal(soon.unmatched!.sinceLastNewEntryMs, 500)
-  assert.match(soon.unmatched!.hint!, /page_preview_status again shortly/)
+  assert.match(soon.unmatched!.hint!, /page_preview_status once more/)
+  assert.match(soon.unmatched!.hint!, /page_preview_write_scenario.*mode 'merge'/)
 
   now = lastNew + 2500
   const settled = await f.status({ previewId, detail: true })
   assert.equal(settled.unmatched!.sinceLastNewEntryMs, 2500)
+  assert.doesNotMatch(settled.unmatched!.hint!, /page_preview_status once more/)
   assert.match(settled.unmatched!.hint!, /page_preview_write_scenario/)
   assert.match(settled.unmatched!.hint!, /mode 'merge'/)
   assert.ok(settled.unmatched!.hint!.includes("applyTo '" + previewId + "'"))

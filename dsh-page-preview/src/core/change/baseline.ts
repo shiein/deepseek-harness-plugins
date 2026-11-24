@@ -67,8 +67,12 @@ interface ScanResult {
   truncated: boolean
 }
 
-/** 有界目录遍历：点号项不索引（与 scanProjectFiles 一致），.gitignore 例外以加载嵌套规则。 */
-async function scanWorkspace(root: string, matcher: IgnoreMatcher, deadline: number): Promise<ScanResult> {
+const STAT_BATCH = 64
+
+/** 有界目录遍历：点号项不索引（与 scanProjectFiles 一致），子目录 .gitignore 例外以加载嵌套规则。 */
+async function scanWorkspace(
+  root: string, matcher: IgnoreMatcher, deadline: number, collectIgnores = true,
+): Promise<ScanResult> {
   const entries = new Map<string, FileMeta>()
   const notes: string[] = []
   const note = (text: string) => { if (notes.length < 8) notes.push(text) }
@@ -85,27 +89,36 @@ async function scanWorkspace(root: string, matcher: IgnoreMatcher, deadline: num
       note('Unable to scan ' + (directory || '.') + ': ' + (error instanceof Error ? error.message : String(error)))
       continue
     }
-    const gitignore = dirents.find(entry => entry.file && entry.name === '.gitignore')
+    const gitignore = collectIgnores && directory !== ''
+      ? dirents.find(entry => entry.file && entry.name === '.gitignore') : undefined
     if (gitignore) {
-      const label = directory ? directory + '/.gitignore' : '.gitignore'
+      const label = directory + '/.gitignore'
       try { matcher.addRules(directory, label, await readFile(join(root, label), 'utf8')) }
       catch (error) {
         note('Unable to read ' + label + ': ' + (error instanceof Error ? error.message : String(error)))
       }
     }
+    const files: string[] = []
     for (const entry of dirents) {
       if (entry.name.startsWith('.')) continue
       const rel = directory ? directory + '/' + entry.name : entry.name
       if (matcher.ignores(rel, entry.dir)) continue
       if (entry.dir) directories.push(rel)
-      else if (entry.file) {
+      else if (entry.file) files.push(rel)
+    }
+    for (let index = 0; index < files.length; index += STAT_BATCH) {
+      if (Date.now() > deadline) { truncated = true; break }
+      const batch = files.slice(index, index + STAT_BATCH)
+      const results = await Promise.all(batch.map(async rel => {
         try {
           const info = await stat(join(root, rel))
-          entries.set(rel, { size: info.size, mtimeMs: info.mtimeMs, ino: info.ino })
+          return { rel, meta: { size: info.size, mtimeMs: info.mtimeMs, ino: info.ino } }
         } catch (error) {
           note('Unable to stat ' + rel + ': ' + (error instanceof Error ? error.message : String(error)))
+          return undefined
         }
-      }
+      }))
+      for (const item of results) if (item) entries.set(item.rel, item.meta)
     }
   }
   return { entries, notes, truncated }
@@ -154,7 +167,7 @@ export interface DiffOutcome {
  */
 export async function diffBaseline(baseline: Baseline, agentConfirmed: ReadonlySet<string>): Promise<DiffOutcome> {
   const deadline = Date.now() + DEFAULT_TIME_BUDGET_MS
-  const scan = await scanWorkspace(baseline.workspaceRoot, baseline.matcher, deadline)
+  const scan = await scanWorkspace(baseline.workspaceRoot, baseline.matcher, deadline, false)
   const degraded = [
     ...(scan.truncated ? ['Diff rescan exceeded its ' + DEFAULT_TIME_BUDGET_MS
       + 'ms budget; some workspace changes may be missing'] : []),

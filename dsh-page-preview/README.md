@@ -21,17 +21,18 @@
 | `page_preview_open` | 按文件选择器、路由、已注册目标 ID 或同源 URL 打开或复用预览 |
 | `page_preview_status` | 查看预览状态；`detail: true` 时返回计划、能力表、未命中请求列表和 fixture 草稿 |
 | `page_preview_refresh` | 重新编译或切换场景 |
+| `page_preview_write_scenario` | 经用户审批将场景写回 `page-preview.config.json`（支持 `create` / `merge` / `upsert` 及 `applyTo`） |
 | `page_preview_capture` | 采集当前画面（当前返回 `unsupported`） |
 | `page_preview_stop` | 停止自己打开的预览；`recover: true` 时按账本回收残留进程 |
 
-右侧边栏有一个预览面板，展示预览列表、诊断和建议打开的页面。
+右侧边栏有一个预览面板，展示预览列表、未命中请求明细、诊断和建议打开的页面，并支持刷新、场景切换、清理重试与断线重连。
 
 ## 安全与数据边界
 
 - **会执行代码的配置项要先经用户审批**：项目命令、环境变量、setup、handlers、自动生成的 setup、应用根下的 `vite.config.*` / `vue.config.*` 都计入执行指纹，变化后需要重新审批。构建配置 import 的其他文件不在指纹内。
-- **默认只用 Mock**：没有命中 fixture 的业务请求返回 `unmatched_request`（404），不会转发到真实后端；`status` 会给出按 method、origin、path 聚合的未命中列表和 fixture 草稿，填入真实数据后即可使用。
+- **默认只用 Mock**：没有命中 fixture 的业务请求返回 `unmatched_request`（404），不会转发到真实后端；`status` 会给出按 method、origin、path 聚合的未命中列表和 fixture 草稿，填入真实数据后即可使用；支持项目级 `defaultScenario`、fixture `response.delay` 延迟以及 `application/x-www-form-urlencoded` 请求体解析。
 - **不改目标项目**：不修改业务源码、`package.json`、锁文件和构建配置，也不代为安装依赖；`.env*` 不读不写。
-- 项目自带的 Mock（vite-plugin-mock、mockjs、msw）只做只读识别，不执行。
+- 项目自带的 Mock 按只读边界识别并报告 `project_mock_detected`：Vite 预览中位于 `mockPath` 内且可只读解析的 `vite-plugin-mock` 会在临时副本上服务于 `businessPaths` 之外的路径，检出 MSW 时放行其 Service Worker 注册，不直接执行业务源码目录中的 Mock 模块。
 
 ## 安装
 

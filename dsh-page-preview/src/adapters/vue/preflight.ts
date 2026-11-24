@@ -121,7 +121,9 @@ export async function probeVue(ctx: AdapterContext, host: Host, target?: Resolve
   const requested = target?.selector
   const selector = requested?.kind === 'registered' ? ctx.config.project.targets?.find(value => value.id === requested.id)?.selector : requested
   const hostCandidate = info?.buildHost.kind === host || info?.buildHost.kind === 'unknown' && ctx.profile.buildTools.some(value => value.value.name === host)
-  const matched = info !== undefined && hostCandidate === true && !info.isolationExcluded.length && (!selector || selector.kind === 'file' && moduleFile(selector.path))
+  const validSelector = !selector || selector.kind === 'route'
+    || (selector.kind === 'file' && moduleFile(selector.path))
+  const matched = info !== undefined && hostCandidate === true && !info.isolationExcluded.length && validSelector
   return { matched, capabilities: vueCandidateCapabilities(), evidence: matched ? [...info.evidence, 'Candidate module only; no project configuration or source was executed'] : [], limits: [...(info?.unresolved ?? []), 'Framework helper evidence does not establish this public execution path'] }
 }
 export async function discoverVue(ctx: AdapterContext): Promise<DiscoverResult> {

@@ -27,7 +27,7 @@ import type {
 } from '../shared/contracts.ts'
 import { DiagnosticCode } from '../shared/errors.ts'
 import { collectEnvPairs, createRedactor, envSecrets } from '../shared/redact.ts'
-import { ConfigLoadError } from '../shared/config/loader.ts'
+import { ConfigLoadError, loadEffectiveConfigs } from '../shared/config/loader.ts'
 import { writeSetupDraft } from '../shared/config/drafts.ts'
 import type { EffectiveProjectConfig } from '../shared/config/loader.ts'
 import { previewPlanSchema } from '../shared/plan-schema.ts'
@@ -54,7 +54,14 @@ import type { ImpactResult } from '../core/impact/types.ts'
 import { DEFAULT_TRIGGER_MODE, decideTrigger } from './trigger.ts'
 import type { TriggerMode } from './trigger.ts'
 import { MISSING_DATA_DIR_HINT, RunnerClientError } from './runner-client.ts'
-import type { PanelOpenReply, PanelPreview, PanelSnapshot, PanelStopReply } from '../client/protocol.ts'
+import type {
+  PanelOpenReply,
+  PanelPreview,
+  PanelRefreshReply,
+  PanelRefreshRequest,
+  PanelSnapshot,
+  PanelStopReply,
+} from '../client/protocol.ts'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { PreviewInspection, RunnerClient } from './runner-client.ts'
@@ -64,32 +71,43 @@ import { scenarioConfigSchema } from '../shared/config/schema.ts'
 import { RunnerConnectionError } from './runner-connection.ts'
 import { truncateDiagnostics, visiblePlan } from './output.ts'
 import { canonicalPath } from '../shared/config/paths.ts'
-import type { RunnerReply, RunnerToHost } from '../shared/ipc.ts'
+import type { RunnerReply, RunnerSnapshot, RunnerToHost } from '../shared/ipc.ts'
+import type { OpenTiming } from '../shared/preview-timing.ts'
 import { draftFixtures } from '../scenario/fixture-draft.ts'
 import type { UnmatchedForDraft } from '../scenario/fixture-draft.ts'
 import { collectFixtureSources } from '../scenario/fixture-sources.ts'
 import { collectEnvelopeHint } from '../scenario/envelope-hint.ts'
 import { collectCallSiteContext } from '../scenario/call-site-context.ts'
+import { scanProjectFiles } from '../shared/project-files.ts'
 import type { UnmatchedRequestEntry } from '../shared/unmatched.ts'
 import { postMountPageText } from './page-text.ts'
 
 /** 受理后默认等待到就绪或 15 秒（可取消）；Runner 初始化/IPC 自身另有截止时间，未到目标就绪不能标 ready。 */
 export const OPEN_WAIT_MS = 15_000
 /**
- * 有 Client 在跟随调用者会话时（DSH 侧边栏会自动在 Browser 页签加载新预览），open 额外等待真实挂载证据的上限。
- * 2026-11-03 实机：没有浏览器证据时 Agent 自己开 Chrome 截图验证，单次耗时约 60 秒。
+ * 浏览器在服务可达时立即打开。公开调用短等挂载或明确失败，超窗后由面板继续接收状态。
  */
-export const BROWSER_MOUNT_WAIT_MS = 20_000
+export const BROWSER_MOUNT_WAIT_MS = 5_000
 /** 面板一键打开的审批+启动总上限：审批对话框值得等满，但 open 不能无限挂起（R5-F5）。 */
 export const PANEL_OPEN_BOUND_MS = 10 * 60_000
 /** 仍在启动途中的状态；reachable 仅在配置了目标断言时才视为仍在向就绪推进。 */
 const STARTING_STATES: readonly SessionState[] = ['preparing', 'starting', 'updating']
+const BROWSER_STATES: readonly SessionState[] = ['reachable', 'ready', 'degraded', 'updating']
+
+function browserPending(snapshot: RunnerSnapshot, isolated: boolean): boolean {
+  const { documentLoaded, targetMounted } = snapshot.readiness
+  if (!BROWSER_STATES.includes(snapshot.state) || documentLoaded.status === 'failed') return false
+  if (targetMounted.status === 'failed' || targetMounted.mountSignal === 'failed') return false
+  return documentLoaded.status === 'unverified'
+    || (isolated && targetMounted.status === 'unverified' && targetMounted.mountSignal !== 'observed')
+}
 const id = z.string().min(1).refine(value => value.trim().length > 0)
 const openRequestSchema = z.strictObject({
   projectId: id.exactOptional(), target: z.unknown().exactOptional(),
   scope: z.enum(['page', 'component', 'shell']).exactOptional(),
   strategy: z.enum(['auto', 'static', 'isolated', 'project', 'attach']).default('auto'),
   scenario: id.exactOptional(),
+  waitFor: z.enum(['mount', 'assertions']).default('assertions'),
   viewport: z.strictObject({ width: z.int().positive(), height: z.int().positive() }).exactOptional(),
   requirements: z.array(z.enum(['isolated-target', 'mock-only'])).exactOptional(),
   writeSetupTo: id.exactOptional(),
@@ -101,6 +119,7 @@ export interface OpenArgs {
   scope?: string
   strategy?: string
   scenario?: string
+  waitFor?: 'mount' | 'assertions'
   viewport?: { width: number; height: number }
   requirements?: string[]
   writeSetupTo?: string
@@ -127,8 +146,10 @@ export interface SessionRegistryOptions {
   requestSetupWrite?: (caller: PreviewCaller, projectId: string, file: string, exec: ToolRunContext)
     => Promise<SetupWriteOutcome>
   /** R5-1a：场景写回 page-preview.config.json 的官方用户确认；未提供时如实不写入。 */
-  requestConfigWrite?: (caller: PreviewCaller, projectId: string, scenario: string, exec: ToolRunContext)
-    => Promise<SetupWriteOutcome>
+  requestConfigWrite?: (
+    caller: PreviewCaller, projectId: string, scenario: string, exec: ToolRunContext,
+    mode?: 'create' | 'merge' | 'upsert',
+  ) => Promise<SetupWriteOutcome>
   /** R3-4：open 省略 target 与 status 省略 previewId 时的本轮候选来源；缺省则退回 discover。 */
   impact?: ImpactService
   /** R3-5：轮次结束后的触发模式（插件配置 trigger，默认 smart）。 */
@@ -157,14 +178,14 @@ interface ApprovalGrant {
  */
 const UNMATCHED_SETTLE_MS = 2000
 
-/** 稳定信号 hint：未达阈值建议稍后复查；达到阈值给出可执行的下一步（AGENTS §5 第 12 条）。 */
-function unmatchedStabilityHint(sinceLastNewEntryMs: number, previewId: string): string {
-  if (sinceLastNewEntryMs < UNMATCHED_SETTLE_MS) {
-    return 'Call page_preview_status again shortly; fill fixtures once sinceLastNewEntryMs '
-      + 'stops growing so first-screen requests have all been observed'
-  }
-  return "Fill fixtureDraft.configSnippet now and call page_preview_write_scenario with "
-    + "mode 'merge' and applyTo '" + previewId + "' to append and apply the fixtures in place"
+/** 可选复查提示与当前可执行的写回步骤。 */
+function unmatchedStabilityHint(sinceLastNewEntryMs: number, previewId: string, existingScene: boolean): string {
+  const mode = existingScene ? 'merge' : 'create'
+  const writeHint = `Fill fixtureDraft.configSnippet and call page_preview_write_scenario with mode '${mode}' `
+    + `and applyTo '${previewId}' to save and apply the fixtures in place`
+  if (sinceLastNewEntryMs >= UNMATCHED_SETTLE_MS) return writeHint
+  return 'If the first screen is still making requests, call page_preview_status once more with detail: true. '
+    + writeHint
 }
 
 /** not_found 的下一步按选择器形态给出（AGENTS §5 第 12 条：必须可执行）。 */
@@ -218,10 +239,15 @@ export class SessionRegistry {
   }
 
   async open(args: OpenArgs, exec: ToolRunContext): Promise<OpenResult> {
-    return this.openAttempt(args, exec, true)
+    const started = performance.now()
+    const timing: OpenTiming = { totalMs: 0 }
+    const result = await this.openAttempt(args, exec, timing)
+    timing.totalMs = Math.round(performance.now() - started)
+    return { ...result, timing }
   }
 
-  private async openAttempt(args: OpenArgs, exec: ToolRunContext, canRequestApproval: boolean, justApproved?: { fingerprint: string; hashes: Record<string, string> }): Promise<OpenResult> {
+  private async openAttempt(args: OpenArgs, exec: ToolRunContext, timing: OpenTiming): Promise<OpenResult> {
+    const preflightStarted = performance.now()
     const parsed = openRequestSchema.safeParse(args)
     if (!parsed.success) return { status: 'error', diagnostics: [diagnostic(DiagnosticCode.configInvalid, 'resolve', 'Invalid preview open arguments', 'Use one target selector, documented enums and positive integer viewport dimensions')] }
     const request = parsed.data
@@ -256,17 +282,19 @@ export class SessionRegistry {
           notFoundHint(selector!.kind))] }
       }
       const project = selectedProjects.find(value => value.config.project.id === resolved.target.projectId)!
+      const availableScenarios = Object.keys(project.config.project.scenarios ?? {}).slice(0, 10)
+      const scenarioChoices = availableScenarios.length ? { availableScenarios } : {}
       const target = { ...resolved.target, ...(request.scope === undefined ? {} : { scope: request.scope }) }
       const outcome = await buildPlan({ workspaceRoot: caller.workspaceRoot, ...project, target, strategy: request.strategy, adapters,
-        // 一次性授权门禁：刚批准的指纹或仍在运行的授权链覆盖；其余一律需要重新询问。
+        // 一次性授权门禁：仍在运行的授权链覆盖；其余一律需要重新询问。
         approvals: { isApproved: async (workspace, projectId, fingerprint) =>
-          fingerprint === justApproved?.fingerprint
-            || this.grants.get(this.grantKey(workspace, projectId, caller.ownerSessionId))?.fingerprint
-              === fingerprint },
+          this.grants.get(this.grantKey(workspace, projectId, caller.ownerSessionId))?.fingerprint
+            === fingerprint },
         ...(request.scenario === undefined ? {} : { scenario: request.scenario }),
         ...(request.viewport === undefined ? {} : { viewport: request.viewport }),
         ...(request.requirements === undefined ? {} : { requirements: request.requirements }),
       })
+      timing.preflightMs = (timing.preflightMs ?? 0) + Math.round(performance.now() - preflightStarted)
       if (outcome.kind === 'unsupported') {
         const diagnostics = [diagnostic(DiagnosticCode.unsupportedCapability, 'plan', outcome.reason, 'Remove the unsupported option or choose an implemented adapter; requirements were not relaxed'), ...(outcome.diagnostics ?? [])]
         const setupDraft = outcome.setupDraft === undefined ? undefined
@@ -274,94 +302,123 @@ export class SessionRegistry {
             request.writeSetupTo)
         return truncateDiagnostics({ status: 'unsupported', diagnostics, ...(setupDraft === undefined ? {} : { setupDraft }) })
       }
+      let plan: ReturnType<typeof previewPlanSchema.parse>
+      let approvedFingerprint: string | undefined
+      let planDiagnostics = outcome.diagnostics ?? []
+      const extraDiagnostics: Diagnostic[] = []
       if (outcome.kind === 'needs-configuration') {
         const approvalOnly = outcome.missing.length > 0
           && outcome.missing.every(value => value.code === DiagnosticCode.configChangedNeedsApproval)
         // 审批接缝随 dataDir 接通；缺失时如实说明是插件配置问题，而不是让 Agent 以为用户还没点批准。
-        if (approvalOnly && canRequestApproval && this.options.dataDir === undefined) {
+        if (approvalOnly && this.options.dataDir === undefined) {
           return { status: 'needs_configuration', diagnostics: [diagnostic(DiagnosticCode.configInvalid, 'config',
             'Execution approval cannot be requested because the plugin dataDir is not configured; nothing was started',
             MISSING_DATA_DIR_HINT)] }
         }
-        if (canRequestApproval && this.options.requestApproval && outcome.missing.length && outcome.missing.every(value => value.code === DiagnosticCode.configChangedNeedsApproval) && previewPlanSchema.safeParse(outcome.plan).success) {
+        const checkedPlan = approvalOnly && this.options.requestApproval
+          ? previewPlanSchema.safeParse(outcome.plan) : undefined
+        if (checkedPlan?.success) {
           const key = this.grantKey(caller.workspaceRoot, project.config.project.id, caller.ownerSessionId)
           if (this.options.fullAccess?.(exec)) {
             const appRoot = await resolveProjectPath(caller.workspaceRoot, project.config.project.root)
             const items = await collectExecutionItems(appRoot, project.config.project)
-            const generatedHash = outcome.plan?.generatedSetup?.hash
+            const generatedHash = checkedPlan.data.generatedSetup?.hash
             const grant = {
               fingerprint: executionFingerprint(items, generatedHash),
               hashes: executionComponentHashes(items, generatedHash),
             }
             this.grants.set(key, grant)
-            const result = await this.openAttempt(args, exec, false, grant)
-            return { ...result, diagnostics: [diagnostic(DiagnosticCode.approvedByPermission, 'config',
+            plan = checkedPlan.data
+            approvedFingerprint = grant.fingerprint
+            extraDiagnostics.push(diagnostic(DiagnosticCode.approvedByPermission, 'config',
               'Execution items were allowed by this session\'s full-access permission (Full access or Auto); '
                 + 'no approval dialog was shown', 'No action needed; switch the session to workspace-write to be '
-                + 'asked before project code runs'), ...result.diagnostics] }
+                + 'asked before project code runs'))
+          } else {
+            const previous = this.grants.get(key)?.hashes
+            const approvalStarted = performance.now()
+            const approval = await this.options.requestApproval!(caller, project.config, exec, previous,
+              checkedPlan.data.generatedSetup)
+              .finally(() => { timing.approvalMs = Math.round(performance.now() - approvalStarted) })
+            if (approval.outcome === 'approved') {
+              // 批准即登记会话级授权（与本次启动成败无关：用户批准的是这组执行项）。
+              this.grants.set(key, { fingerprint: approval.fingerprint, hashes: approval.hashes })
+              plan = checkedPlan.data
+              approvedFingerprint = approval.fingerprint
+            } else if (approval.policy === 'never') {
+              return { status: 'needs_configuration', diagnostics: [diagnostic(DiagnosticCode.configChangedNeedsApproval,
+                'config', 'The DSH approval policy of this session is "never" (for example the Full access permission '
+                  + 'preset), so the execution approval was rejected automatically; no project command was started',
+                'Ask the user to switch this session to a permission preset that asks for approval (for example '
+                  + '/permission workspace-write, or Auto), then retry page_preview_open; '
+                  + 'do not search for a workaround')] }
+            } else {
+              return { status: 'needs_configuration', diagnostics: [diagnostic(DiagnosticCode.configChangedNeedsApproval,
+                'config', 'Execution approval was ' + approval.outcome + '; no project command was started',
+                'Ask the user to approve the current execution items in the approval dialog, then retry '
+                  + 'page_preview_open; changes require a new grant')] }
+            }
           }
-          const previous = this.grants.get(key)?.hashes
-          const approval = await this.options.requestApproval(caller, project.config, exec, previous,
-            outcome.plan?.generatedSetup)
-          if (approval.outcome === 'approved') {
-            // 批准即登记会话级授权（与本次启动成败无关：用户批准的是这组执行项）。
-            this.grants.set(key, { fingerprint: approval.fingerprint, hashes: approval.hashes })
-            return this.openAttempt(args, exec, false, approval)
-          }
-          if (approval.policy === 'never') {
-            return { status: 'needs_configuration', diagnostics: [diagnostic(DiagnosticCode.configChangedNeedsApproval,
-              'config', 'The DSH approval policy of this session is "never" (for example the Full access permission '
-                + 'preset), so the execution approval was rejected automatically; no project command was started',
-              'Ask the user to switch this session to a permission preset that asks for approval (for example '
-                + '/permission workspace-write, or Auto), then retry page_preview_open; '
-                + 'do not search for a workaround')] }
-          }
-          return { status: 'needs_configuration', diagnostics: [diagnostic(DiagnosticCode.configChangedNeedsApproval, 'config', 'Execution approval was ' + approval.outcome + '; no project command was started', 'Ask the user to approve the current execution items in the approval dialog, then retry page_preview_open; changes require a new grant')] }
+        } else {
+          const diagnostics = [...project.config.diagnostics, ...outcome.missing]
+          // §6.9 v1.4：适配器给出待确认草稿时写入插件数据目录，结果只回传路径与分类项，不回传草稿原文。
+          if (outcome.setupDraft !== undefined) return truncateDiagnostics({ status: 'needs_configuration', diagnostics,
+            setupDraft: await this.draftSummary(outcome.setupDraft, diagnostics, caller, project.config.project, exec,
+              request.writeSetupTo) })
+          return truncateDiagnostics({ status: 'needs_configuration', diagnostics, ...scenarioChoices })
         }
-        const diagnostics = [...project.config.diagnostics, ...outcome.missing]
-        // §6.9 v1.4：适配器给出待确认草稿时写入插件数据目录，结果只回传路径与分类项，不回传草稿原文。
-        if (outcome.setupDraft !== undefined) return truncateDiagnostics({ status: 'needs_configuration', diagnostics,
-          setupDraft: await this.draftSummary(outcome.setupDraft, diagnostics, caller, project.config.project, exec,
-            request.writeSetupTo) })
-        return truncateDiagnostics({ status: 'needs_configuration', diagnostics })
+      } else {
+        plan = outcome.plan
+        approvedFingerprint = outcome.executionFingerprint
       }
       exec.signal.throwIfAborted()
+      const runnerStarted = performance.now()
       const previous = (await this.runner.inspect(caller.workspaceRoot, caller.ownerSessionId)).previews.find(value => !['failed', 'stopped'].includes(value.snapshot.state))
       exec.signal.throwIfAborted()
-      const reply = await this.runner.start(randomUUID(), outcome.plan, caller.workspaceRoot, {
+      const reply = await this.runner.start(randomUUID(), plan, caller.workspaceRoot, {
         ownerSessionId: caller.ownerSessionId, signal: exec.signal,
-        ...(outcome.executionFingerprint === undefined ? {} : { approvalFingerprint: outcome.executionFingerprint }),
+        ...(approvedFingerprint === undefined ? {} : { approvalFingerprint: approvedFingerprint }),
       })
+      timing.runnerRequestMs = Math.round(performance.now() - runnerStarted)
       if (reply.status !== 'ok' || !reply.previewId) return { status: reply.status === 'ok' ? 'error' : reply.status, diagnostics: [], ...(reply.occupant === undefined ? {} : { occupant: reply.occupant }) }
       const previewId = reply.previewId
+      const readinessStarted = performance.now()
       let inspection = await this.runner.inspect(caller.workspaceRoot, caller.ownerSessionId, previewId)
       const preview = inspection.previews[0]
       // reachable 只有配置了目标断言才可能继续到 ready/degraded；无断言计划的就绪上限即 reachable（§805）。
-      const awaitReady = outcome.plan.readiness.assertions !== undefined && outcome.plan.readiness.assertions.length > 0
-      const pending = (state: SessionState) => STARTING_STATES.includes(state) || (state === 'reachable' && awaitReady)
-      if (preview && pending(preview.snapshot.state)) {
+      const awaitReady = request.waitFor === 'assertions' && Boolean(plan.readiness.assertions?.length)
+      const pending = (snapshot: RunnerSnapshot) => STARTING_STATES.includes(snapshot.state)
+        || (snapshot.state === 'reachable' && awaitReady && snapshot.readiness.targetMounted.mountSignal !== 'failed')
+      if (preview && pending(preview.snapshot)) {
         await this.waitForStart(previewId, exec.signal, pending)
         inspection = await this.runner.inspect(caller.workspaceRoot, caller.ownerSessionId, previewId)
       }
       // 侧边栏 Browser 会自动加载可达的新预览：等真实文档/挂载证据，省去 Agent 自行截图验证。
       const reached = inspection.previews[0]
       const followed = (this.followers.get(caller.ownerSessionId) ?? 0) > 0
-      if (reached && followed
-        && ['reachable', 'ready', 'degraded'].includes(reached.snapshot.state)
-        && reached.snapshot.readiness.targetMounted.status === 'unverified') {
-        await this.waitForMount(previewId, exec.signal)
+      const isolated = reached?.plan.strategy === 'isolated'
+      if (reached && followed && (isolated || reached.plan.strategy === 'static')
+        && browserPending(reached.snapshot, isolated)) {
+        await this.waitForBrowser(previewId, exec.signal, isolated)
         inspection = await this.runner.inspect(caller.workspaceRoot, caller.ownerSessionId, previewId)
       }
+      timing.readinessWaitMs = Math.round(performance.now() - readinessStarted)
       const actual = inspection.previews[0]
       if (inspection.status !== 'ok' || !actual) return { status: inspection.status === 'ok' ? 'not_found' : inspection.status, diagnostics: [] }
       const summary = summarize(actual)
+      const { targetMounted } = summary.readiness
+      const mountFailed = targetMounted.mountSignal === 'failed'
       const restarted = previous && previous.snapshot.previewId !== previewId ? [diagnostic(DiagnosticCode.previewRestarted, 'start', 'The changed preview plan replaced the previously owned preview after cleanup', 'Do not rely on the previous document state: it is not preserved and the restart does not isolate browser identity or storage')] : []
       if (followed && ['reachable', 'ready', 'degraded'].includes(summary.state)
         && actual.snapshot.readiness.documentLoaded.status === 'proven') {
+        let mount = ''
+        if (mountFailed) mount = ' The page failed to mount.'
+        else if (isolated) mount = targetMounted.mountSignal === 'observed' || targetMounted.status === 'proven'
+          ? ' A browser mount signal was observed.' : ' The page mount is still unconfirmed.'
         restarted.push(diagnostic(DiagnosticCode.shownInSidebar, 'ready',
-          'The preview is open in the user\'s DSH sidebar Browser and its document has loaded',
-          'Done: tell the user the preview is in the sidebar and finish; do not wait, poll status, sleep or '
-            + 'take screenshots unless the user asks for verification'))
+          'The DSH sidebar Browser loaded the preview document.' + mount,
+          'Report the sidebar and the observed mount status, then finish. For an open request do not wait, '
+            + 'poll status, sleep, create fixtures or add assertions.'))
       }
       if (reply.takenOver !== undefined) {
         restarted.push(diagnostic(DiagnosticCode.previewTakenOver, 'start',
@@ -369,14 +426,14 @@ export class SessionRegistry {
             + 'session could open its preview', 'No action needed; that session now sees its preview as stopped'))
       }
       const diagnostics = [
-        ...project.config.diagnostics, ...(outcome.diagnostics ?? []),
-        ...actual.diagnostics.map(value => withPreview(value, previewId)), ...restarted,
+        ...project.config.diagnostics, ...planDiagnostics,
+        ...actual.diagnostics.map(value => withPreview(value, previewId)), ...restarted, ...extraDiagnostics,
       ]
       // R5-0a（决策 P-A）：pageText 只投影可证明为挂载后的观测；早于挂载信号的首帧空文本
       // 不再当作页面文本，如实标注"尚未采集到"，不增加等待。仅响应层注入 bootstrap 的策略
       // （static/isolated）才补 pending 提示——其余路径本不产生 pageText。
       const pageText = postMountPageText(actual.snapshot, actual.plan.strategy)
-      if (pageText === undefined && (actual.plan.strategy === 'static' || actual.plan.strategy === 'isolated')
+      if (pageText === undefined && !mountFailed && (actual.plan.strategy === 'static' || isolated)
         && !['failed', 'stopped', 'stopping', 'cleanup_failed'].includes(summary.state)) {
         diagnostics.unshift(withPreview(diagnostic(DiagnosticCode.pageTextPending, 'ready',
           'Page text has not been collected yet; observations earlier than the mounted signal '
@@ -389,55 +446,63 @@ export class SessionRegistry {
           previewId))
       }
       return truncateDiagnostics({
-        status: ['failed', 'cleanup_failed'].includes(summary.state) ? 'error' : 'ok',
+        status: mountFailed || ['failed', 'cleanup_failed'].includes(summary.state) ? 'error' : 'ok',
         preview: summary, diagnostics: diagnostics.reverse(),
+        ...(summary.scenario === undefined ? scenarioChoices : {}),
         ...(actual.diagnosticsTruncated ? { diagnosticsTruncated: actual.diagnosticsTruncated } : {}),
         ...(pageText ? { pageText: structuredClone(pageText) } : {}),
       })
     } catch (error) { return this.failure(error, 'start', exec) }
   }
 
-  /** 等待目标挂载证据落定（proven/failed）、文档失败或终态；窗口耗尽如实返回 unverified，不推断成功。 */
-  private waitForMount(previewId: string, signal: AbortSignal): Promise<void> {
+  /** 等待侧边栏的实际观察；窗口耗尽后保留当前证据。 */
+  private waitForBrowser(previewId: string, signal: AbortSignal, isolated: boolean): Promise<void> {
     return new Promise(resolve => {
-      let timer: ReturnType<typeof setTimeout>
+      let done = false
+      let timer: ReturnType<typeof setTimeout> | undefined
       const finish = () => {
-        clearTimeout(timer)
+        if (done) return
+        done = true
+        if (timer !== undefined) clearTimeout(timer)
         unsubscribe()
         signal.removeEventListener('abort', finish)
         resolve()
       }
       const unsubscribe = this.runner.onMessage((message: RunnerToHost) => {
         if (message.type !== 'state' || message.previewId !== previewId) return
-        // 侧边栏 Browser 加载了文档即返回（2026-11-03 Aesc：打开侧边栏就应结束，不等首次渲染文本）；
-        // 已有可见文本或断言结论时一并带回。
-        const settled = message.readiness.documentLoaded.status !== 'unverified'
-          || message.readiness.targetMounted.status !== 'unverified'
-        if (settled || message.readiness.documentLoaded.status === 'failed'
-          || !['reachable', 'ready', 'degraded', 'updating'].includes(message.state)) finish()
+        if (!browserPending(message, isolated)) finish()
       })
-      timer = setTimeout(finish, Math.min(this.options.openWaitMs ?? BROWSER_MOUNT_WAIT_MS, BROWSER_MOUNT_WAIT_MS))
+      const current = this.runner.snapshotOf(previewId)
+      if (current && !browserPending(current, isolated)) { finish(); return }
+      if (signal.aborted) { finish(); return }
+      const limit = Math.min(this.options.openWaitMs ?? BROWSER_MOUNT_WAIT_MS, BROWSER_MOUNT_WAIT_MS)
+      timer = setTimeout(finish, limit)
       signal.addEventListener('abort', finish, { once: true })
-      if (signal.aborted) finish()
     })
   }
 
   /** 等待状态离开 pending 谓词（就绪/降级/终态）或等待窗口耗尽；取消只停止等待，已受理预览仍由 status/stop 找回（§4.2）。 */
-  private waitForStart(previewId: string, signal: AbortSignal, pending: (state: SessionState) => boolean): Promise<void> {
+  private waitForStart(previewId: string, signal: AbortSignal,
+    pending: (snapshot: RunnerSnapshot) => boolean): Promise<void> {
     return new Promise(resolve => {
-      let timer: ReturnType<typeof setTimeout>
+      let done = false
+      let timer: ReturnType<typeof setTimeout> | undefined
       const finish = () => {
-        clearTimeout(timer)
+        if (done) return
+        done = true
+        if (timer !== undefined) clearTimeout(timer)
         unsubscribe()
         signal.removeEventListener('abort', finish)
         resolve()
       }
       const unsubscribe = this.runner.onMessage((message: RunnerToHost) => {
-        if (message.type === 'state' && message.previewId === previewId && !pending(message.state)) finish()
+        if (message.type === 'state' && message.previewId === previewId && !pending(message)) finish()
       })
+      const current = this.runner.snapshotOf(previewId)
+      if (current && !pending(current)) { finish(); return }
+      if (signal.aborted) { finish(); return }
       timer = setTimeout(finish, this.options.openWaitMs ?? OPEN_WAIT_MS)
       signal.addEventListener('abort', finish, { once: true })
-      if (signal.aborted) finish()
     })
   }
 
@@ -473,14 +538,23 @@ export class SessionRegistry {
         : undefined
       const declaredEnvelope = draftContext?.scene?.envelope
       const unmatchedEntries = selected?.snapshot.unmatched?.entries ?? []
-      const [envelopeHint, callSites] = draftContext === undefined ? [undefined, undefined] as const
+      const scanned = draftContext?.scan
+      const [sources, envelopeHint, callSites] = draftContext === undefined
+        ? [undefined, undefined, undefined] as const
         : await Promise.all([
+            collectFixtureSources(draftContext.appRoot,
+              scanned === undefined ? undefined : { scannedFiles: scanned.files }).catch(() => undefined),
             declaredEnvelope === undefined
-              ? collectEnvelopeHint(draftContext.appRoot, { redact: draftContext.redact }).catch(() => undefined)
+              ? collectEnvelopeHint(draftContext.appRoot, {
+                  redact: draftContext.redact,
+                  ...(scanned === undefined ? {} : { scannedFiles: scanned.files }),
+                }).catch(() => undefined)
               : Promise.resolve(undefined),
             collectCallSiteContext(draftContext.appRoot,
-              unmatchedEntries.map(entry => ({ method: entry.method, path: entry.path })),
-              undefined, { redact: draftContext.redact })
+              unmatchedEntries.map(entry => ({ method: entry.method, path: entry.path })), undefined, {
+                redact: draftContext.redact,
+                ...(scanned === undefined ? {} : { scannedFiles: scanned.files, scanLimited: scanned.limited }),
+              })
               .then(result => ({ ...result, failed: false as const }),
                 () => ({ contexts: new Map(), limited: false, failed: true as const })),
           ])
@@ -512,12 +586,13 @@ export class SessionRegistry {
                   hint: unmatchedStabilityHint(
                     Math.max(0, (this.options.now ?? Date.now)()
                       - Date.parse(selected.snapshot.unmatched.lastNewEntryAt)),
-                    args.previewId),
+                    args.previewId, draftContext?.scene !== undefined || selected.snapshot.scenario !== undefined),
                 }),
               },
               fixtureDraft: draftFixtures(selected.snapshot.scenario ?? selected.plan.scenario ?? 'default',
-                selected.snapshot.unmatched.entries.map(toDraftEntry), 20, draftContext?.resolve,
+                selected.snapshot.unmatched.entries.map(toDraftEntry), 20, sources?.resolve,
                 {
+                  ...(draftContext === undefined ? {} : { redact: draftContext.redact }),
                   ...(declaredEnvelope === undefined ? {} : { envelope: declaredEnvelope }),
                   ...(envelopeHint === undefined ? {} : { envelopeHint }),
                   ...(callSites === undefined || !callSites.contexts.size
@@ -557,9 +632,9 @@ export class SessionRegistry {
       return refuse('Invalid scenario write arguments',
         'Pass projectId, a scenario name and a scenario object (e.g. a filled fixtureDraft.configSnippet entry)')
     }
-    if (args.mode !== undefined && args.mode !== 'create' && args.mode !== 'merge') {
+    if (args.mode !== undefined && args.mode !== 'create' && args.mode !== 'merge' && args.mode !== 'upsert') {
       return refuse('Invalid scenario write mode ' + JSON.stringify(args.mode),
-        "Pass mode 'create' or 'merge', or omit it for the default create semantics")
+        "Pass mode 'create', 'merge', or 'upsert', or omit it for the default create semantics")
     }
     if (args.applyTo !== undefined && !validId(args.applyTo)) {
       return refuse('Invalid applyTo previewId ' + JSON.stringify(args.applyTo),
@@ -613,7 +688,7 @@ export class SessionRegistry {
       let approval: SetupWriteOutcome | 'not confirmed (the approval service failed)' = 'unavailable'
       try {
         if (this.options.requestConfigWrite) {
-          approval = await this.options.requestConfigWrite(caller, args.projectId, args.scenario.trim(), exec)
+          approval = await this.options.requestConfigWrite(caller, args.projectId, args.scenario.trim(), exec, mode)
         }
       } catch (error) {
         this.debugLog.write({ level: 'error', scope: 'host', event: 'config_write.confirmation_failed',
@@ -663,17 +738,61 @@ export class SessionRegistry {
 
   /** page_preview_refresh（R2-P0-2、R3-2）：只对调用者已绑定预览下发；Runner 侧再做 owner/状态门禁。 */
   async refresh(args: { previewId?: string; scenario?: string }, exec: ToolRunContext): Promise<RefreshResult> {
-    if (!validId(args.previewId) || !validId(args.scenario)) return invalid('update')
+    if (!args.previewId || !validId(args.previewId) || !validId(args.scenario)) return invalid('update')
     try {
       const caller = await this.caller(exec)
-      const reply = await this.runner.refresh(args.previewId!, caller.ownerSessionId, args.scenario)
-      if (reply.status !== 'ok') return { status: reply.status === 'busy' ? 'error' : reply.status, diagnostics: [] }
-      const result = await this.runner.inspect(caller.workspaceRoot, caller.ownerSessionId, args.previewId)
-      const preview = result.status === 'ok' ? result.previews[0] : undefined
-      if (!preview) return { status: 'not_found', diagnostics: [] }
-      const diagnostics = [...preview.diagnostics].reverse().map(item => withPreview(item, preview.snapshot.previewId))
-      return truncateDiagnostics({ status: 'ok', diagnostics, preview: summarize(preview) })
+      const outcome = await this.runRefresh(caller, {
+        previewId: args.previewId,
+        ...(args.scenario === undefined ? {} : { scenario: args.scenario }),
+      })
+      const status: RefreshResult['status'] = outcome.status === 'busy' ? 'error' : outcome.status
+      return truncateDiagnostics({
+        status, diagnostics: outcome.diagnostics,
+        ...(outcome.preview === undefined ? {} : { preview: outcome.preview }),
+      })
     } catch (error) { return this.failure(error, 'update', exec) }
+  }
+
+  /** 面板刷新与切换场景：与 refresh 工具共用 Runner 刷新与 owner 校验路径。 */
+  async refreshForOwner(caller: PreviewCaller, request: PanelRefreshRequest): Promise<PanelRefreshReply> {
+    if (!request.previewId || !validId(request.previewId) || !validId(request.scenario)) {
+      return {
+        status: 'error',
+        previewId: (request.previewId || 'invalid').slice(0, 128),
+        diagnostics: invalid('update').diagnostics,
+      }
+    }
+    try {
+      const outcome = await this.runRefresh(caller, request)
+      return {
+        status: outcome.status,
+        previewId: request.previewId,
+        ...(outcome.preview?.state === undefined ? {} : { state: outcome.preview.state }),
+        ...(outcome.preview?.scenario === undefined ? {} : { scenario: outcome.preview.scenario }),
+        diagnostics: outcome.diagnostics.slice(0, 16),
+      }
+    } catch (error) {
+      const failed = await this.failure(error, 'update', caller)
+      const status: PanelRefreshReply['status'] = failed.status === 'busy' || failed.status === 'not_found'
+        || failed.status === 'unsupported' ? failed.status : 'error'
+      return { status, previewId: request.previewId, diagnostics: failed.diagnostics.slice(0, 16) }
+    }
+  }
+
+  private async runRefresh(caller: PreviewCaller, request: PanelRefreshRequest): Promise<{
+    status: PanelRefreshReply['status']; diagnostics: Diagnostic[]; preview?: PreviewSummary
+  }> {
+    const reply = await this.runner.refresh(request.previewId, caller.ownerSessionId, request.scenario)
+    if (reply.status !== 'ok') {
+      const mapped: PanelRefreshReply['status'] = reply.status === 'not_found'
+        || reply.status === 'unsupported' || reply.status === 'busy' ? reply.status : 'error'
+      return { status: mapped, diagnostics: [] }
+    }
+    const result = await this.runner.inspect(caller.workspaceRoot, caller.ownerSessionId, request.previewId)
+    const preview = result.status === 'ok' ? result.previews[0] : undefined
+    if (!preview) return { status: 'not_found', diagnostics: [] }
+    const diagnostics = [...preview.diagnostics].reverse().map(item => withPreview(item, preview.snapshot.previewId))
+    return { status: 'ok', diagnostics, preview: summarize(preview) }
   }
 
   async stop(args: { previewId?: string; all?: boolean; recover?: boolean }, exec: ToolRunContext): Promise<StopResult> {
@@ -715,6 +834,11 @@ export class SessionRegistry {
       if (left > 0) this.followers.set(ownerSessionId, left)
       else this.followers.delete(ownerSessionId)
     }
+  }
+
+  /** 当前面板快照版本号；follow 在取初始快照前读取，避免首次连接立刻重发一次。 */
+  currentPanelVersion(): number {
+    return this.panelVersion
   }
 
   /** 等待 since 之后的下一次会话事实变化；signal 中止时返回 undefined（§4.3 面板流）。 */
@@ -762,8 +886,28 @@ export class SessionRegistry {
       // 面板点击原样回传；Host 仍按 openRequestSchema 严格校验后才进 openAttempt。
       open: { projectId: candidate.projectId, target: JSON.stringify(candidate.selector) },
     }))
+    const scenarioMap = new Map<string, string[]>()
+    if (result.previews.length > 0) {
+      const configs = await loadEffectiveConfigs(caller.workspaceRoot, undefined,
+        this.options.dataDir === undefined ? {} : { dataDir: this.options.dataDir }).catch(() => [])
+      for (const entry of configs) {
+        const names = Object.keys(entry.project.scenarios ?? {}).slice(0, 32)
+        if (names.length) scenarioMap.set(entry.project.id, names)
+      }
+    }
     return {
-      previews: result.previews.map(value => panelPreview(summarize(value))),
+      previews: result.previews.map(value => {
+        const unmatchedItems = value.snapshot.unmatched?.entries
+          .slice()
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 10)
+          .map(entry => ({
+            method: entry.method.slice(0, 16),
+            path: (entry.origin ? entry.origin + entry.path : entry.path).slice(0, 512),
+            count: entry.count,
+          }))
+        return panelPreview(summarize(value), scenarioMap.get(value.plan.projectId), unmatchedItems)
+      }),
       diagnostics: [...all, ...hostItems].slice(0, 32),
       ...(diagnosticsTruncated ? { diagnosticsTruncated } : {}),
       ...(suggestions === undefined ? {} : { suggestions }),
@@ -810,7 +954,7 @@ export class SessionRegistry {
       token: Symbol('panel-open') as ToolExecutionToken, deferContext() {}, concludeTurn() {},
     } as unknown as ToolRunContext
     try {
-      const result = await this.openAttempt({ projectId: request.projectId, target }, exec, true)
+      const result = await this.open({ projectId: request.projectId, target, waitFor: 'mount' }, exec)
       return {
         status: result.status === 'busy' ? 'busy' : result.status,
         ...(result.preview === undefined ? {} : {
@@ -1014,10 +1158,10 @@ export class SessionRegistry {
     const appRoot = await resolveProjectPath(caller.workspaceRoot, project.config.project.root)
     const sceneName = preview.snapshot.scenario ?? preview.plan.scenario ?? 'default'
     const scene = project.config.project.scenarios?.[sceneName]
-    const sources = await collectFixtureSources(appRoot)
-    const secrets = envSecrets(project.config.project.runtime.env, await collectEnvPairs(appRoot))
-    const redactor = createRedactor({ secrets })
-    return { appRoot, scene, resolve: sources.resolve,
+    const [scan, pairs] = await Promise.all([scanProjectFiles(appRoot, 5000), collectEnvPairs(appRoot)])
+    const secrets = envSecrets(project.config.project.runtime.env, pairs)
+    const redactor = createRedactor({ secrets, channels: this.runner.channelSecrets(caller.workspaceRoot) })
+    return { appRoot, scene, scan,
       redact: (text: string, limit?: number) => redactor.text(text, limit) }
   }
 
@@ -1105,10 +1249,19 @@ function summarize(value: PreviewInspection): PreviewSummary {
   const scope = capabilities.scopes[plan.scope]
   if (!scope || scope.status !== 'supported') capabilityGaps.push({ name: 'scope.' + plan.scope, capability: scope ?? { status: 'unknown', source: 'none', reason: 'No scope evidence in this plan' } })
   for (const name of ['isolatedRender', 'scenarioApply', 'scenarioReset', 'refresh', 'captureCurrentView', 'runtimeErrors', 'readinessAssertion'] as const) if (capabilities[name].status !== 'supported') capabilityGaps.push({ name, capability: structuredClone(capabilities[name]) })
+  let verification: PreviewSummary['verification']
+  if (plan.readiness.assertions?.length) {
+    if (snapshot.state === 'failed' || snapshot.state === 'cleanup_failed' || snapshot.readiness.targetMounted.status === 'failed') {
+      verification = 'failed'
+    } else if (snapshot.readiness.targetMounted.status === 'proven') verification = 'passed'
+    else if (snapshot.state !== 'stopping' && snapshot.state !== 'stopped') verification = 'pending'
+  }
   return {
     previewId: snapshot.previewId, projectId: plan.projectId, targetId: plan.targetId,
     scope: plan.scope, strategy: plan.strategy, state: snapshot.state, freshness: snapshot.freshness,
     readiness: structuredClone(snapshot.readiness), capabilityGaps,
+    ...(snapshot.startupTiming === undefined ? {} : { startupTiming: { ...snapshot.startupTiming } }),
+    ...(verification === undefined ? {} : { verification }),
     ...(snapshot.url && ['reachable', 'ready', 'degraded', 'updating'].includes(snapshot.state) ? { url: snapshot.url } : {}),
     ...((snapshot.scenario ?? plan.scenario) === undefined ? {} : { scenario: snapshot.scenario ?? plan.scenario }),
     ...(snapshot.unmatched?.entries.length ? { unmatchedCount: snapshot.unmatched.entries.length } : {}),
@@ -1117,16 +1270,23 @@ function summarize(value: PreviewInspection): PreviewSummary {
 }
 
 /** PreviewSummary → 面板 wire 投影：能力缺口压平为 name/status/reason，其余字段原样（仍是同一事实源）。 */
-function panelPreview(value: PreviewSummary): PanelPreview {
+function panelPreview(
+  value: PreviewSummary,
+  availableScenarios?: readonly string[],
+  unmatchedItems?: PanelPreview['unmatchedItems'],
+): PanelPreview {
   return {
     previewId: value.previewId, projectId: value.projectId, targetId: value.targetId,
     scope: value.scope, strategy: value.strategy, state: value.state, freshness: value.freshness,
     ...(value.url === undefined ? {} : { url: value.url }),
     ...(value.scenario === undefined ? {} : { scenario: value.scenario }),
+    ...(value.verification === undefined ? {} : { verification: value.verification }),
     capabilityGaps: value.capabilityGaps.map(gap => ({ name: gap.name, status: gap.capability.status, ...(gap.capability.reason === undefined ? {} : { reason: gap.capability.reason }) })),
     readiness: value.readiness,
     ...(value.unmatchedCount === undefined ? {} : { unmatchedCount: value.unmatchedCount }),
     ...(value.unmatchedDropped === undefined ? {} : { unmatchedDropped: value.unmatchedDropped }),
+    ...(availableScenarios?.length ? { availableScenarios: [...availableScenarios] } : {}),
+    ...(unmatchedItems?.length ? { unmatchedItems } : {}),
   }
 }
 

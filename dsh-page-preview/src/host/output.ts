@@ -5,9 +5,12 @@
  */
 
 import type { DisplayedPreviewPlan, PreviewPlan, ToolResultBase } from '../shared/contracts.ts'
+import { FIXTURE_PLACEHOLDER } from '../shared/fixture-draft.ts'
 
 /** 默认最多返回的诊断条数（方案建议 5～10；R5-9 在 tests/toolchains 样本实测取 8）。 */
 export const MAX_DIAGNOSTICS = 8
+const MOCK_SNIPPET_LIMIT = 8_000
+const MOCK_LIST_LIMIT = 12
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 type JsonObject = { [key: string]: JsonValue }
@@ -47,17 +50,25 @@ function summarizeResult(value: JsonValue): string {
   const lines: string[] = [`status: ${stringOf(result.status) ?? 'unknown'}`]
   if (result.preview !== undefined) lines.push(...previewLines(result.preview))
   for (const preview of arrayOf(result.previews)) lines.push(...previewLines(preview))
+  const timing = timingLine(result.timing)
+  if (timing) lines.push('  open timing: ' + timing)
+  const availableScenarios = arrayOf(result.availableScenarios).map(stringOf).filter(Boolean)
+  if (availableScenarios.length) lines.push('available scenarios (up to 10): ' + availableScenarios.join(', '))
+  if (stringOf(result.file) && stringOf(result.scenario)) {
+    lines.push('scenario saved: ' + fields(result, ['file', 'projectId', 'scenario', 'mode', 'backup']))
+  }
+  const applied = objectOf(result.applied)
+  if (applied) lines.push('scenario apply: ' + fields(applied, ['previewId', 'status']))
+  const unmatched = objectOf(result.unmatched)
+  if (unmatched) lines.push(...unmatchedLines(unmatched))
+  const fixtureDraft = objectOf(result.fixtureDraft)
+  if (fixtureDraft) lines.push(...fixtureDraftLines(fixtureDraft))
   const occupant = objectOf(result.occupant)
   if (occupant) lines.push(`occupant: preview=${stringOf(occupant.previewId) ?? '?'} state=${stringOf(occupant.state) ?? '?'} project=${stringOf(occupant.projectId) ?? '?'} target=${stringOf(occupant.targetId) ?? '?'} owner=${occupant.sameOwner === true ? 'this session' : 'another session'}`)
-  const candidates = arrayOf(result.candidates)
-  if (candidates.length) {
-    lines.push('candidates:')
-    for (const candidate of candidates) {
-      const item = objectOf(candidate)
-      if (!item) continue
-      const relation = arrayOf(item.relation).map(stringOf).filter((entry): entry is string => entry !== undefined).join(' -> ')
-      lines.push(`  - ${fields(item, ['projectId'])} selector=${JSON.stringify(item.selector ?? null)} evidence=${stringOf(item.evidence) ?? '?'}${relation ? ' via ' + relation : ''}`)
-    }
+  lines.push(...renderCandidateList('candidates', arrayOf(result.candidates)))
+  lines.push(...renderCandidateList('suggestions', arrayOf(result.suggestions)))
+  if (typeof result.suggestionsOmitted === 'number' && result.suggestionsOmitted > 0) {
+    lines.push(`  +${result.suggestionsOmitted} more suggestions omitted`)
   }
   const draft = objectOf(result.setupDraft)
   if (draft) {
@@ -111,10 +122,19 @@ function previewLines(value: JsonValue): string[] {
   const lines = [`preview ${stringOf(preview.previewId) ?? '?'}: state=${stringOf(preview.state) ?? '?'} freshness=${stringOf(preview.freshness) ?? '?'}${url ? ' url=' + url : ''}`]
   const meta = fields(preview, ['projectId', 'targetId', 'scope', 'strategy', 'scenario'])
   if (meta) lines.push('  ' + meta)
+  if (preview.scenario === undefined) lines.push('  scenario: none selected')
+  if (stringOf(preview.verification)) lines.push('  verification: ' + stringOf(preview.verification))
+  const timing = timingLine(preview.startupTiming)
+  if (timing) lines.push('  since Runner startup: ' + timing)
   const readiness = objectOf(preview.readiness)
   if (readiness) {
     const layer = (key: string) => stringOf(objectOf(readiness[key])?.status) ?? 'unverified'
     lines.push(`  readiness: service=${layer('serviceReachable')} document=${layer('documentLoaded')} target=${layer('targetMounted')}`)
+    const target = objectOf(readiness.targetMounted)
+    const mountSignal = stringOf(target?.mountSignal)
+    const detail = stringOf(target?.detail)
+    if (mountSignal !== undefined) lines.push('  browser mount: ' + mountSignal)
+    if (detail !== undefined) lines.push('  target evidence: ' + detail)
   }
   const gaps = arrayOf(preview.capabilityGaps).map(gap => {
     const item = objectOf(gap)
@@ -126,6 +146,157 @@ function previewLines(value: JsonValue): string[] {
   }).filter((entry): entry is string => entry !== undefined)
   if (gaps.length) lines.push('  gaps: ' + gaps.join('; '))
   return lines
+}
+
+function timingLine(value: JsonValue | undefined): string {
+  const timing = objectOf(value)
+  if (!timing) return ''
+  return Object.entries(timing).flatMap(([key, elapsed]) => typeof elapsed === 'number' ? [`${key}=${elapsed}`] : [])
+    .join(' ')
+}
+
+function unmatchedLines(unmatched: JsonObject): string[] {
+  const entries = arrayOf(unmatched.entries)
+  const elapsed = unmatched.sinceLastNewEntryMs
+  const stabilized = typeof elapsed === 'number' ? ` sinceLastNewEntryMs=${elapsed}` : ''
+  const lines = [`unmatched: observed=${entries.length} dropped=${unmatched.dropped ?? 0}${stabilized}`]
+  for (const entry of entries.slice(0, MOCK_LIST_LIMIT)) {
+    const item = objectOf(entry)
+    if (!item) continue
+    const origin = stringOf(item.origin) ?? ''
+    const keys = arrayOf(item.queryKeys).map(stringOf).filter(Boolean).join(', ')
+    lines.push(`  - ${stringOf(item.method)} ${origin}${stringOf(item.path)} ×${item.count ?? 0}`
+      + (keys ? ` query keys: ${keys}` : ''))
+  }
+  if (entries.length > MOCK_LIST_LIMIT) lines.push(`  +${entries.length - MOCK_LIST_LIMIT} more in structured output`)
+  const hint = stringOf(unmatched.hint)
+  if (hint) lines.push('  ' + hint)
+  return lines
+}
+
+function fixtureDraftLines(draft: JsonObject): string[] {
+  const lines = [`fixtureDraft: ${fields(draft, ['scenario'])} omitted=${draft.omitted ?? 0}`]
+  const snippet = stringOf(draft.configSnippet)
+  if (snippet && snippet.length <= MOCK_SNIPPET_LIMIT) lines.push('fixtureDraft.configSnippet:', snippet)
+  else if (snippet) lines.push(...compactFixtureLines(draft))
+  for (const value of arrayOf(draft.shapeHints).slice(0, MOCK_LIST_LIMIT)) {
+    const hint = objectOf(value)
+    if (!hint) continue
+    const target = `${stringOf(hint.origin) ?? ''}${stringOf(hint.path) ?? ''}`
+    const shape = hint.shape === undefined ? '?' : boundedJson(hint.shape, 400)
+    lines.push(`  shapeHint ${stringOf(hint.method) ?? '?'} ${target}: ${shape} (${stringOf(hint.provenance) ?? ''})`)
+  }
+  for (const value of arrayOf(draft.contexts).slice(0, MOCK_LIST_LIMIT)) {
+    const context = objectOf(value)
+    if (!context) continue
+    const sites = arrayOf(context.requestSites).slice(0, 2).map(locationLine)
+    const consumers = arrayOf(context.consumers).slice(0, 2).map(locationLine)
+    const sources = [...sites, ...consumers].filter(Boolean)
+    if (sources.length) lines.push(`  ${stringOf(context.method)} ${stringOf(context.path)}: ${sources.join(', ')}`)
+    const typeHint = objectOf(context.typeHint)
+    if (typeHint) {
+      const prov = stringOf(typeHint.provenance)
+      const shape = typeHint.shape === undefined ? undefined : boundedJson(typeHint.shape, 400)
+      const parts = [prov, shape === undefined ? undefined : 'shape=' + shape].filter(Boolean)
+      if (parts.length) lines.push('    response type: ' + parts.join(' '))
+    }
+  }
+  const handlerDrafts = arrayOf(draft.handlerDrafts).slice(0, MOCK_LIST_LIMIT)
+  if (handlerDrafts.length) {
+    lines.push('  handlerDrafts (available in structured fixtureDraft.handlerDrafts):')
+    let templateBudget = 2000
+    for (const value of handlerDrafts) {
+      const item = objectOf(value)
+      if (!item) continue
+      const target = `${stringOf(item.origin) ?? ''}${stringOf(item.path) ?? ''}`
+      lines.push(`    - ${stringOf(item.method) ?? '?'} ${target}`)
+      const tpl = stringOf(item.template)
+      if (tpl && tpl.length <= templateBudget) {
+        lines.push(tpl.split('\n').map(line => '      ' + line).join('\n'))
+        templateBudget -= tpl.length
+      }
+    }
+  }
+  const envelope = objectOf(draft.envelopeHint)
+  if (envelope?.template !== undefined) {
+    const template = JSON.stringify(envelope.template)
+    if (template.length <= 1024) lines.push('  envelope suggestion: ' + template)
+  }
+  if (draft.contextLimited === true) lines.push('  call-site context is partial')
+  return lines
+}
+
+function compactFixtureLines(draft: JsonObject): string[] {
+  const lines = ['fixtureDraft.configSnippet exceeds the text budget. Fill placeholders and retain the scene envelope.']
+  const scenario = stringOf(draft.scenario)
+  if (!scenario) return lines
+  const entries = arrayOf(draft.fixtures).map(objectOf).filter(item => item !== undefined)
+  let envelope: JsonValue | undefined = objectOf(draft.envelope)?.template !== undefined ? draft.envelope : undefined
+  if (envelope === undefined) {
+    const rawSnippet = stringOf(draft.configSnippet)
+    if (rawSnippet) {
+      try {
+        const parsed = objectOf(JSON.parse(rawSnippet) as JsonValue)
+        const scene = parsed ? objectOf(parsed[scenario]) : undefined
+        if (scene && objectOf(scene.envelope)?.template !== undefined) envelope = scene.envelope
+      } catch { /* ignore malformed snippet */ }
+    }
+  }
+  const http: JsonObject[] = []
+  const snippet = () => JSON.stringify({
+    [scenario]: {
+      businessPaths: arrayOf(draft.businessPaths),
+      ...(envelope === undefined ? {} : { envelope }),
+      http,
+    },
+  })
+  for (const entry of entries.slice(0, MOCK_LIST_LIMIT)) {
+    const { method, path, origin, query, provenance } = entry
+    const responseObj = objectOf(entry.response)
+    const status = responseObj?.status
+    if (typeof method !== 'string' || typeof path !== 'string' || typeof status !== 'number') continue
+    const rawBody = responseObj?.body
+    const smallBody = rawBody !== undefined && JSON.stringify(rawBody).length <= 1024
+    const response = { status, body: smallBody ? rawBody : FIXTURE_PLACEHOLDER }
+    http.push({ method, path, response,
+      ...(origin === undefined ? {} : { origin }), ...(query === undefined ? {} : { query }),
+      ...(provenance === undefined ? {} : { provenance }) })
+    if (snippet().length <= MOCK_SNIPPET_LIMIT) continue
+    http.pop()
+    break
+  }
+  if (http.length) lines.push('fixtureDraft.configSnippet (partial):', snippet())
+  if (entries.length > http.length) lines.push(`  +${entries.length - http.length} draft entries omitted`)
+  return lines
+}
+
+function renderCandidateList(label: string, items: JsonValue[]): string[] {
+  if (!items.length) return []
+  const lines = [label + ':']
+  for (const entry of items) {
+    const item = objectOf(entry)
+    if (!item) continue
+    const relation = arrayOf(item.relation).map(stringOf)
+      .filter((value): value is string => value !== undefined).join(' -> ')
+    const origin = stringOf(item.origin)
+    lines.push(`  - ${fields(item, ['projectId'])} selector=${JSON.stringify(item.selector ?? null)} `
+      + `evidence=${stringOf(item.evidence) ?? '?'}${origin ? ' origin=' + origin : ''}`
+      + `${relation ? ' via ' + relation : ''}`)
+  }
+  return lines
+}
+
+function boundedJson(value: JsonValue, max: number): string {
+  const text = JSON.stringify(value)
+  return text.length <= max ? text : text.slice(0, max - 1) + '…'
+}
+
+function locationLine(value: JsonValue): string | undefined {
+  const item = objectOf(value)
+  const file = stringOf(item?.file)
+  if (!item || !file || typeof item.line !== 'number') return undefined
+  const fieldsRead = arrayOf(item.fields).map(stringOf).filter(Boolean).join(', ')
+  return `${file}:${item.line}` + (fieldsRead ? ` reads ${fieldsRead}` : '')
 }
 
 /** 诊断单行：[code/phase] previewId message (file:line|request) -> hint。 */

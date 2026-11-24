@@ -20,21 +20,29 @@ export function openTool(registry: SessionRegistry) {
     name: 'page_preview_open',
     description:
       'Open or reuse a preview of a real page in the project. Returns state and capability gaps. ' +
-      'For Vue apps pass the page or component file: target {"kind": "file", "path": "src/views/x/index.vue"} ' +
+      'For file targets, use a workspace-relative path without projectId (e.g. web/src/views/x/index.vue), ' +
+      'or an application-relative path with projectId (e.g. src/views/x/index.vue). ' +
+      'Use the discovered or configured projectId; do not guess it. Pass a page or component file ' +
       '(.vue/.tsx/.jsx), or a declared project route: {"kind": "route", "path": "/users/1"} (optionally with ' +
       'params/query and "layout": true to render the parent layout chain; the project must configure ' +
       'runtime.setup with a navigate binding). story/URL targets need configuration. ' +
       'Follow each diagnostic hint literally (config fields, setup module, user approval). ' +
       'When the user has this session on screen, the preview opens automatically in the DSH sidebar Browser; ' +
-      'a preview_shown_in_sidebar diagnostic means the task is done: report it and stop (no sleep, polling or ' +
-      'screenshots). Otherwise give the user the URL; never launch your own browser or headless Chrome. ' +
-      'A returned state of preparing/starting is not ready: poll page_preview_status; use detail:true for the full plan.',
+      'For a plain preview, set waitFor: "mount" to return after browser feedback while assertions continue. ' +
+      'Report the sidebar and the observed mount status. For an open request, do not poll, take screenshots, ' +
+      'create fixtures or add assertions. Otherwise give the user the URL; never launch a separate browser. ' +
+      'Report preparing/starting as in progress. For an explicit verification request, use page_preview_status ' +
+      'with detail:true for the full plan and diagnostics.',
     parameters: {
       projectId: { type: 'string', description: 'Application id. Required when several apps match.' },
       target: targetParameterSchema(),
       scope: { type: 'string', enum: ['page', 'component', 'shell'] },
       strategy: { type: 'string', enum: ['auto', 'static', 'isolated', 'project', 'attach'] },
       scenario: { type: 'string' },
+      waitFor: {
+        type: 'string', enum: ['mount', 'assertions'],
+        description: 'Choose mount for a quick preview or assertions to wait for configured verification (default).',
+      },
       viewport: {
         type: 'object',
         additionalProperties: false,

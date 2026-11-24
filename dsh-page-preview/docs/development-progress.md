@@ -25,7 +25,9 @@
 - **平台：**macOS arm64 实测；Linux（Docker `node:24-slim`，arm64，Node 24.22.2）工具链全链路
   1/1 通过（[evidence/2026-11-03-linux-toolchain-scenario.md](evidence/2026-11-03-linux-toolchain-scenario.md)，
   HTTP/进程级、无浏览器）；早前"全 E2E 面 135/135 + Chromium 156"无归档运行记录——**未核实**；
-  Windows 返回 `unsupported`。
+  Linux Debian Chromium 156 浏览器两条腿见 [evidence/2026-11-03-linux-browser-evidence.md](evidence/2026-11-03-linux-browser-evidence.md)；
+  Windows 自 2026-11-10 列入支持范围（`shared/runner/winproc.ts` + `platform-env.ts`），只有合成单测、未实机验收（[limitations.md](limitations.md) §2）。
+  2026-11-04 的更新检查记录（598/598）见 [progress-log.md](progress-log.md) 末节 AGENTS.md 快照。
 - **最近一次检查（2026-11-03）：**Node 24.13.1/macOS arm64，typecheck 0、全量 525/525/0 跳过（a908e62）；
   Linux Docker `node:24-slim`（Node 24.22.2）工具链全链路 1/1 通过（见上方证据文件）。
 - **偶发 `cleanup_failed` 已定位修复（8ab7006）：**被信号终止的 worker 在父进程 reap 前以 zombie 留在进程表，`stopGroup`/ledger 把它计为残留；两平台 `processTable`/`readProcessStartTime` 现排除 Z/X 状态。macOS 用真实 zombie 验证不进表；修复后该用例以 ~1s 干净通过（此前复现路径恒 ~3.7s 满等待）。

@@ -10,6 +10,7 @@ import { DiagnosticCode, RunnerSessionError } from '../shared/errors.ts'
 import { collectEnvPairs, createRedactor, envSecrets } from '../shared/redact.ts'
 import type { Redactor } from '../shared/redact.ts'
 import type { RunnerToHost } from '../shared/ipc.ts'
+import type { PreviewStartupTiming } from '../shared/preview-timing.ts'
 import { assertTransition } from '../shared/state-machine.ts'
 import type { Adapter, RunEvent, RunningHandle, StartContext, UpdateOutcome } from '../adapters/types.ts'
 import { readProcessStartTime } from './ledger.ts'
@@ -61,6 +62,8 @@ export class RunnerSession {
   private context: SessionContext | undefined
   private startup: Promise<void> | undefined
   private startupSettled = false
+  private startedAt = 0
+  private readonly startupTiming: PreviewStartupTiming = {}
   private startupError: unknown
   private cleanupTask: Promise<StopOutcome> | undefined
   private handleCleanup: Promise<StopOutcome> | undefined
@@ -103,6 +106,7 @@ export class RunnerSession {
     return {
       type: 'state', previewId: this.previewId, state: this.state, freshness: this.freshness,
       readiness: structuredClone(this.readiness),
+      ...(Object.keys(this.startupTiming).length ? { startupTiming: { ...this.startupTiming } } : {}),
       ...(this.pageText ? { pageText: structuredClone(this.pageText) } : {}),
       ...(this.handle ? { url: this.handle.url } : {}),
       ...(this.plan.scenario === undefined ? {} : { scenario: this.plan.scenario }),
@@ -126,6 +130,7 @@ export class RunnerSession {
     this.redactor = createRedactor({ secrets: this.secrets })
     const abort = () => this.control.abort(signal?.reason)
     signal?.addEventListener('abort', abort, { once: true })
+    this.startedAt = performance.now()
     this.transition('starting')
     const deadline = Date.now() + serviceMs
     this.stageTimer = setTimeout(() => this.control.abort(sessionError(DiagnosticCode.startTimeout, 'start', 'Service readiness deadline exceeded')), serviceMs)
@@ -153,7 +158,12 @@ export class RunnerSession {
       await cancellable(Promise.all([this.startup, this.service.promise]), this.control.signal)
       this.clearTimer()
       if (this.plan.readiness.assertions?.length) {
-        this.stageTimer = setTimeout(() => this.control.abort(sessionError(DiagnosticCode.targetNotReady, 'ready', 'Target readiness deadline exceeded')), targetMs)
+        this.stageTimer = setTimeout(() => {
+          this.noteStartup('assertionSettledMs')
+          const detail = this.readiness.targetMounted.detail ?? 'No target assertion result was received'
+          this.control.abort(sessionError(DiagnosticCode.targetNotReady, 'ready',
+            'Target readiness deadline exceeded. ' + detail))
+        }, targetMs)
         await cancellable(this.target.promise, this.control.signal)
       }
     } catch (error) {
@@ -383,7 +393,13 @@ export class RunnerSession {
     switch (event.type) {
       case 'diagnostic': this.record(event.diagnostic); return
       case 'unmatched':
-        this.unmatchedLog.record(event.request)
+        this.unmatchedLog.record({
+          ...event.request, path: this.redactor.text(event.request.path),
+          ...(event.request.origin === undefined ? {} : { origin: this.redactor.url(event.request.origin) }),
+          ...(event.request.queryKeys === undefined ? {} : {
+            queryKeys: event.request.queryKeys.map(key => this.redactor.text(key, 256)),
+          }),
+        })
         this.publish(this.snapshot())
         return
       case 'page-text':
@@ -398,7 +414,22 @@ export class RunnerSession {
       case 'evidence':
         // 适配器未给 at 时补 Runner 接收时间：与 pageText.receivedAt 同一时钟，
         // Host 才能判断文本观测是否晚于挂载信号（R5-0a，决策 P-A）。
-        this.readiness[event.layer] = { at: new Date().toISOString(), ...event.evidence }
+        if (event.layer === 'targetMounted' && event.evidence.mountSignal !== undefined) {
+          this.noteStartup('mountFeedbackMs')
+          this.readiness.targetMounted = { ...this.readiness.targetMounted,
+            at: new Date().toISOString(), mountSignal: event.evidence.mountSignal,
+          }
+        } else {
+          if (event.layer === 'documentLoaded' && event.evidence.status === 'proven') {
+            this.noteStartup('documentLoadedMs')
+          }
+          if (event.layer === 'targetMounted' && event.evidence.status !== 'unverified'
+            && this.plan.readiness.assertions?.length) this.noteStartup('assertionSettledMs')
+          const mountSignal = this.readiness[event.layer].mountSignal
+          this.readiness[event.layer] = {
+            at: new Date().toISOString(), ...(mountSignal === undefined ? {} : { mountSignal }), ...event.evidence,
+          }
+        }
         if (event.evidence.status === 'failed') {
           void this.fail(sessionError(DiagnosticCode.targetNotReady, 'ready', 'Preview readiness evidence failed: ' + event.layer))
         } else {
@@ -408,10 +439,17 @@ export class RunnerSession {
     }
   }
 
+  private noteStartup(stage: keyof PreviewStartupTiming): void {
+    this.startupTiming[stage] ??= Math.round(performance.now() - this.startedAt)
+  }
+
   private advance(): void {
     if (this.control.signal.aborted || !this.handle) return
     if (this.readiness.serviceReachable.status === 'proven') {
-      if (this.state === 'starting') this.transition('reachable')
+      if (this.state === 'starting') {
+        this.noteStartup('serviceReadyMs')
+        this.transition('reachable')
+      }
       this.service.resolve()
     }
     if (Object.values(this.readiness).every(evidence => evidence.status === 'proven')) {

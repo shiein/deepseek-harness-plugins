@@ -19,6 +19,7 @@ export const panelDiagnosticSchema = z.strictObject({
 export const evidenceSchema = z.strictObject({
   status: z.enum(['proven', 'failed', 'unverified']),
   detail: z.string().max(1024).exactOptional(),
+  mountSignal: z.enum(['observed', 'failed']).exactOptional(),
   at: z.string().max(64).exactOptional(),
 })
 export const panelPreviewSchema = z.strictObject({
@@ -31,6 +32,7 @@ export const panelPreviewSchema = z.strictObject({
   freshness: z.string().min(1).max(32),
   url: z.url().exactOptional(),
   scenario: z.string().min(1).max(512).exactOptional(),
+  verification: z.enum(['pending', 'passed', 'failed']).exactOptional(),
   capabilityGaps: z.array(z.strictObject({
     name: z.string().min(1).max(64),
     status: z.string().min(1).max(32),
@@ -40,6 +42,12 @@ export const panelPreviewSchema = z.strictObject({
   /** R3-6：该预览的未命中业务请求计数与丢弃数（与 status summarize 同口径）。 */
   unmatchedCount: z.int().min(0).exactOptional(),
   unmatchedDropped: z.int().min(0).exactOptional(),
+  availableScenarios: z.array(z.string().min(1).max(256)).max(32).exactOptional(),
+  unmatchedItems: z.array(z.strictObject({
+    method: z.string().min(1).max(16),
+    path: z.string().min(1).max(512),
+    count: z.int().positive(),
+  })).max(10).exactOptional(),
 })
 /** 本轮影响分析建议（R3-6）：selector 已由 Host 投影为摘要文本；面板只展示，不执行打开。 */
 export const panelSuggestionSchema = z.strictObject({
@@ -78,6 +86,17 @@ export const panelOpenReplySchema = z.strictObject({
   url: z.url().exactOptional(),
   diagnostics: z.array(panelDiagnosticSchema).max(16),
 })
+export const panelRefreshReplySchema = z.strictObject({
+  status: z.enum(['ok', 'error', 'not_found', 'busy', 'unsupported']),
+  previewId: z.string().min(1).max(128),
+  state: z.string().min(1).max(32).exactOptional(),
+  scenario: z.string().min(1).max(512).exactOptional(),
+  diagnostics: z.array(panelDiagnosticSchema).max(16),
+})
+export interface PanelRefreshRequest {
+  previewId: string
+  scenario?: string
+}
 export type PanelDiagnostic = z.infer<typeof panelDiagnosticSchema>
 export type PanelPreview = z.infer<typeof panelPreviewSchema>
 export type PanelSuggestion = z.infer<typeof panelSuggestionSchema>
@@ -85,6 +104,7 @@ export type PanelSuggestionOpen = NonNullable<PanelSuggestion['open']>
 export type PanelSnapshot = z.infer<typeof panelSnapshotSchema>
 export type PanelStopReply = z.infer<typeof panelStopSchema>
 export type PanelOpenReply = z.infer<typeof panelOpenReplySchema>
+export type PanelRefreshReply = z.infer<typeof panelRefreshReplySchema>
 
 function codec(schema: z.ZodType, name: string): TypertRemoteCodecSpec {
   return { mode: 'strict', typeSymbol: name, create: () => schema, jsonSchema: z.toJSONSchema(schema) }
@@ -95,6 +115,10 @@ const previewIdCodec = codec(z.string().min(1).max(128), 'PanelPreviewId')
 const openRequestCodec = codec(z.strictObject({
   projectId: z.string().min(1).max(512), target: z.string().min(1).max(2048),
 }), 'PanelOpenRequest')
+const refreshRequestCodec = codec(z.strictObject({
+  previewId: z.string().min(1).max(128),
+  scenario: z.string().min(1).max(256).exactOptional(),
+}), 'PanelRefreshRequest')
 const spec = {
   package: 'dsh-page-preview',
   methods: {
@@ -116,6 +140,12 @@ const spec = {
       cancellation: { parameter: 'signal' },
       result: codec(panelOpenReplySchema, 'PanelOpenReply'),
     },
+    'pagePreview/refresh': {
+      service: 'pagePreview', invocation: { kind: 'direct' },
+      parameters: [sessionParameter,
+        { name: 'request', source: 'json', codec: refreshRequestCodec, strictCodec: refreshRequestCodec }],
+      result: codec(panelRefreshReplySchema, 'PanelRefreshReply'),
+    },
   },
 } satisfies TypertRemoteSpec
 
@@ -136,6 +166,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
       follow(sessionId: string, signal: AbortSignal): RemoteStreamHandle<PanelSnapshot, never>
       stop(sessionId: string, previewId: string): Promise<RemoteResult<PanelStopReply>>
       open(sessionId: string, request: PanelSuggestionOpen): Promise<RemoteResult<PanelOpenReply>>
+      refresh(sessionId: string, request: PanelRefreshRequest): Promise<RemoteResult<PanelRefreshReply>>
     }
   }
 }

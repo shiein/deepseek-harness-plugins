@@ -17,6 +17,7 @@ import { resolveInstalledPackage } from '../../shared/profile.ts'
 import { DiagnosticCode, RunnerSessionError } from '../../shared/errors.ts'
 import { CODE_FRAME_LIMIT, collectEnvPairs, createRedactor, envSecrets } from '../../shared/redact.ts'
 import { findStaticFile } from '../../shared/static-files.ts'
+import { parseScriptSource } from '../../shared/javascript.ts'
 import { createSwappableScenario } from '../scenario-swap.ts'
 import type { SwappableScenario } from '../scenario-swap.ts'
 import { remoteRequests } from '../../shared/remote-requests.ts'
@@ -80,6 +81,21 @@ export interface ViteWorkerHooks {
   optimizeInclude: readonly string[]
   /** 自有加载必需的额外资源端点（React 的 '/@react-refresh'）。 */
   ownPathnames: readonly string[]
+}
+
+async function generatedSetupDependencies(sources: ViteSources, root: string, workspace: string): Promise<string[]> {
+  const id = VITE_VIRTUAL_PREFIX + 'setup'
+  const source = sources.modules.get(id)
+  if (source === undefined) return []
+  const specifiers = new Set(parseScriptSource('generated-setup.' + (sources.moduleLangs?.get(id) ?? 'js'), source)
+    .references.filter(reference => reference.kind === 'module').map(reference => reference.value))
+  const dependencies = await Promise.all([...specifiers].map(async specifier => {
+    const name = /^((?:@[a-z0-9_][\w.-]*\/)?[a-z0-9_][\w.-]*)(?:\/[\w.-]+)*$/i.exec(specifier)?.[1]
+    const extension = extname(specifier)
+    if (name === undefined || (specifier !== name && extension && !/^\.[cm]?jsx?$/i.test(extension))) return undefined
+    return await resolveInstalledPackage(root, workspace, name) === undefined ? undefined : specifier
+  }))
+  return dependencies.filter(value => value !== undefined)
 }
 
 export async function runViteWorker(hooks: ViteWorkerHooks): Promise<void> {
@@ -226,6 +242,12 @@ export async function runViteWorker(hooks: ViteWorkerHooks): Promise<void> {
       // 避免构建长轮询把每次 HMR 误判成需要整页重载。
       let docBuild = '0'
       let reloadSeq = 0
+      const buildListeners = new Set<() => void>()
+      const subscribeBuild = (listener: () => void) => {
+        buildListeners.add(listener)
+        return () => { buildListeners.delete(listener) }
+      }
+      const notifyBuild = () => { for (const listener of [...buildListeners]) listener() }
       // R5-1e：检出项目 MSW 才放行 SW 注册，与计划覆盖一致；bootstrap 默认屏蔽 API。
       const projectMsw = (await detectProjectMocks(root)).some(source => source.kind === 'msw')
       const layer = createResponseLayer({ previewId: input.previewId, nonce, allowedHosts: ['127.0.0.1'],
@@ -233,9 +255,15 @@ export async function runViteWorker(hooks: ViteWorkerHooks): Promise<void> {
         ...(projectMsw ? { serviceWorker: 'allow' as const } : {}),
         ...(input.plan.viewport === undefined ? {}
           : { frame: { pagePath: VITE_PAGE_PATH, ...input.plan.viewport } }),
-        buildVersion: () => { docBuild = servedBuild; return servedBuild },
+        buildVersion: () => {
+          const changed = docBuild !== servedBuild
+          docBuild = servedBuild
+          if (changed) notifyBuild()
+          return servedBuild
+        },
         // R3-2：与 CLI 同一整页重载通道；seq 只在场景更新时递增。
         buildState: () => ({ build: docBuild, seq: reloadSeq }),
+        subscribeBuild,
         ...(input.plan.readiness.assertions?.length
           ? { assertions: input.plan.readiness.assertions,
             targetDeadlineMs: input.plan.readiness.targetDeadlineMs }
@@ -298,6 +326,8 @@ export async function runViteWorker(hooks: ViteWorkerHooks): Promise<void> {
       }
       const temporaryRoot = input.temporaryRoot
       const workspaceRoot = input.workspaceRoot
+      // optimizer 的文件扫描看不到虚拟 setup，把它已经确认安装的 JS 依赖交给首轮预构建。
+      const generatedDependencies = await generatedSetupDependencies(sources, root, workspaceRoot)
       // 依赖预构建缓存优先放插件数据目录下的持久缓存根（跨预览复用）；大项目每次冷预构建要数十秒，
       // 期间页面反复重载、可见文本为空（2026-11-03 overview 实机推断）。缺省时退回本预览临时目录。
       const cacheDir = input.buildCacheRoot === undefined ? join(temporaryRoot, 'cache')
@@ -321,7 +351,11 @@ export async function runViteWorker(hooks: ViteWorkerHooks): Promise<void> {
           config.optimizeDeps = {
             ...optimization,
             entries: [resolve(root, sources.target), ...(sources.setup ? [sources.setup] : [])],
-            include: [...new Set([...include, ...hooks.optimizeInclude])],
+            include: [...new Set([...include, ...hooks.optimizeInclude,
+              ...generatedDependencies.filter(name => optimization.noDiscovery !== true
+                && !(Array.isArray(optimization.exclude) && optimization.exclude.some(excluded =>
+                  typeof excluded === 'string' && (name === excluded || name.startsWith(excluded + '/'))))),
+            ])],
           }
           config.server = {
             ...serverConfig, middlewareMode: true, host: '127.0.0.1', port: 0, strictPort: true, open: false,
@@ -535,6 +569,7 @@ export async function runViteWorker(hooks: ViteWorkerHooks): Promise<void> {
         // 换绑放最后：此前的异常不会动服务中场景，失败后旧 Mock/Store 仍一致服务。
         swappable.replace(update.name, update.scenario)
         reloadSeq += 1
+        notifyBuild()
         await send({ type: 'scenario-ack', stale: expectBuild === undefined })
       })().catch(async error => {
         try {
@@ -544,6 +579,9 @@ export async function runViteWorker(hooks: ViteWorkerHooks): Promise<void> {
       })
       accepting = true
       await send({ type: 'ready', pid: process.pid, origin, nonce })
+      if (typeof viteServer.warmupRequest === 'function') {
+        void viteServer.warmupRequest(viteVirtualUrl('entry')).catch(() => {})
+      }
     })().catch(fail)
   })
   await send({ type: 'booted', pid: process.pid })

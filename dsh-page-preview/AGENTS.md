@@ -8,35 +8,13 @@
 2. 本文件。
 3. 要改哪个模块，就先读该模块文件头的注释。每个文件头都标注了对应的方案章节。
 
-## 2. 当前状态（2026-11-04，R6 已完成 r6-cp0～r6-cp3）
+## 2. 当前状态
 
-- **R6 已落地（`docs/r6-plan.md`，检查点 `r6-cp0`～`r6-cp3`）**：无 Mock 项目的一轮补数据——real-traits 样本、场景 `envelope`（`__DSH_PREVIEW_DATA__` 展开 + `envelopeHint` 只读建议）、`fixtureDraft.contexts` 调用点上下文（只读有界、脱敏、`context_incomplete` 不阻断）、`write_scenario { mode:'merge', applyTo }`（只追加新键、冲突整体拒绝、写后 refresh+scenario 就地生效）、`unmatched.sinceLastNewEntryMs` 稳定信号 + 可执行 hint。合成数据模式（R6-5）待 Aesc 决策未做；overview/web 实机验收见 r6-plan §6 清单。
-- 2026-11-04 修复：生成 setup 按入口语言参与 Vite 解析（`.js→.ts`），已解析绝对路径不再用 `/@fs/`（f21777c）。
-
-- **当前轮（R5）计划：`docs/r5-plan.md`**（2026-11-03）：上一轮复核修复（R5-0）+ 剩余全部工作（数据 Mock、CLI 对齐、浏览器证据、路由与视口、截图、一键打开、React、Tier 2、收口）。上一轮（R4）：`docs/r4-plan.md`。
-- **R5-0（复核修复）已落地**：R5-0a open 的 pageText 只投影挂载后观测、无则 `page_text_pending`（0a5b4a8）；R5-0b CLI 场景更新入口未生效不换绑、回滚入口、如实 compile-error（067bb8b）；R5-0c Vite worker 失败面三例真实工具链实测、TODO(test:r3-2) 清除（945ced2）。
-- **R3-0 至 R3-7、R4-1 至 R4-7 全部 ✅**：fixture 草稿/场景重载/项目 Mock 识别/影响分析/轮次触发/面板建议/调试日志/缓存回收均已实现并有测试；真实 DSH 事件流与业务样本验收仍在 Aesc 实机清单。发布准备完成（`scripts/pack-check.mjs` 通过、`docs/limitations.md` 定稿），发布动作本身未授权。
-
-- **进度口径以 `docs/development-progress.md` 为准（第二轮 review：`docs/review-2026-11-02.md`），R2 全部完成，P2 未动**；Aesc 决策见方案 §0.3（v1.4），优先于方案正文。
-- 进度文档每项一行状态加证据；本节同样只写要点，不写长段落。
-- 已实现：配置/schema/来源/路径、只读识别、指纹 v2、官方确认接缝、Planner、Runner IPC/会话/账本。
-- static、existing-server、project-command 已接公开 SDK（真实进程/端口/失败/清理），Linux 生命周期已实测。
-- Vue 只读检测/AST 重放、Vite+CLI 预检已实现；未配置 setup 时自动使用入口生成的 setup（计入执行指纹审批，§0.3 第 10 条）；产品注册 vue-vite + vue-cli。
-- React 适配器（R5-7）已注册 `react-vite`：React 18/19 安装元数据检测、`createRoot().render(JSX)` 入口静态重放（StrictMode/Provider 链保序、BrowserRouter/HashRouter/RouterProvider→MemoryRouter、叶组件替换、props 顶层 const 依赖入生成 setup）、Vite worker 同 Vue 分层复用 `adapters/worker-host.ts` 与 `adapters/vite/*` 通用件；React 18.3.1/Vite 5.2.12/plugin-react 4.7.0 + headless Chrome 实测 4/4（含 antd/MUI Provider 冒烟与 Fast Refresh），React 19/webpack/CRA 与 data-router 完整路由表保持 `unknown`/`unsupported`；`/@react-refresh` 已准入（plugin-react preamble 真实需求）。
-- verified 仅限 macOS + Vue 3.4.27/Vite 5.2.12/plugin-vue 5.1.4 实测组合；其余按 unverified_toolchain 如实执行。
-- vue-cli：worker 内跑项目 cli-service、`VUE_CLI_SERVICE_CONFIG_PATH` 包装、devServer 接管、.env* 拦截、wds v3/v4 已验；公开 open 路径已验；CLI scenario 准入已按 §0.3 第 11 条放行；R5-2 起 assertions/navigation 与 Vite 同一机制放行（navigation 仍需显式 setup.navigate），vue26-cli + headless Chrome 与 Linux Chromium 均有实测（`docs/evidence/2026-11-03-linux-browser-evidence.md`）；SUPPORTED_CLI_SERVICE='>=4 <6'（4.5.19 wds3、5.0.9 wds4 均验）。
-- 场景：props/identity/permissions/state/locale 经 reviewed setup、同源 HTTP fixtures、Node handlers（import 前等 Root 复核）；`scenarioReset` 在已验证 Vite 组合为 `supported`（HTTP 级 coverage 如实标注）；`refresh` 已升回 `supported`（R5-3 headless Chrome 实测 HMR 就地应用；载体未验）；CLI 侧全项保持 `unknown`。
-- 路由/视口（R5-4）：`target.kind:'route'` 经只读 route-map 解析叶子组件（未匹配/歧义如实报），`layout:true` 渲染静态父链（router-view 宿主），导航仍须显式 setup.navigate 且项目内导航保留在预览内（跨应用 unsupported）；`viewport` 经插件自有框架页（固定尺寸 iframe，内层取证）在 isolated 路径可用，static/attach/project 仍 `unsupported`。
-- 就绪三层（service/document/target 全 proven 才 ready）；freshness 需「编译成功+浏览器证明同版本已应用」才 current。
-- 网络：同源响应层受控、未命中 `unmatched_request`；业务 devServer proxy/hook 不执行；R5-1e 起 Vite 下选项可静态求值的 vite-plugin-mock 在 Runner 执行（temporaryRoot 副本、只应答 businessPaths 外同源路径）、MSW 经入口重放的 worker.start() 启用（检出时 bootstrap 放行 SW，否则屏蔽 navigator.serviceWorker）；R5-1g 起场景可声明 `ws`/`sse` 固定序列通道（Vue worker 准入并播放，未声明仍 block/unmatched，static 声明 ws 如实拒绝）；HMR Upgrade 仍归 Vite/CLI 自有监听。
-- 批准：会话级（同会话同指纹有效，§0.3 第 8 条）；指纹经 `start` IPC 传 Runner、执行前重核，内存不落盘；测试批准均为合成答复。
-- Client：面板列预览/诊断/停止，`--dsw-alias-*` 主题变量，URL 经 DSH Browser 页签打开；Aesc 本机 DSH desktop 已部分实测（overview/web open→侧边栏，逐项证据待 T 阶段归档）。
-- 平台：macOS arm64 实测；Linux（Docker `node:24-slim`，arm64，Node 24.22.2）工具链全链路 + Debian Chromium 156 浏览器两条腿（vite refresh、CLI navigation/assertions）通过（`docs/evidence/2026-11-03-linux-browser-evidence.md`）；早前"全 E2E 面 135/135 + Chromium 156"无归档运行记录——未核实；Windows 已实现（2026-11-10，Aesc 决定列入支持矩阵）：`shared/runner/winproc.ts` + `platform-env.ts`，组归属按后代+创建时间，只有合成单测，未实机验收（`docs/limitations.md` §2）。
-- 样本：tests/toolchains/ 七套已批准安装（install-toolchains.mjs 幂等；react18-vite 为 R5-7 新增）；Tier 1 矩阵 R5-2 跑齐（`vue-uikit-matrix.test.ts`）：element-plus/antdv `verified:true`，element-ui 矩阵齐但按决策 S 保持 false；Tier 2 冒烟 R5-8 七库全过（`vue-uikit-tier2.test.ts`，软链显式安装版）：naive-ui/tdesign-vue-next/vant/arco/vuetify/primevue@4.2.5（Vite）+ view-design（Vue 2.6 + cli 5）；按方案 R5-8 冒烟不升 `verified`（保持 false，条目注释记实测组合）。注意：Docker 内 npm ci 会覆盖宿主 node_modules 的平台可选依赖，跨平台跑批后需在本机 `npm ci` 恢复。
-- 最新检查（2026-11-04）：Node 24.13.1/macOS arm64，typecheck 0，`check-line-length` 通过，全量 `npm test` 598/598/0 跳过（含三套 vue-cli、vue3-self-contained 与 react18-vite 工具链 E2E）；`npm run build` + `pack-check` 通过（539 文件/2476.5 KiB）；worker SIGTERM 优雅退出已修复为真实路径（vite.close() 不返回的根因，关闭有界化）。
-- R5-9 收口：`npm pack` 干净目录安装验证通过（main/typert/remote 导出 3/9/9 可加载，`browser/react` 入包；`client.js` 为浏览器产物不以裸 Node 验证）；`session-registry` 运行时引用的 `dsh-llm`（ToolCallId brand 函数）已按锁定版补入 peers/devDeps；zod 4.4.3 告警已调查——锁定线（next=0.2.1-rc.5）全链含 `zod<4.6.6`，alpha 线 0.2.2-alpha.3 已重构但不属锁定范围，保持 pin 不升级、登记发布风险（`docs/r5-blockers.md` §2）。
-- Phase 0 记录见 `docs/phase0-verification.md`；overview/web 仅只读识别；图片模型调用按用户决定不执行。
-- 授权边界：本地 commit 已授权，禁推送/发布；产品安装/重启需新授权；zod 4.4.3 审计告警保留发布风险。
+- 进度与当前轮计划以 `docs/development-progress.md` 为准（每项一行状态加证据）；逐项完成说明和历史快照在 `docs/progress-log.md`。本节不记录进度，避免与进度文档分叉。
+- Aesc 的决策见方案 §0.3（v1.4），优先于方案正文。另有一条未写入方案的决定：不调用图片模型（overview/web 只做只读识别）。
+- 能力边界与已知限制以 `docs/limitations.md` 为准：`verified` 只覆盖实测组合，其余按 `unverified_toolchain` 如实执行；Windows 只有合成单测，未实机验收。
+- 授权边界：本地 commit 已授权；推送、发布 npm 包、对外上传任何内容、产品安装或重启需要新授权。zod 4.4.3 审计告警作为发布风险保留（`docs/r5-blockers.md` §2）。
+- 在 Docker 内执行 `npm ci` 会覆盖宿主 `node_modules` 中的平台可选依赖；跨平台跑批后要在本机重新 `npm ci`。
 
 ## 3. 常用命令
 
@@ -138,7 +116,7 @@ browser/          → 不 import src 中的任何 TS
 
 ## 9. 需要先问用户的事
 
-- 提交、推送、发布 npm 包、对外上传任何内容。
+- 推送、发布 npm 包、对外上传任何内容（本地 commit 已授权，无需询问）。
 - 新增运行时依赖（需要说明理由；优先使用 Node 内置能力），或升级 DSH 依赖版本。已批准、无需再问的：`docs/toolchains/` 下三份测试工具链清单，安装到 `tests/toolchains/<组合>/`（2026-11-01）。清单以外的新工具链（例如自包含的 Vue 3、非精确版本的 Vue 3 + Vite 样本）仍需申请。
 - 改变方案中的产品边界，例如放宽硬约束、修改首版范围或支持矩阵。
 - Phase 0 某个判定项不通过时采用哪种降级方式。

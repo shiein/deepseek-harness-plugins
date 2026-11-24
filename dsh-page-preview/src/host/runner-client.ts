@@ -10,6 +10,7 @@ import { DiagnosticCode } from '../shared/errors.ts'
 import type { RunnerReply, RunnerRequest, RunnerSnapshot, RunnerToHost } from '../shared/ipc.ts'
 import { createFileLedger, readProcessStartTime } from '../shared/runner/ledger.ts'
 import type { LedgerEntry } from '../shared/runner/ledger.ts'
+import { requireSupportedPlatform } from '../shared/runner/port-ownership.ts'
 import { runnerPaths } from '../shared/runner/paths.ts'
 import { RunnerConnection, RunnerConnectionError } from './runner-connection.ts'
 import { resolveNodeRuntime } from './node-runtime.ts'
@@ -85,6 +86,11 @@ export class RunnerClient {
   onMessage(listener: RunnerListener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  snapshotOf(previewId: string): RunnerSnapshot | undefined {
+    const snapshot = this.snapshots.get(previewId)
+    return snapshot === undefined ? undefined : structuredClone(snapshot)
   }
 
   async start(
@@ -254,7 +260,7 @@ export class RunnerClient {
     const ledger = createFileLedger(paths.control)
     const report = await ledger.reconcile()
     if (report.residual.length || report.corrupt.length) throw new RunnerClientError(DiagnosticCode.cleanupFailed, 'A prior Runner still requires ownership verification')
-    await readProcessStartTime(process.pid)
+    requireSupportedPlatform()
     if (this.closed) throw new Error('Runner client is disposed')
     const { executable } = await resolveNodeRuntime(this.options.nodeExecutable)
     if (this.closed) throw new Error('Runner client is disposed')

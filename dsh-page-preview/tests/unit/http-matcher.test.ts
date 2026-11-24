@@ -39,15 +39,46 @@ test('declared bodies require exact deep JSON equality with object order ignored
   assert.equal(matchFixture({ ...request, body: { arbitrary: true } }, fixtures, origin).kind, 'matched')
 })
 
-test('path parameters capture one encoded segment and exact/parameter overlaps stay ambiguous', () => {
+test('path parameters capture one encoded segment and higher specificity beats generic matches', () => {
   const fixtures: HttpFixture[] = [{ method: 'GET', path: '/api/users/:id', response: ok }]
   const request = { origin, method: 'GET', path: '/api/users/%E4%B8%AD%2F42', query: {} }
   const matched = matchFixture(request, fixtures, origin)
   assert.ok(matched.kind === 'matched')
   assert.deepEqual(matched.params, { id: '中/42' })
-  for (const path of ['/api/users', '/api/users/', '/api/users/a/b', '/api/users/%E0%A4']) assert.equal(matchFixture({ ...request, path }, fixtures, origin).kind, 'unmatched')
+  for (const path of ['/api/users', '/api/users/', '/api/users/a/b', '/api/users/%E0%A4']) {
+    assert.equal(matchFixture({ ...request, path }, fixtures, origin).kind, 'unmatched')
+  }
   fixtures.push({ method: 'GET', path: '/api/users/admin', response: ok })
-  assert.deepEqual(matchFixture({ ...request, path: '/api/users/admin' }, fixtures, origin), { kind: 'ambiguous', indexes: [0, 1] })
+  const exactWin = matchFixture({ ...request, path: '/api/users/admin' }, fixtures, origin)
+  assert.equal(exactWin.kind, 'matched')
+  if (exactWin.kind === 'matched') assert.equal(exactWin.index, 1)
+  const tied: HttpFixture[] = [
+    { method: 'GET', path: '/api/:a/admin', response: ok },
+    { method: 'GET', path: '/api/users/:b', response: ok },
+  ]
+  assert.deepEqual(matchFixture({ ...request, path: '/api/users/admin' }, tied, origin),
+    { kind: 'ambiguous', indexes: [0, 1] })
+  const byQuery: HttpFixture[] = [
+    { method: 'POST', path: '/api/items', response: ok },
+    { method: 'POST', path: '/api/items', query: { tab: 'all' }, response: ok },
+    { method: 'POST', path: '/api/items', query: { tab: 'all' }, body: { a: 1 }, response: ok },
+  ]
+  const qHit = matchFixture({ origin, method: 'POST', path: '/api/items', query: { tab: 'all' } }, byQuery, origin)
+  assert.ok(qHit.kind === 'matched' && qHit.index === 1)
+  const bHit = matchFixture({ origin, method: 'POST', path: '/api/items',
+    query: { tab: 'all' }, body: { a: 1 } }, byQuery, origin)
+  assert.ok(bHit.kind === 'matched' && bHit.index === 2)
+})
+
+test('duplicateQueryKeys prevent matching fixtures that constrain the duplicated key', () => {
+  const fixtures: HttpFixture[] = [
+    { method: 'GET', path: '/api/items', response: { status: 200, body: 'any' } },
+    { method: 'GET', path: '/api/items', query: { tag: 'a' }, response: { status: 200, body: 'tag-a' } },
+  ]
+  const matched = matchFixture({
+    origin, method: 'GET', path: '/api/items', query: { tag: 'a' }, duplicateQueryKeys: new Set(['tag']),
+  }, fixtures, origin)
+  assert.ok(matched.kind === 'matched' && matched.index === 0)
 })
 
 test('path pattern syntax errors are explicit, literals decode once and parameter names do not mutate prototypes', () => {

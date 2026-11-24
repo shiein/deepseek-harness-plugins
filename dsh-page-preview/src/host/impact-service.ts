@@ -154,7 +154,7 @@ export class ImpactService {
     const forceInclude: string[] = []
     const hashPaths: string[] = []
     const workspaceRel = (absolute: string) =>
-      isWithinRoot(root, absolute) ? absolute.slice(root.length + 1).split(sep).join('/') : undefined
+      isWithinRoot(root, absolute) ? relative(root, absolute).split(sep).join('/') : undefined
     const apps = new Map<string, string>()
     for (const { config } of projects) {
       const appRoot = await resolveProjectPath(root, config.project.root).catch(() => undefined)

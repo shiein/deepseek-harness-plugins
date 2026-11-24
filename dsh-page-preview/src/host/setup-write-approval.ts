@@ -32,15 +32,22 @@ export async function requestConfigWriteApproval(
   projectId: string,
   scenario: string,
   exec: ToolRunContext,
+  mode: 'create' | 'merge' | 'upsert' = 'create',
 ): Promise<SetupWriteOutcome> {
+  const modeLabelEn = mode === 'upsert'
+    ? 'upsert (create or update scenario fields and matching fixtures)'
+    : mode === 'merge' ? 'merge (append new fixtures and fields)' : 'create (new scenario)'
+  const modeLabelZh = mode === 'upsert'
+    ? 'upsert（不存在则新建，已存在则更新字段并替换/追加匹配 fixture）'
+    : mode === 'merge' ? 'merge（仅追加新 fixture 与新字段）' : 'create（新建场景）'
   return request(service, caller, exec, {
-    reason: 'Write scenario ' + JSON.stringify(scenario) + ' for project ' + projectId
-      + ' into page-preview.config.json',
+    reason: 'Write scenario ' + JSON.stringify(scenario) + ' (' + mode + ') for project '
+      + projectId + ' into page-preview.config.json',
     en: 'Allow writing a filled fixture scenario into the workspace config?\nProject: ' + projectId
-      + '\nScenario: ' + scenario
+      + '\nScenario: ' + scenario + '\nMode: ' + modeLabelEn
       + '\nFile: page-preview.config.json (the existing file is backed up before writing)',
     zh: '是否允许把填好的 fixture 场景写入工作区配置？\n项目：' + projectId + '\n场景：' + scenario
-      + '\n文件：page-preview.config.json（已有文件写前备份）',
+      + '\n模式：' + modeLabelZh + '\n文件：page-preview.config.json（已有文件写前备份）',
   })
 }
 

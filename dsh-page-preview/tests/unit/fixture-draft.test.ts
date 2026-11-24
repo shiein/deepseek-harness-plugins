@@ -6,6 +6,9 @@ import {
 } from '../../src/scenario/fixture-draft.ts'
 import type { UnmatchedForDraft } from '../../src/scenario/fixture-draft.ts'
 import { validateConfig } from '../../src/shared/config/schema.ts'
+import { createRedactor } from '../../src/shared/redact.ts'
+import { renderResult, toJson } from '../../src/host/output.ts'
+import type { StatusResult } from '../../src/shared/contracts.ts'
 
 function entry(path: string, count = 1, rest: Partial<UnmatchedForDraft> = {}): UnmatchedForDraft {
   return { method: 'get', path, queryKeys: [], count, ...rest }
@@ -21,15 +24,47 @@ test('fixtures sort by count descending with deterministic ties, truncated by ma
   assert.deepEqual(same.fixtures.map(value => value.path), ['/a', '/z'])
 })
 
-test('method is uppercased; query keys become empty-string constraints; bodies stay placeholder', () => {
+test('model-visible imported examples require explicit fill for credentials and known secret values', () => {
+  const redactor = createRedactor({ secrets: ['private-fixture-value-52'] })
+  const draft = draftFixtures('s', [entry('/api/user')], 1, () => ({
+    provenance: 'mocks/user.json',
+    body: {
+      username: 'Demo', key: 'home', rowKey: '1', menuKey: 'apps',
+      apiKey: 'k-1234', accessToken: 'some-token', Authorization: 'Bearer 123', password: 'secret',
+      records: [{ note: 'Value: private-fixture-value-52' }], ready: true,
+    },
+  }), { redact: redactor.text })
+  assert.deepEqual(draft.fixtures[0]?.response.body, {
+    username: 'Demo', key: 'home', rowKey: '1', menuKey: 'apps',
+    apiKey: FIXTURE_PLACEHOLDER, accessToken: FIXTURE_PLACEHOLDER,
+    Authorization: FIXTURE_PLACEHOLDER, password: FIXTURE_PLACEHOLDER,
+    records: [{ note: FIXTURE_PLACEHOLDER }], ready: true,
+  })
+  assert.doesNotMatch(draft.configSnippet, /some-token|private-fixture-value-52|Bearer 123/)
+  assert.ok(containsPlaceholder(JSON.parse(draft.configSnippet)))
+})
+
+test('oversized draft renders a bounded, valid placeholder snippet', () => {
+  const fixtureDraft = draftFixtures('s', [entry('/api/user')], 1,
+    () => ({ body: 'x'.repeat(9000), provenance: 'mocks/user.json' }))
+  const result: StatusResult = { status: 'ok', diagnostics: [], fixtureDraft }
+  const text = renderResult(toJson(result))[0]!.text
+  const renderedSnippet = text.split('fixtureDraft.configSnippet (partial):\n')[1]
+  assert.ok(renderedSnippet)
+  const scene = JSON.parse(renderedSnippet).s
+  assert.equal(scene.http[0].path, '/api/user')
+  assert.equal(scene.http[0].response.body, FIXTURE_PLACEHOLDER)
+  assert.ok(text.length < 8000)
+})
+
+test('method is uppercased; queryKeys do not emit empty constraints; bodies stay placeholder', () => {
   const draft = draftFixtures('s', [entry('/api/search', 2, { queryKeys: ['page', 'q'] })])
   const fixture = draft.fixtures[0]
   assert.equal(fixture?.method, 'GET')
-  assert.deepEqual(fixture?.query, { page: '', q: '' })
+  assert.equal(fixture?.query, undefined)
   assert.equal(fixture?.response.body, FIXTURE_PLACEHOLDER)
   assert.equal(fixture?.response.status, 200)
   assert.equal(typeof fixture?.provenance, 'string')
-  // 无 queryKeys 的条目不带 query 字段。
   assert.equal(draftFixtures('s', [entry('/api/plain')]).fixtures[0]?.query, undefined)
 })
 
@@ -148,4 +183,52 @@ test('containsPlaceholder deep-rejects marker strings in bodies, headers and nes
   assert.equal(containsPlaceholder({ data: 'real' }), false)
   assert.equal(containsPlaceholder(undefined), false)
   assert.equal(containsPlaceholder(42), false)
+})
+
+test('renderResult includes suggestions, shapeHints, typeHint.shape, handlerDrafts and compact envelope', () => {
+  const payload: StatusResult = {
+    status: 'ok',
+    diagnostics: [],
+    suggestions: [{
+      projectId: 'web', selector: { kind: 'file', path: 'src/Home.vue' },
+      relation: ['edited'], evidence: 'strong', origin: 'agent-confirmed',
+    }],
+    suggestionsOmitted: 2,
+    fixtureDraft: {
+      scenario: 's', omitted: 0, businessPaths: ['/api/**'],
+      configSnippet: JSON.stringify({
+        s: {
+          businessPaths: ['/api/**'],
+          envelope: { template: { code: 0, data: '__DSH_PREVIEW_DATA__' } },
+          http: [
+            { method: 'GET', path: '/api/big', response: { status: 200, body: 'x'.repeat(9000) } },
+            { method: 'GET', path: '/api/small', response: { status: 200, body: { ok: true } } },
+          ],
+        },
+      }),
+      fixtures: [
+        { method: 'GET', path: '/api/big', response: { status: 200, body: 'x'.repeat(9000) } },
+        { method: 'GET', path: '/api/small', response: { status: 200, body: { ok: true } } },
+      ],
+      shapeHints: [{ method: 'GET', path: '/api/small', shape: { ok: false }, provenance: 'openapi.yaml' }],
+      handlerDrafts: [{ method: 'POST', path: '/api/save', template: 'async () => undefined' }],
+      contexts: [{
+        method: 'GET', path: '/api/small', requestSites: [], consumers: [],
+        typeHint: { shape: { ok: 'boolean' }, provenance: 'Resp at src/api.ts:1' },
+      }],
+      crossOrigin: [],
+    },
+  }
+  const rendered = renderResult(toJson(payload))[0]!.text
+  assert.match(rendered, /suggestions:[\s\S]*src\/Home\.vue.*origin=agent-confirmed/)
+  assert.match(rendered, /\+2 more suggestions omitted/)
+  assert.match(rendered, /shapeHint GET \/api\/small: \{"ok":false\}/)
+  assert.match(rendered, /response type: Resp at src\/api\.ts:1 shape=\{"ok":"boolean"\}/)
+  assert.match(rendered, /handlerDrafts[\s\S]*POST \/api\/save/)
+  const partialLine = rendered.split('fixtureDraft.configSnippet (partial):\n')[1]?.split('\n')[0]
+  assert.ok(partialLine)
+  const parsed = JSON.parse(partialLine).s
+  assert.deepEqual(parsed.envelope, { template: { code: 0, data: '__DSH_PREVIEW_DATA__' } })
+  assert.equal(parsed.http[0].response.body, FIXTURE_PLACEHOLDER)
+  assert.deepEqual(parsed.http[1].response.body, { ok: true })
 })

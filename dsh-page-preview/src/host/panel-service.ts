@@ -8,7 +8,13 @@ import type {} from '@deepseek-ai/dsh-session'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session, SessionStore } from '@deepseek-ai/dsh-session'
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import type { PanelOpenReply, PanelSnapshot, PanelStopReply } from '../client/protocol.ts'
+import type {
+  PanelOpenReply,
+  PanelRefreshReply,
+  PanelRefreshRequest,
+  PanelSnapshot,
+  PanelStopReply,
+} from '../client/protocol.ts'
 import { resolvePreviewCaller } from './caller.ts'
 import type { PreviewCaller } from './caller.ts'
 import type { SessionRegistry } from './session-registry.ts'
@@ -29,9 +35,10 @@ export class PanelService extends TypertRemoteService {
     // 跟随期间登记：open 据此知道侧边栏 Browser 会自动加载新预览，可等待真实挂载证据。
     const release = this.registry.trackFollower(caller.ownerSessionId)
     try {
-      let version = 0
+      let version = this.registry.currentPanelVersion()
       while (!signal.aborted) {
-        yield await this.registry.panelSnapshot(caller)
+        const snapshot = await this.registry.panelSnapshot(caller)
+        yield snapshot
         const next = await this.registry.panelChanges(version, signal)
         if (next === undefined) return
         version = next
@@ -42,6 +49,11 @@ export class PanelService extends TypertRemoteService {
   /** 面板停止：复用同一 owner 核对；异属会话只能得到 not_found，看不到对方预览。 */
   async stop(sessionId: string, previewId: string): Promise<PanelStopReply> {
     return this.registry.stopForOwner(await this.caller(sessionId), previewId)
+  }
+
+  /** 面板刷新与场景切换：复用同一 owner 核对与 Runner 刷新路径。 */
+  async refresh(sessionId: string, request: PanelRefreshRequest): Promise<PanelRefreshReply> {
+    return this.registry.refreshForOwner(await this.caller(sessionId), request)
   }
 
   /**

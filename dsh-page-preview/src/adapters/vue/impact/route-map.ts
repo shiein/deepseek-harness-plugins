@@ -14,7 +14,7 @@
  */
 
 import ts from 'typescript'
-import { join, relative, sep } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { readProjectText } from '../../../shared/profile.ts'
 import { parseVueSfc } from '../../../shared/vue-sfc.ts'
 import { readVueBuildConfig } from '../readonly-config.ts'
@@ -30,6 +30,8 @@ export interface RouteEntry {
   dynamic: boolean
   /** 静态父布局链：祖先路由组件文件，最外层在前（R5-4）；无静态父组件时为空。 */
   ancestors: string[]
+  /** 静态 meta.title；可用于显式预览命令定位目标。 */
+  title?: string
 }
 
 export interface RouteMap {
@@ -109,16 +111,39 @@ function childPath(parent: string, child: string): string {
 
 const DYNAMIC_SEGMENT = /[:*]/
 
+function propertyValue(object: ts.Expression | undefined, name: string): ts.Expression | undefined {
+  if (!object || !ts.isObjectLiteralExpression(object)) return undefined
+  for (const property of object.properties) {
+    if (ts.isPropertyAssignment(property) && (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name))
+        && property.name.text === name) return property.initializer
+  }
+  return undefined
+}
+
+/** 只为页面查找读取本地 TypeScript 路径声明，无法静态确认的构建别名仍留给 Runner。 */
+async function declaredSourcePaths(appRoot: string) {
+  const file = join(appRoot, 'tsconfig.json')
+  const source = await readProjectText(file, appRoot)
+  if (source === undefined) return undefined
+  const parsed = ts.parseConfigFileTextToJson(file, source)
+  if (parsed.error) return undefined
+  const { options } = ts.convertCompilerOptionsFromJson(parsed.config?.compilerOptions ?? {}, appRoot, file)
+  if (!options.paths) return undefined
+  return { base: options.baseUrl ?? appRoot, paths: options.paths }
+}
+
 /**
  * routes 表达式 → 数组字面量：数组字面量 / 同文件 const / 经 import 绑定的跨文件导出。
  * 跨文件只解析一跳并限深，防止环。
  */
-export async function readRouteMap(appRoot: string, entry: string | undefined, graph?: ModuleGraph): Promise<RouteMap> {
+export async function readRouteMap(appRoot: string, entry: string | undefined, graph?: ModuleGraph,
+  options?: { searchByTitle?: boolean }): Promise<RouteMap> {
   const gaps: string[] = []
   const note = (text: string) => { if (gaps.length < 50 && !gaps.includes(text)) gaps.push(text) }
   graph ??= await buildModuleGraph(appRoot)
   const config = await readVueBuildConfig(appRoot)
   const files = graph.files
+  const sourcePaths = options?.searchByTitle ? await declaredSourcePaths(appRoot) : undefined
   const asts = new Map<string, Promise<ModuleAst | undefined>>()
   const astOf = (rel: string) => {
     let pending = asts.get(rel)
@@ -141,6 +166,25 @@ export async function readRouteMap(appRoot: string, entry: string | undefined, g
   const resolveSpecifier = async (fromRel: string, specifier: string): Promise<string | undefined> => {
     const resolution = resolveModuleSpecifier(appRoot, fromRel, specifier, files, config)
     if (resolution.kind === 'file') return resolution.path
+    if (sourcePaths && resolution.kind !== 'outside') {
+      const candidates = new Set<string>()
+      for (const [pattern, bindings] of Object.entries(sourcePaths.paths)) {
+        if (!Array.isArray(bindings) || bindings.some(binding => typeof binding !== 'string')) continue
+        const [prefix, suffix, extra] = pattern.split('*')
+        if (prefix === undefined || extra !== undefined) continue
+        if (suffix === undefined ? specifier !== prefix
+          : !specifier.startsWith(prefix) || !specifier.endsWith(suffix)
+            || specifier.length < prefix.length + suffix.length) continue
+        const wildcard = suffix === undefined ? '' : specifier.slice(prefix.length, specifier.length - suffix.length)
+        for (const binding of bindings) {
+          const path = toRel(appRoot, resolve(sourcePaths.base, binding.replace('*', () => wildcard)))
+          if (isAbsolute(path) || path.startsWith('../')) continue
+          const match = resolveModuleSpecifier(appRoot, fromRel, '/' + path, files, config)
+          if (match.kind === 'file') candidates.add(match.path)
+        }
+      }
+      if (candidates.size === 1) return [...candidates][0]
+    }
     if (resolution.kind === 'unresolved')
       note(fromRel + ': route component specifier "' + specifier + '" ' +
         (resolution.reason === 'opaque-alias' ? 'matches a build alias that cannot be evaluated statically'
@@ -194,24 +238,24 @@ export async function readRouteMap(appRoot: string, entry: string | undefined, g
     ancestors: string[] = []) => {
     for (const element of array.elements) {
       if (!ts.isObjectLiteralExpression(element)) { note(rel + ': a route entry is not an object literal'); continue }
-      const prop = (name: string) => element.properties.find(value =>
-        ts.isPropertyAssignment(value) && value.name
-        && (ts.isIdentifier(value.name) || ts.isStringLiteralLike(value.name)) && value.name.text === name)
-      const pathProp = prop('path')
-      const pathValue = pathProp && ts.isPropertyAssignment(pathProp) ? pathProp.initializer : undefined
+      const pathValue = propertyValue(element, 'path')
       const path = pathValue && ts.isStringLiteralLike(pathValue) ? pathValue.text : undefined
       if (path === undefined) { note(rel + ': a route path is not a string literal'); continue }
       const full = childPath(prefix, path)
-      const componentProp = prop('component')
+      const component = propertyValue(element, 'component')
       let file: string | undefined
-      if (componentProp && ts.isPropertyAssignment(componentProp)) {
-        file = await componentFile(componentProp.initializer, rel)
-        if (file !== undefined)
-          routes.push({ path: full, component: file, dynamic: DYNAMIC_SEGMENT.test(path), ancestors })
+      if (component) {
+        file = await componentFile(component, rel)
+        if (file !== undefined) {
+          const title = propertyValue(propertyValue(element, 'meta'), 'title')
+          routes.push({ path: full, component: file, dynamic: DYNAMIC_SEGMENT.test(path), ancestors,
+            ...(title && ts.isStringLiteralLike(title) ? { title: title.text } : {}),
+          })
+        }
       }
-      const childrenProp = prop('children')
-      if (childrenProp && ts.isPropertyAssignment(childrenProp)) {
-        const children = await arrayFor(childrenProp.initializer, rel, depth + 1)
+      const childrenValue = propertyValue(element, 'children')
+      if (childrenValue) {
+        const children = await arrayFor(childrenValue, rel, depth + 1)
         if (children) await parseEntries(children.array, children.rel, full, depth + 1,
           file === undefined ? ancestors : [...ancestors, file])
         else note(rel + ': route children of ' + JSON.stringify(full) + ' are not a static array')

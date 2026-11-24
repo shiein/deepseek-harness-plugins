@@ -128,8 +128,10 @@ export async function probeReact(ctx: AdapterContext, target?: ResolvedTarget): 
   const hostCandidate = info?.buildHost.kind === 'vite'
     || info?.buildHost.kind === 'unknown'
       && ctx.profile.buildTools.some(value => value.value.name === 'vite')
+  const validSelector = !selector || selector.kind === 'route'
+    || (selector.kind === 'file' && moduleFile(selector.path))
   const matched = info !== undefined && info.buildHost.kind !== 'webpack' && hostCandidate === true
-    && !info.isolationExcluded.length && (!selector || selector.kind === 'file' && moduleFile(selector.path))
+    && !info.isolationExcluded.length && validSelector
   return { matched, capabilities: reactCandidateCapabilities(),
     evidence: matched
       ? [...info.evidence, 'Candidate module only; no project configuration or source was executed'] : [],

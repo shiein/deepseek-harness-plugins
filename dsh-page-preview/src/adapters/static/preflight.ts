@@ -60,7 +60,13 @@ export async function discoverStatic(ctx: AdapterContext): Promise<DiscoverResul
 
 export async function probeStatic(ctx: AdapterContext, target?: ResolvedTarget): Promise<ProbeResult> {
   const selector = target?.selector
-  const matched = selector ? selector.kind === 'route' || selector.kind === 'file' && /\.html?$/i.test(selector.path) : (await discoverStatic(ctx)).candidates.length > 0
+  const runtime = ctx.config.project.runtime
+  const staticAllowed = runtime.strategy === 'static' || runtime.adapter === 'static'
+    || !ctx.profile.buildTools.some(value => value.value.name !== 'none')
+  const matched = selector
+    ? (selector.kind === 'route' && staticAllowed)
+      || (selector.kind === 'file' && /\.html?$/i.test(selector.path))
+    : (await discoverStatic(ctx)).candidates.length > 0
   return { matched, capabilities: staticCapabilities(), evidence: matched ? ['Concrete HTML/local route candidate; plan validates resources before execution'] : [], limits: ['No compilation, component isolation, browser scene initialization or automatic carrier reload'] }
 }
 

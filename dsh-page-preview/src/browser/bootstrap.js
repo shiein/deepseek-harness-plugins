@@ -217,5 +217,10 @@
       checkAssertions()
       sendText()
     },
+    mountFailed: function (error) {
+      report({ kind: 'target-mount-failed', message: String(error && error.message ? error.message : error),
+        stack: error && typeof error.stack === 'string' ? error.stack : undefined })
+      console.error(error)
+    },
   }
 })()

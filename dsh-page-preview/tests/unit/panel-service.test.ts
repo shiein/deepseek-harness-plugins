@@ -127,3 +127,33 @@ test('panel suggestion open shares the tool open path: payload validation, owner
   await assert.rejects(f.service.open('missing-session', { projectId: 'site', target: file }))
   })
 
+test('panel snapshots include availableScenarios and unmatchedItems, and refresh stays owner-scoped',
+  options, async t => {
+  const f = await setup(t)
+  const sceneProject = {
+    id: 'site', root: '.',
+    runtime: { strategy: 'static', adapter: 'static', publicRoot: 'public' },
+    targets: [{ id: 'index', selector: { kind: 'file', path: 'public/index.html' } }],
+    scenarios: { empty: { businessPaths: ['/api/**'], http: [] }, loaded: { businessPaths: ['/api/**'], http: [] } },
+  }
+  await writeFile(join(f.workspace, 'page-preview.config.json'), JSON.stringify({
+    schemaVersion: 1, projects: [sceneProject],
+  }))
+  const target = JSON.stringify({ kind: 'file', path: 'public/index.html' })
+  const opened = await f.registry.open({ projectId: 'site', target: JSON.parse(target), scenario: 'empty' }, {
+    agent: { id: 'owner-A', session: f.sessions.get(SessionId('owner-A'))! },
+    callId: 'c1', rootCallId: 'c1', name: 'open', arguments: {},
+    signal: AbortSignal.timeout(5000), token: Symbol('t'), deferContext() {}, concludeTurn() {},
+  } as never)
+  assert.equal(opened.status, 'ok')
+  const previewId = opened.preview!.previewId
+  await fetch(new URL('/api/missing-from-panel', opened.preview!.url!))
+  const snapshot = await f.registry.panelSnapshot({ ownerSessionId: 'owner-A', workspaceRoot: f.workspace })
+  assert.deepEqual(snapshot.previews[0]?.availableScenarios, ['empty', 'loaded'])
+  assert.deepEqual(snapshot.previews[0]?.unmatchedItems, [{ method: 'GET', path: '/api/missing-from-panel', count: 1 }])
+  assert.equal((await f.service.refresh('owner-B', { previewId })).status, 'not_found')
+  const ownRefresh = await f.service.refresh('owner-A', { previewId })
+  assert.equal(ownRefresh.status, 'unsupported')
+  assert.equal((await f.service.stop('owner-A', previewId)).status, 'ok')
+})
+

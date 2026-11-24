@@ -231,3 +231,31 @@ test('a merged-mode commit refuses when the base file was deleted after planning
     (reason: unknown) => reason)
   assert.ok(error instanceof ConfigWriteError && error.stale, 'a deleted base file is a stale plan')
 })
+
+test('upsert mode creates absent scenarios and updates existing fields, businessPaths, and fixtures', async () => {
+  const workspace = await dir()
+  const store = await dir()
+  const file = join(workspace, 'page-preview.config.json')
+  // 场景文件不存在时 upsert 走 created 分支。
+  const createdPlan = await planScenarioWrite(workspace, { id: 'site', root: '.' }, 'fresh', definition, store, 'upsert')
+  assert.equal(createdPlan.mode, 'created')
+  await commitScenarioWrite(createdPlan)
+  // 场景已存在时：businessPaths 取并集、标量/envelope 覆盖、匹配 fixture 原位替换、新 fixture 追加。
+  const next: ScenarioConfig = {
+    businessPaths: ['/api/**', '/auth/**'],
+    envelope: { template: { code: 0, data: '__DSH_PREVIEW_DATA__' } },
+    http: [
+      { method: 'get', path: '/api/orders', response: { status: 200, body: [{ id: 9 }] } },
+      { method: 'POST', path: '/api/orders', response: { status: 201, body: { ok: true } } },
+    ],
+  }
+  const updatePlan = await planScenarioWrite(workspace, { id: 'site', root: '.' }, 'fresh', next, store, 'upsert')
+  assert.equal(updatePlan.mode, 'merged')
+  await commitScenarioWrite(updatePlan)
+  const saved = JSON.parse(await readFile(file, 'utf8')).projects[0].scenarios.fresh
+  assert.deepEqual(saved.businessPaths, ['/api/**', '/auth/**'])
+  assert.deepEqual(saved.envelope, { template: { code: 0, data: '__DSH_PREVIEW_DATA__' } })
+  assert.equal(saved.http.length, 2)
+  assert.deepEqual(saved.http[0].response.body, [{ id: 9 }])
+  assert.equal(saved.http[1].method, 'POST')
+})

@@ -31,4 +31,7 @@ async function main() {
     controller.stop().catch(function (error) { throw error })
   }, { once: true })
 }
-main().catch(function (error) { throw error })
+main().catch(function (error) {
+  if (!window.__DSH_PREVIEW__) throw error
+  window.__DSH_PREVIEW__.mountFailed(error)
+})

@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto'
 import type { ScenarioConfig } from '../shared/config/schema.ts'
 import { DiagnosticCode, RunnerSessionError } from '../shared/errors.ts'
-import { createMockMiddleware, validateChannelPath } from './mock-middleware.ts'
+import { businessPath, createMockMiddleware, validateChannelPath } from './mock-middleware.ts'
 import { ScenarioStore } from './store.ts'
 import { readScenarioBodyFile } from './files.ts'
 
@@ -25,11 +25,25 @@ export async function inspectScenarioFixtures(appRoot: string, scene: ScenarioCo
       fixtures: scene.http ?? [], ...(scene.envelope === undefined ? {} : { envelope: scene.envelope }),
       sse: scene.sse ?? [], store: new ScenarioStore('__preflight__'),
       readBodyFile, onUnmatched() {}, onDiagnostic() {} })
+    const pathMatchers = (scene.businessPaths ?? []).map(businessPath)
+    for (const fixture of scene.http ?? []) {
+      if (fixture.origin !== undefined) continue
+      if (!pathMatchers.some(matches => matches(fixture.path))) {
+        throw problem(DiagnosticCode.configInvalid,
+          `Same-origin fixture ${fixture.method.toUpperCase()} ${fixture.path} does not match scenario.businessPaths`,
+          'Add a matching glob pattern to scenario.businessPaths (e.g. "/api/**") or specify fixture.origin')
+      }
+    }
     // R5-1g：ws 通道与 SSE 同规则——字面量同源 pathname（schema 已排 query/hash，这里再排通配与坏编码）。
     for (const channel of scene.ws ?? []) validateChannelPath(channel.path)
     const files = new Map<string, string>()
     for (const fixture of scene.http ?? []) if (fixture.response.bodyFile) files.set(fixture.response.bodyFile, createHash('sha256').update(await readBodyFile(fixture.response.bodyFile)).digest('hex'))
     return files
-  } catch (error) { throw problem(DiagnosticCode.configInvalid, 'Scenario HTTP paths, fixture responses or response file bindings are invalid; no project code was executed', error) }
+  } catch (error) {
+    if (error instanceof RunnerSessionError) throw error
+    throw problem(DiagnosticCode.configInvalid, 'Scenario HTTP paths, fixture responses or response file bindings are invalid; no project code was executed', undefined, error)
+  }
 }
-function problem(code: string, message: string, cause?: unknown) { return new RunnerSessionError({ code, phase: 'plan', message, hint: 'Configure explicit same-origin fixture paths and files within the declared roots' }, cause) }
+function problem(code: string, message: string, hint = 'Configure explicit same-origin fixture paths and files within the declared roots', cause?: unknown) {
+  return new RunnerSessionError({ code, phase: 'plan', message, hint }, cause)
+}

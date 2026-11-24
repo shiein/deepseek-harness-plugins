@@ -38,6 +38,8 @@ export interface ResponseLayerOptions {
   buildVersion?: () => string
   /** 提供时开放同源构建长轮询 /__dsh_preview/build（R2-P0-2）；bootstrap 用它在编译成功后自动重载文档。 */
   buildState?: () => { build: string; seq: number }
+  /** 提供时以事件订阅驱动构建长轮询（无变时不按固定周期唤醒）。 */
+  subscribeBuild?: (listener: () => void) => () => void
   /** 仅验证计划声明的断言；期限与 Runner 的目标就绪期限一致。 */
   assertions?: TargetAssertion[]
   targetDeadlineMs?: number
@@ -72,7 +74,7 @@ export interface ResponseLayer {
 /** 自有服务使用这些响应头；项目代理还须显式移除上游 X-Frame-Options。 */
 export function createResponseLayer(options: ResponseLayerOptions): ResponseLayer {
   const channel = createReportChannel(options.previewId, options.nonce, options.onReport,
-    options.secrets ?? [], options.buildState)
+    options.secrets ?? [], options.buildState, undefined, undefined, options.subscribeBuild)
   const marker = '/*__DSH_PREVIEW_CONFIG__*/ null'
   if (!options.bootstrapScript.includes(marker)) throw new Error('Bootstrap config marker is missing')
   if (options.assertions?.length && (!Number.isSafeInteger(options.targetDeadlineMs) || options.targetDeadlineMs! < 1 || options.targetDeadlineMs! > 2147483647)) throw new Error('Target assertions require a bounded deadline')

@@ -1,7 +1,7 @@
 /** Vue CLI 每预览执行器（方案 §6.9、§9.2）；仅显式子进程入口执行项目配置/cli-service。 */
 import { randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -50,6 +50,12 @@ export async function runCliWorker(): Promise<void> {
   let servedBuild = '0'
   let expectBuild: string | undefined = '0'
   let refreshSeq = 0
+  const buildListeners = new Set<() => void>()
+  const subscribeBuild = (listener: () => void) => {
+    buildListeners.add(listener)
+    return () => { buildListeners.delete(listener) }
+  }
+  const notifyBuild = () => { for (const listener of [...buildListeners]) listener() }
   const send = async (value: CliWorkerOutput) => {
     if (!process.send || !process.connected) return
     await new Promise<void>((resolve, reject) => process.send!(value, error => error && process.connected ? reject(error) : resolve()))
@@ -86,6 +92,7 @@ export async function runCliWorker(): Promise<void> {
     if (isCliRefreshInput(raw)) {
       // page_preview_refresh：只递增 seq 唤醒构建轮询；stale 如实标记编译失败态。
       refreshSeq += 1
+      notifyBuild()
       void send({ type: 'refresh-ack', stale: expectBuild === undefined }).catch(() => finish(1))
       return
     }
@@ -140,6 +147,7 @@ export async function runCliWorker(): Promise<void> {
         ...(input.plan.viewport === undefined ? {}
           : { frame: { pagePath: CLI_PAGE_PATH, ...input.plan.viewport } }),
         buildState: () => ({ build: servedBuild, seq: refreshSeq }),
+        subscribeBuild,
         ...(input.plan.readiness.assertions?.length ? { assertions: input.plan.readiness.assertions, targetDeadlineMs: input.plan.readiness.targetDeadlineMs } : {}),
         onReport(report) {
           if (expectBuild !== undefined && report.kind === 'document-loaded' && report.build === expectBuild) void send({ type: 'applied' }).catch(() => finish(1))
@@ -325,6 +333,7 @@ export async function runCliWorker(): Promise<void> {
           servedBuild = version ?? String(Date.now())
           expectBuild = servedBuild
           settleCompiles()
+          notifyBuild()
           void send({ type: 'compiled' }).catch(() => finish(1))
         },
         onInvalidated() { invalidSeq += 1; compiling = true },
@@ -397,6 +406,7 @@ export async function runCliWorker(): Promise<void> {
         // 换绑放最后：入口重写/编译失败不动服务中场景，旧 Mock/Store 仍一致服务。
         swappable.replace(update.name, update.scenario)
         refreshSeq += 1
+        notifyBuild()
         await send({ type: 'scenario-ack', stale: expectBuild === undefined })
       })().catch(async error => {
         try {

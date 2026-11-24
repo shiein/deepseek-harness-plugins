@@ -98,7 +98,7 @@ test('real-traits envelope: data-only fixtures cross the interceptor into the su
 // envelopeHint 给出 code:0 建议）→ write_scenario create → write_scenario {merge, applyTo}
 // → headless Chrome 进入成功分支显示 fixture 数据，未命中列表清空。证据为 headless Chrome，
 // 非 DSH 载体。
-test('real-traits one-round fill: status draft → create → merge+applyTo → success branch in Chrome',
+test('real-traits one-round fill: status draft, apply fixtures and render the success branch in Chrome',
   { skip, timeout: 180000 }, async t => {
   const { Context } = await import('@deepseek-ai/cordis')
   const { ToolRuntime } = await import('@deepseek-ai/dsh-tools')
@@ -133,12 +133,14 @@ test('real-traits one-round fill: status draft → create → merge+applyTo → 
     requestConfigWrite: async () => 'approved' })
   registerTools(ctx, registry)
   let call = 0
+  let rendered = ''
   const invoke = async (name: string, args: Record<string, unknown> = {}) => {
     const result = await executeTool(tools, {
       callId: ToolCallId('real-traits-' + ++call), name: 'page_preview_' + name,
       arguments: args, signal: AbortSignal.timeout(30000), agent: agent as unknown as Agent,
     })
     assert.equal(result.isError, false, 'SDK must return a domain result')
+    rendered = result.content.map(block => 'text' in block ? block.text : '').join('\n')
     return result.value
   }
   t.after(async () => {
@@ -167,6 +169,11 @@ test('real-traits one-round fill: status draft → create → merge+applyTo → 
   }, 'the interceptor error branch')
 
   const detail = await invoke('status', { previewId: id, detail: true }) as unknown as StatusResult
+  assert.match(rendered, /scenario: none selected/)
+  assert.ok(rendered.includes(`unmatched: observed=${detail.unmatched!.entries.length}`))
+  assert.match(rendered, /fixtureDraft\.configSnippet:\n\{/)
+  assert.match(rendered, /page_preview_write_scenario.*mode 'create'/)
+  assert.match(rendered, /GET \/api\/user\/info: src\/api\/user\.ts:\d+/)
   const paths = (detail.unmatched?.entries ?? []).map(e => e.method + ' ' + e.path)
   for (const api of ['POST /api/login', 'GET /api/user/info', 'GET /api/menu/list']) {
     assert.ok(paths.includes(api), 'unmatched must list ' + api + ': ' + JSON.stringify(paths))
@@ -181,8 +188,11 @@ test('real-traits one-round fill: status draft → create → merge+applyTo → 
     'envelopeHint must suggest code:0: ' + JSON.stringify(detail.fixtureDraft?.envelopeHint))
   const envelope = detail.fixtureDraft!.envelopeHint!.template
 
-  // 一轮写回：create（envelope + data-only fixtures）→ merge+applyTo 追加剩余接口。
-  const created = await invoke('write_scenario', { projectId: 'real-traits-app', scenario: 'data',
+  // 新场景可一次创建并应用，随后用 merge 补齐另一个接口。
+  const scene = detail.fixtureDraft!.scenario
+  assert.equal(scene, 'default')
+  const created = await invoke('write_scenario', { projectId: 'real-traits-app', scenario: scene,
+    mode: 'create', applyTo: id,
     definition: {
       businessPaths: ['/api/**'], envelope: { template: envelope },
       http: [
@@ -191,7 +201,9 @@ test('real-traits one-round fill: status draft → create → merge+applyTo → 
       ],
     } }) as unknown as WriteScenarioResult
   assert.equal(created.status, 'ok', JSON.stringify(created))
-  const merged = await invoke('write_scenario', { projectId: 'real-traits-app', scenario: 'data',
+  assert.equal(created.applied?.status, 'ok', JSON.stringify(created.applied))
+  assert.match(rendered, /scenario apply: previewId=.* status=ok/)
+  const merged = await invoke('write_scenario', { projectId: 'real-traits-app', scenario: scene,
     mode: 'merge', applyTo: id, definition: {
       http: [{ method: 'GET', path: '/api/menu/list',
         response: { status: 200, body: [{ id: 1, title: '概览' }] } }],
@@ -199,6 +211,8 @@ test('real-traits one-round fill: status draft → create → merge+applyTo → 
   assert.equal(merged.status, 'ok', JSON.stringify(merged))
   assert.equal(merged.mode, 'merged')
   assert.equal(merged.applied?.status, 'ok', JSON.stringify(merged.applied))
+  assert.match(rendered, /scenario saved: file=page-preview\.config\.json projectId=real-traits-app scenario=default/)
+  assert.match(rendered, /scenario apply: previewId=.* status=ok/)
 
   // 页面重载后越过 code!==0 拦截器进入成功分支，显示 fixture 数据。
   await chrome.navigate(url)
@@ -211,6 +225,7 @@ test('real-traits one-round fill: status draft → create → merge+applyTo → 
   assert.equal(menu, '概览')
 
   const after = await invoke('status', { previewId: id, detail: true }) as unknown as StatusResult
+  assert.match(rendered, /scenario=default/)
   assert.equal(after.unmatched?.entries?.length ?? 0, 0,
     'applying the merged scenario clears the unmatched list: ' + JSON.stringify(after.unmatched))
 })

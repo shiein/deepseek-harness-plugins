@@ -11,6 +11,7 @@ export interface ViteServer {
     invalidateAll?(): void
   }
   transformIndexHtml(url: string, html: string): Promise<string>
+  warmupRequest?(url: string): Promise<void>
   close(): Promise<void>
 }
 export interface ViteApi {

@@ -67,15 +67,13 @@ test('open pageText is post-mount only; earlier observations are annotated, neve
   })
   const opened = await invoke('open', openArgs)
   assert.equal(opened.status, 'ok', JSON.stringify(opened.diagnostics ?? opened))
-  // 新语义（决策 P-A）：早于挂载信号的观测（首帧空文本）不当作页面文本——
-  // open 输出不带 pageText，改由 page_text_pending 如实标注"尚未采集到"，hint 指向 status。
-  assert.equal(opened.pageText, undefined, 'pre-mount text must not be reported as pageText')
-  // F7：hint 是条件化表述（需要核对页面内容才调一次 status），
-  // 不与 preview_shown_in_sidebar 的"收尾、不要轮询"措辞互相矛盾。
-  assert.ok(opened.diagnostics.some(value => value.code === 'page_text_pending'
-    && /Only if you need to verify the page content, call page_preview_status once/
-      .test(value.hint ?? '')),
-    'open annotates the missing post-mount text with a conditional page_preview_status hint')
+  assert.equal(opened.preview.readiness.targetMounted.mountSignal, 'observed')
+  if (opened.pageText === undefined) {
+    assert.ok(opened.diagnostics.some(value => value.code === 'page_text_pending'
+      && /Only if you need to verify the page content, call page_preview_status once/.test(value.hint ?? '')))
+  } else {
+    assert.match(opened.pageText.text, /Real adapter target/, 'pre-mount text must not be reported as page text')
+  }
   assert.equal(opened.preview.readiness.targetMounted.status, 'unverified')
   await delay(2500)
   const later = await invoke('status', { previewId: opened.preview.previewId, detail: true })

@@ -148,7 +148,8 @@ test('static initial HTTP scenarios preserve requirements and fixture fingerprin
   f.context.config.project.scenarios = { own: crossOrigin }
   assert.equal((await build()).kind, 'plan')
   for (const invalid of [{ ...scene, businessPaths: [] }, { ...scene, props: {} },
-    { ...scene, permissions: [] }, { ...scene, handlers: 'never-import.mjs' }]) {
+    { ...scene, permissions: [] }, { ...scene, handlers: 'never-import.mjs' },
+    { ...scene, http: [{ method: 'GET', path: '/other/value', response: { status: 200 } }] }]) {
     f.context.config.project.scenarios = { own: invalid }
     assert.equal((await build()).kind, 'needs-configuration')
   }

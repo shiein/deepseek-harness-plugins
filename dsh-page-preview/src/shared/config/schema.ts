@@ -23,6 +23,7 @@ export interface ProjectConfig {
   root: string
   runtime: RuntimeConfig
   targets?: TargetConfig[]
+  defaultScenario?: string
   scenarios?: Record<string, ScenarioConfig>
 }
 
@@ -66,7 +67,7 @@ export interface HttpFixture {
   path: string
   query?: Record<string, string>
   body?: unknown
-  response: { status: number; headers?: Record<string, string>; body?: unknown; bodyFile?: string }
+  response: { status: number; headers?: Record<string, string>; body?: unknown; bodyFile?: string; delay?: number }
   /** AI 补全/人工编写的数据来源说明（§7.2）；草稿生成时预填模板，填写响应体时改写为真实来源。 */
   provenance?: string
   /** R6-1：逐条退出场景 envelope 展开（只能写 false）。 */
@@ -143,7 +144,11 @@ const assertion = z.discriminatedUnion('kind', [
 const fixture = z.strictObject({
   origin: z.string().exactOptional(), method: z.string().min(1), path: z.string(),
   query: stringMap.exactOptional(), body: z.unknown().exactOptional(),
-  response: z.strictObject({ status: z.int().min(100).max(599), headers: stringMap.exactOptional(), body: z.unknown().exactOptional(), bodyFile: relPath.exactOptional() }),
+  response: z.strictObject({
+    status: z.int().min(100).max(599), headers: stringMap.exactOptional(),
+    body: z.unknown().exactOptional(), bodyFile: relPath.exactOptional(),
+    delay: z.int().min(0).max(30000).exactOptional(),
+  }),
   provenance: z.string().exactOptional(),
   envelope: z.literal(false).exactOptional(),
 })
@@ -190,6 +195,7 @@ const runtime = z.strictObject({
 const projectSchema = z.strictObject({
   id, root: relPath, runtime,
   targets: z.array(z.strictObject({ id, selector, scope: z.enum(['page', 'component', 'shell']).exactOptional(), route: route.exactOptional(), defaultScenario: z.string().exactOptional(), assertions: z.array(assertion).exactOptional() })).exactOptional(),
+  defaultScenario: z.string().min(1).exactOptional(),
   scenarios: z.record(z.string(), scenarioConfigSchema).exactOptional(),
 })
 
@@ -215,6 +221,9 @@ export function validateConfig(raw: unknown): { config?: PreviewConfigFile; issu
     const path = '/projects/' + index
     if (projectIds.has(project.id)) issue(path + '/id', 'Duplicate project ID')
     projectIds.add(project.id)
+    if (project.defaultScenario !== undefined && !Object.hasOwn(project.scenarios ?? {}, project.defaultScenario)) {
+      issue(path + '/defaultScenario', 'Referenced scenario does not exist')
+    }
     const targetIds = new Set<string>()
     for (const [targetIndex, target] of (project.targets ?? []).entries()) {
       const targetPath = path + '/targets/' + targetIndex

@@ -40,23 +40,27 @@ const HTTP_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', '
 interface MockFile { path: string; method?: string; file: string; body: unknown }
 interface OpenApiDoc { file: string; root: Record<string, unknown>; paths: Record<string, Record<string, unknown>> }
 
+export interface FixtureSourceOptions {
+  scannedFiles?: readonly string[]
+}
+
 /**
  * 收集应用根下的 fixture 来源。resolve 按 §7.2 顺序查找响应体来源；
  * 任何单文件解析失败只跳过该文件，不使整个草稿失败。
  */
-export async function collectFixtureSources(appRoot: string):
+export async function collectFixtureSources(appRoot: string, options: FixtureSourceOptions = {}):
   Promise<{ resolve(entry: DraftSourceEntry): FixtureSource | undefined }> {
   // realpath：与 readProjectText 的 isWithinRoot 核对使用同一规范化根（缺失时 ENOENT 向上抛）。
   const root = await realpath(appRoot)
   if (!(await stat(root)).isDirectory()) throw new Error('Application root missing')
-  const scan = await scanProjectFiles(root, 5000)
+  const scanned = options.scannedFiles ?? (await scanProjectFiles(root, 5000)).files
   const rel = (file: string) => relative(root, file).split(sep).join('/')
   const mocks: MockFile[] = []
   const openapi: OpenApiDoc[] = []
 
   for (const dir of MOCK_DIRECTORIES) {
     const prefix = dir + '/'
-    for (const file of scan.files.filter(value => rel(value).startsWith(prefix) && value.endsWith('.json'))) {
+    for (const file of scanned.filter(value => rel(value).startsWith(prefix) && value.endsWith('.json'))) {
       if (mocks.length >= MOCK_FILE_LIMIT) break
       const size = await stat(file).then(value => value.size).catch(() => Infinity)
       if (size > MOCK_FILE_BYTES) continue
@@ -72,7 +76,7 @@ export async function collectFixtureSources(appRoot: string):
 
   const isOpenApiFile = (file: string) =>
     OPENAPI_NAME.test(file.split(sep).pop() ?? '') && /\.(?:json|ya?ml)$/i.test(file)
-  for (const file of scan.files.filter(isOpenApiFile)) {
+  for (const file of scanned.filter(isOpenApiFile)) {
     if (openapi.length >= OPENAPI_FILE_LIMIT) break
     const size = await stat(file).then(value => value.size).catch(() => Infinity)
     if (size > OPENAPI_FILE_BYTES) continue

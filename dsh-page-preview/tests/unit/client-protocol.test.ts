@@ -1,13 +1,19 @@
 /** Host↔Client 面板协议的 wire 契约（方案 §4.3）：schema 即两端边界，多余或越界字段拒绝。 */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import remoteInfo, { TYPERT, panelSnapshotSchema, panelStopSchema, panelPreviewSchema } from '../../src/client/protocol.ts'
+import remoteInfo, {
+  TYPERT,
+  panelPreviewSchema,
+  panelRefreshReplySchema,
+  panelSnapshotSchema,
+  panelStopSchema,
+} from '../../src/client/protocol.ts'
 
-test('wire descriptors expose follow/stop/open under the pagePreview namespace', () => {
+test('wire descriptors expose follow/stop/open/refresh under the pagePreview namespace', () => {
   const ids = remoteInfo.descriptors.map(value => value.id)
   assert.deepEqual(ids.sort(), [
     'dsh-page-preview#pagePreview/follow', 'dsh-page-preview#pagePreview/open',
-    'dsh-page-preview#pagePreview/stop',
+    'dsh-page-preview#pagePreview/refresh', 'dsh-page-preview#pagePreview/stop',
   ])
   const follow = remoteInfo.descriptors.find(value => value.method === 'follow')
   assert.equal(follow?.mode, 'stream')
@@ -44,8 +50,24 @@ test('panel snapshot accepts the registry projection and rejects extra or malfor
 })
 
 test('panel preview and stop replies stay bounded and enum-checked', () => {
+  const mounting = { ...preview, verification: 'pending', scenario: 'ops', readiness: {
+    ...preview.readiness, targetMounted: { status: 'unverified', mountSignal: 'observed' },
+  } }
+  assert.equal(panelPreviewSchema.safeParse(mounting).success, true)
+  assert.equal(panelPreviewSchema.safeParse({ ...mounting, verification: 'unknown' }).success, false)
   assert.equal(panelPreviewSchema.safeParse({ ...preview, state: '' }).success, false)
   assert.equal(panelStopSchema.safeParse({ status: 'ok', previewId: 'p1', state: 'stopped', diagnostics: [] }).success, true)
   assert.equal(panelStopSchema.safeParse({ status: 'ready', previewId: 'p1', diagnostics: [] }).success, false)
   assert.equal(panelStopSchema.safeParse({ status: 'ok', previewId: 'p1', diagnostics: Array.from({ length: 17 }, () => ({ code: 'x', phase: 'stop', message: 'm' })) }).success, false)
+  assert.equal(panelPreviewSchema.safeParse({
+    ...preview,
+    availableScenarios: ['empty', 'full'],
+    unmatchedItems: [{ method: 'GET', path: '/api/users', count: 2 }],
+  }).success, true)
+  assert.equal(panelRefreshReplySchema.safeParse({
+    status: 'ok', previewId: 'p1', state: 'ready', scenario: 'empty', diagnostics: [],
+  }).success, true)
+  assert.equal(panelRefreshReplySchema.safeParse({
+    status: 'bad', previewId: 'p1', diagnostics: [],
+  }).success, false)
 })

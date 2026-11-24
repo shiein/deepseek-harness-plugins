@@ -35,8 +35,18 @@ test('config rejects unknown fields, unknown versions and malformed nested value
 test('duplicate IDs, duplicate requirements and missing default scenarios fail visibly', () => {
   rejected({ schemaVersion: 1, projects: [project(), project()] }, '/projects/1/id')
   rejected(file({ ...project(), targets: [project().targets[0], project().targets[0]] }), '/targets/1/id')
+  rejected(file({ ...project(), defaultScenario: 'absent' }), '/projects/0/defaultScenario')
   rejected(file({ ...project(), targets: [{ ...project().targets[0], defaultScenario: 'absent' }] }), '/defaultScenario')
   rejected(file({ ...project(), runtime: { requirements: ['mock-only', 'mock-only'] } }), '/requirements')
+  const validProjectDefault = file({
+    ...project(), defaultScenario: 'empty',
+    scenarios: { empty: { http: [{ method: 'GET', path: '/api/items', response: { status: 200, body: [], delay: 50 } }] } },
+  })
+  assert.deepEqual(validateConfig(validProjectDefault), { config: validProjectDefault, issues: [] })
+  rejected(file({
+    ...project(),
+    scenarios: { badDelay: { http: [{ method: 'GET', path: '/api/items', response: { status: 200, delay: 40000 } }] } },
+  }), '/delay')
 })
 
 test('adapter consistency and project/attach constraints apply when strategy is inferred', () => {

@@ -5,6 +5,8 @@ import { realpath, symlink, writeFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { createVueViteFixture } from '../helpers/vue-vite-fixture.ts'
 import { vueViteAdapter } from '../../src/adapters/vue/vite/index.ts'
+import { adapters } from '../../src/adapters/registry.ts'
+import { buildPlan } from '../../src/core/plan/planner.ts'
 import { testModules as modules, integrationSkip } from '../helpers/test-gate.ts'
 import { chromeAvailable, launchChrome } from '../helpers/headless-chrome.ts'
 import type { ResolvedTarget } from '../../src/core/target/resolve.ts'
@@ -52,6 +54,27 @@ export default {
 
 const planFor = (f: F, selector: ResolvedTarget['selector']) =>
   vueViteAdapter.plan(f.input, { projectId: 'vue-app', targetId: 'route-target', scope: 'page', selector })
+
+test('buildPlan resolves route targets through auto strategy without static hijack or selector mismatch',
+  { skip: integrationSkip }, async () => {
+  const { f, routeSelector } = await routeFixture()
+  try {
+    const out = await buildPlan({
+      workspaceRoot: f.input.workspaceRoot,
+      config: f.input.config,
+      profile: f.input.profile,
+      target: { projectId: 'vue-app', targetId: 'route-target', scope: 'page', selector: routeSelector() },
+      strategy: 'auto',
+      adapters,
+      approvals: { isApproved: async () => true },
+    })
+    assert.equal(out.kind, 'plan', JSON.stringify(out))
+    if (out.kind !== 'plan') return
+    assert.equal(out.plan.adapter.id, 'vue-vite')
+    assert.deepEqual(out.plan.selector, { kind: 'file', path: 'src/OrderPage.vue' })
+    assert.deepEqual(out.plan.route, { path: '/orders/:id', params: { id: '42' } })
+  } finally { await f.cleanup() }
+})
 
 test('route target resolves through the static route map; layout flag and route context reach the plan',
   { skip: integrationSkip }, async () => {

@@ -14,7 +14,7 @@
  * 本地文件为规范化绝对路径，三方/opaque 说明符为原字符串。
  */
 import { realpath } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { parseScriptSource } from '../../shared/javascript.ts'
 import { resolveProjectPath } from '../../shared/config/paths.ts'
 import { projectDependencyNames, readProjectManifest, readProjectText } from '../../shared/profile.ts'

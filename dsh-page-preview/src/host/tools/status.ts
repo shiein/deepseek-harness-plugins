@@ -15,7 +15,8 @@ export function statusTool(registry: SessionRegistry) {
       'Omit previewId to list your previews. Read-only.',
     parameters: {
       previewId: { type: 'string' },
-      detail: { type: 'boolean', description: 'Include up to 32 recent diagnostics. With previewId, include the plan and capability table; execution environment values are omitted.' },
+      detail: { type: 'boolean', description: 'Include up to 32 recent diagnostics. With previewId, include the plan, '
+        + 'unmatched requests and the fixture draft. Execution environment values are omitted.' },
     },
     output: {
       schema: { type: 'json' },

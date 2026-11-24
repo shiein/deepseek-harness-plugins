@@ -152,6 +152,33 @@ test('build channel long-poll returns promptly on stamp change and times out to 
   assert.deepEqual(await (await f.get('&since=other&seq=0')).json(), { build: 'b2', seq: 2 })
 })
 
+test('build channel subscribeBuild wakes long-poll immediately without waiting for pollMs', async (t) => {
+  const nonce = 'build-nonce'
+  const stamp: BuildStamp = { build: 'b1', seq: 1 }
+  const listeners = new Set<() => void>()
+  let subscribed = 0
+  let cleanedUp = 0
+  const channel = createReportChannel('p1', nonce, () => {}, [], () => ({ ...stamp }), 1500, 5000, (listener) => {
+    subscribed += 1
+    listeners.add(listener)
+    return () => { if (listeners.delete(listener)) cleanedUp += 1 }
+  })
+  const server = createServer((req, res) => channel(req, res, () => { res.statusCode = 404; res.end() }))
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve())))
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  const started = Date.now()
+  const waiting = fetch(origin + '/__dsh_preview/build?nonce=' + nonce + '&since=b1&seq=1')
+  await new Promise(resolve => setTimeout(resolve, 25))
+  stamp.seq = 2
+  for (const listener of [...listeners]) listener()
+  const response = await waiting
+  assert.ok(Date.now() - started < 500, 'subscribeBuild should wake immediately without waiting for pollMs')
+  assert.deepEqual(await response.json(), { build: 'b1', seq: 2 })
+  assert.equal(subscribed, 1)
+  assert.equal(cleanedUp, 1)
+})
+
 test('callback failures reach the server error handler', async (t) => {
   const f = await fixture(t, () => { throw new Error('consumer failed') })
   assert.equal((await f.post({ previewId: 'test-preview', nonce: f.nonce, report: { kind: 'target-mounted' } })).status, 500)

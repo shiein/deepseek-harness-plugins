@@ -40,8 +40,10 @@ export function mockOnlyAchievableByDefault(strategy: Strategy): boolean {
 export type PlanOutcome =
   // executionFingerprint：批准门禁通过时的执行项指纹；Host 随 start 消息发给 Runner（R2-1）。
   | { kind: 'plan'; plan: PreviewPlan; executionFingerprint?: string; diagnostics?: Diagnostic[] }
-  | { kind: 'needs-configuration'; plan?: Partial<PreviewPlan>; missing: PreviewPlan['missing']; setupDraft?: SetupDraftPayload }
-  | { kind: 'unsupported'; reason: string; diagnostics?: Diagnostic[]; setupDraft?: SetupDraftPayload; alternatives?: Strategy[] }
+  | { kind: 'needs-configuration'; plan?: Partial<PreviewPlan>; missing: PreviewPlan['missing'];
+      setupDraft?: SetupDraftPayload; diagnostics?: Diagnostic[] }
+  | { kind: 'unsupported'; reason: string; diagnostics?: Diagnostic[]; setupDraft?: SetupDraftPayload;
+      alternatives?: Strategy[] }
 
 export interface PlanInput {
   workspaceRoot: string
@@ -67,7 +69,7 @@ export async function buildPlan(input: PlanInput): Promise<PlanOutcome> {
   if (new Set(requirements).size !== requirements.length) return missing(DiagnosticCode.configInvalid, 'Duplicate requirements are not allowed')
   if (saved.some(value => !requirements.includes(value))) return missing(DiagnosticCode.requirementUnsatisfied, 'The request would relax saved/default requirements; explicit user approval is required')
   const definition = config.project.targets?.find(value => value.id === target.targetId)
-  const scenario = input.scenario ?? definition?.defaultScenario
+  const scenario = input.scenario ?? definition?.defaultScenario ?? config.project.defaultScenario
   if (scenario !== undefined && !Object.hasOwn(config.project.scenarios ?? {}, scenario)) return missing(DiagnosticCode.configInvalid, 'The selected scenario is not configured')
   const route = target.selector.kind === 'route' ? { path: target.selector.path, ...(target.selector.params ? { params: target.selector.params } : {}), ...(target.selector.query ? { query: target.selector.query } : {}) } : target.route ?? (scenario === undefined ? undefined : config.project.scenarios?.[scenario]?.route)
   const appRoot = await resolveProjectPath(input.workspaceRoot, config.project.root)
@@ -97,8 +99,10 @@ export async function buildPlan(input: PlanInput): Promise<PlanOutcome> {
   const parsed = previewPlanSchema.safeParse(outcome.plan)
   if (!parsed.success) return missing(DiagnosticCode.configInvalid, 'Adapter returned an invalid execution plan')
   const plan = parsed.data
+  const routeResolvedFile = target.selector.kind === 'route'
+    && selected.strategy === 'isolated' && plan.selector.kind === 'file'
   const contradicts = plan.projectId !== target.projectId || plan.targetId !== target.targetId
-    || fingerprintJson(plan.selector) !== fingerprintJson(target.selector)
+    || (!routeResolvedFile && fingerprintJson(plan.selector) !== fingerprintJson(target.selector))
     || plan.scope !== target.scope || plan.strategy !== selected.strategy
     || plan.adapter.id !== selected.adapter.id || plan.adapter.version !== selected.adapter.version
     || plan.scenario !== scenario || plan.fingerprints.config !== fingerprintJson(config.project)
@@ -139,7 +143,13 @@ export async function buildPlan(input: PlanInput): Promise<PlanOutcome> {
   const items = await collectExecutionItems(appRoot, config.project)
   if (requiresExecutionApproval(config.project, generated, runsProjectBuildConfig(plan.strategy, items))) {
     const fingerprint = executionFingerprint(items, generated)
-    if (!await input.approvals?.isApproved(input.workspaceRoot, config.project.id, fingerprint)) return missing(DiagnosticCode.configChangedNeedsApproval, 'Execution items require a user-approved fingerprint before starting', plan)
+    if (!await input.approvals?.isApproved(input.workspaceRoot, config.project.id, fingerprint)) {
+      return {
+        ...missing(DiagnosticCode.configChangedNeedsApproval,
+          'Execution items require a user-approved fingerprint before starting', plan),
+        ...(outcome.diagnostics?.length ? { diagnostics: outcome.diagnostics } : {}),
+      }
+    }
     return { kind: 'plan', plan, executionFingerprint: fingerprint,
       ...(outcome.diagnostics?.length ? { diagnostics: outcome.diagnostics } : {}) }
   }

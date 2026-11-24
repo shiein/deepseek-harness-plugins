@@ -40,6 +40,10 @@ test('fixture responses preserve JSON/text/status/headers, consume exact body/qu
   assert.equal(response.headers.get('x-fixture'), 'yes')
   assert.deepEqual(await response.json(), { saved: true })
   assert.equal(f.diagnostics[0]?.code, 'unsupported_capability')
+  await f.request('/api/users/42?mode=preview', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"enabled":true}',
+  })
+  assert.equal(f.diagnostics.length, 1, 'static write diagnostic should deduplicate per method + path')
   assert.equal(f.store.get('users'), undefined)
   assert.equal(await (await f.request('/api/text')).text(), 'Fixture text')
   assert.equal(await (await f.request('/api/head', { method: 'HEAD' })).text(), '')
@@ -49,36 +53,57 @@ test('fixture responses preserve JSON/text/status/headers, consume exact body/qu
   assert.equal(f.errors.length, 0)
 })
 
-test('unmatched business requests and fixture ambiguity never reach the resource handler or real network', async t => {
+test('specificity picks exact match over parameter, ties stay ambiguous, unmatched stays 404', async t => {
   const network = t.mock.method(globalThis, 'fetch', globalThis.fetch)
   const f = await server(t, { fixtures: [
     { method: 'GET', path: '/api/users/:id', response: { status: 200, body: 1 } },
     { method: 'GET', path: '/api/users/admin', response: { status: 200, body: 2 } },
+    { method: 'GET', path: '/api/tie/:a/item', response: { status: 200, body: 3 } },
+    { method: 'GET', path: '/api/tie/x/:b', response: { status: 200, body: 4 } },
   ] })
-  assert.equal((await f.request('/api/users/admin')).status, 409)
+  const exactRes = await f.request('/api/users/admin')
+  assert.equal(exactRes.status, 200)
+  assert.equal(await exactRes.json(), 2)
+  assert.equal((await f.request('/api/tie/x/item')).status, 409)
   assert.equal(f.diagnostics[0]?.code, 'config_invalid')
   const unknown = await f.request('/api/missing?token=DO_NOT_REPORT_QUERY')
   assert.equal(unknown.status, 404)
   assert.deepEqual(await unknown.json(), { code: 'unmatched_request' })
-  // R3-1：query 键名（'token'）上抛供未命中汇总；值 'DO_NOT_REPORT_QUERY' 仍不得出现（deepEqual 会暴露它）。
   assert.deepEqual(f.unmatched, [{ method: 'GET', url: '/api/missing', queryKeys: ['token'] }])
   assert.equal(f.forwarded(), 0)
-  assert.equal(network.mock.callCount(), 2, 'Only these explicit test client fetches may occur')
+  assert.equal(network.mock.callCount(), 3, 'Only these explicit test client fetches may occur')
 })
 
-test('request body and duplicate-query failures remain explicit and do not invoke handlers', async t => {
+test('request body parses form-urlencoded, handles repeated query params, and rejects bad types/sizes', async t => {
   let calls = 0
-  const f = await server(t, { maxBodyBytes: 32, handlers: [() => { calls++; return { status: 200 } }] })
-  assert.equal((await f.request('/api/data', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{broken' })).status, 400)
-  assert.equal((await f.request('/api/data', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify('x'.repeat(40)) })).status, 413)
-  assert.equal((await f.request('/api/data', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'a=1' })).status, 415)
-  assert.equal((await f.request('/api/data?a=1&a=2')).status, 400)
+  const f = await server(t, {
+    maxBodyBytes: 32,
+    fixtures: [{ method: 'GET', path: '/api/multi', response: { status: 200, body: { ok: true } } }],
+    handlers: [(req) => { calls++; return { status: 200, body: req.body } }],
+  })
+  assert.equal((await f.request('/api/data', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{broken',
+  })).status, 400)
+  assert.equal((await f.request('/api/data', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify('x'.repeat(40)),
+  })).status, 413)
+  assert.equal((await f.request('/api/data', {
+    method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: 'bin',
+  })).status, 415)
   assert.equal((await f.request('/api/%E0%A4')).status, 400)
   assert.equal(calls, 0)
+  const formRes = await f.request('/api/data', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'a=1&tag=x&tag=y',
+  })
+  assert.equal(formRes.status, 200)
+  assert.deepEqual(await formRes.json(), { a: '1', tag: ['x', 'y'] })
+  assert.equal((await f.request('/api/multi?a=1&a=2')).status, 200)
   assert.equal(f.forwarded(), 0)
   assert.equal(f.errors.length, 0)
   const streamed = await new Promise<number>((resolve, reject) => {
-    const req = rawRequest(f.origin + '/api/data', { method: 'POST', headers: { 'Content-Type': 'text/plain' } }, res => { res.resume(); res.once('end', () => resolve(res.statusCode!)) })
+    const req = rawRequest(f.origin + '/api/data', {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    }, res => { res.resume(); res.once('end', () => resolve(res.statusCode!)) })
     req.on('error', reject)
     req.setTimeout(2000, () => req.destroy(new Error('Streaming body test timeout')))
     req.write('x'.repeat(64))
@@ -167,4 +192,20 @@ test('cross-origin requests arrive only via the owned remote channel and match f
     req.end()
   })
   assert.notEqual(direct, 200)
+})
+
+test('fixture response delay waits before sending and cancels cleanly on disconnect', async t => {
+  const f = await server(t, { fixtures: [
+    { method: 'GET', path: '/api/slow', response: { status: 200, body: { slow: true }, delay: 80 } },
+  ] })
+  const started = Date.now()
+  const slow = await f.request('/api/slow')
+  assert.equal(slow.status, 200)
+  assert.deepEqual(await slow.json(), { slow: true })
+  assert.ok(Date.now() - started >= 60, 'response.delay must hold response before sending')
+  assert.throws(() => createMockMiddleware({
+    previewOrigin: f.origin, businessPaths: ['/api/**'], store: new ScenarioStore('delay-bad'),
+    fixtures: [{ method: 'GET', path: '/api/bad', response: { status: 200, delay: 40000 } }],
+    onUnmatched: () => {}, onDiagnostic: () => {},
+  }))
 })

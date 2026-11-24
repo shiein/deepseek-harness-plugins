@@ -8,7 +8,7 @@
  */
 import { copyFile, mkdir, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { COPYFILE_EXCL } from 'node:constants'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { REPO_CONFIG_FILE } from '../shared/config/loader.ts'
 import { validateConfig } from '../shared/config/schema.ts'
@@ -46,6 +46,7 @@ const backupRoot = (dataDir: string, workspace: string): string =>
  * mode='create'（缺省）：同名场景已存在即拒绝，语义不变。
  * mode='merge'（R6-3a）：目标场景必须已存在；http 只追加 (method, origin, path, query) 键尚不存在的
  * fixture，其余场景级字段（envelope 等）只能新增不能改写——键冲突或字段值不同即整体拒绝并列出冲突键。
+ * mode='upsert'：目标不存在时创建；存在时合并 businessPaths 并集、更新传入字段、按规范键替换或追加 fixture/通道。
  */
 export async function planScenarioWrite(
   workspaceRoot: string,
@@ -53,7 +54,7 @@ export async function planScenarioWrite(
   name: string,
   definition: ScenarioConfig,
   dataDir: string,
-  mode: 'create' | 'merge' = 'create',
+  mode: 'create' | 'merge' | 'upsert' = 'create',
 ): Promise<ScenarioWritePlan> {
   const workspace = await realpath(workspaceRoot)
   const absolute = join(workspace, REPO_CONFIG_FILE)
@@ -99,14 +100,18 @@ export async function planScenarioWrite(
         throw new ConfigWriteError('Scenario ' + JSON.stringify(name) + ' already exists in '
           + REPO_CONFIG_FILE + '; choose another name or merge it manually')
       }
-      const merge = mergeScenario(scenarios[name]!, definition)
-      if (merge.conflicts.length) {
-        throw new ConfigWriteError('Merging into scenario ' + JSON.stringify(name) + ' conflicts on '
-          + merge.conflicts.slice(0, 6).join(', ')
-          + (merge.conflicts.length > 6 ? ' (+' + String(merge.conflicts.length - 6) + ' more)' : '')
-          + '; nothing was written')
+      if (mode === 'upsert') {
+        projects[index]!.scenarios = { ...scenarios, [name]: upsertScenario(scenarios[name]!, definition) }
+      } else {
+        const merge = mergeScenario(scenarios[name]!, definition)
+        if (merge.conflicts.length) {
+          throw new ConfigWriteError('Merging into scenario ' + JSON.stringify(name) + ' conflicts on '
+            + merge.conflicts.slice(0, 6).join(', ')
+            + (merge.conflicts.length > 6 ? ' (+' + String(merge.conflicts.length - 6) + ' more)' : '')
+            + '; nothing was written')
+        }
+        projects[index]!.scenarios = { ...scenarios, [name]: merge.scenario }
       }
-      projects[index]!.scenarios = { ...scenarios, [name]: merge.scenario }
     } else if (mode === 'merge') {
       throw new ConfigWriteError('Scenario ' + JSON.stringify(name) + ' does not exist in '
         + REPO_CONFIG_FILE + '; use mode create for a new scenario')
@@ -123,7 +128,8 @@ export async function planScenarioWrite(
   }
   return {
     file: REPO_CONFIG_FILE, absolute,
-    backup: join(backupRoot(dataDir, workspace), REPO_CONFIG_FILE + '.bak-' + Date.now()),
+    backup: join(backupRoot(dataDir, workspace), REPO_CONFIG_FILE + '.bak-' + Date.now()
+      + '-' + randomUUID().slice(0, 8)),
     mode: index >= 0 ? 'merged' : 'appended', content: serialize(record),
     baseHash: createHash('sha256').update(existing).digest('hex'),
   }
@@ -203,6 +209,58 @@ function mergeScenario(existing: unknown, incoming: ScenarioConfig): { scenario:
   }
   return { scenario: merged, conflicts }
 }
+
+function upsertScenario(existing: unknown, incoming: ScenarioConfig): unknown {
+  const base = (typeof existing === 'object' && existing !== null && !Array.isArray(existing)
+    ? existing : {}) as Record<string, unknown>
+  const merged: Record<string, unknown> = { ...base }
+  for (const [field, value] of Object.entries(incoming as Record<string, unknown>)) {
+    if (value === undefined) continue
+    if (field === 'businessPaths') {
+      const prev = Array.isArray(base.businessPaths) ? base.businessPaths as string[] : []
+      merged.businessPaths = [...new Set([...prev, ...(value as string[])])]
+      continue
+    }
+    if (field === 'http') {
+      merged.http = upsertList(
+        Array.isArray(base.http) ? base.http as Array<Record<string, unknown>> : [],
+        value as Array<Record<string, unknown>>,
+        fixtureKey,
+      )
+      continue
+    }
+    if (field === 'ws' || field === 'sse') {
+      merged[field] = upsertList(
+        Array.isArray(base[field]) ? base[field] as Array<Record<string, unknown>> : [],
+        value as Array<Record<string, unknown>>,
+        channelKey,
+      )
+      continue
+    }
+    merged[field] = value
+  }
+  return merged
+}
+
+function upsertList(
+  existing: readonly Record<string, unknown>[],
+  incoming: readonly Record<string, unknown>[],
+  keyOf: (item: Record<string, unknown>) => string,
+): Record<string, unknown>[] {
+  const result = [...existing]
+  const indexByKey = new Map<string, number>()
+  result.forEach((item, index) => indexByKey.set(keyOf(item), index))
+  for (const item of incoming) {
+    const key = keyOf(item)
+    const at = indexByKey.get(key)
+    if (at !== undefined) result[at] = item
+    else { indexByKey.set(key, result.length); result.push(item) }
+  }
+  return result
+}
+
+const channelKey = (channel: Record<string, unknown>): string =>
+  String(channel.origin ?? '') + ' ' + String(channel.path)
 
 /** fixture 去重键：method 大写 + origin（同源为空）+ path + 键序无关的 query。 */
 const fixtureKey = (fixture: Record<string, unknown>): string =>

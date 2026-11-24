@@ -36,7 +36,9 @@ test('bootstrap requires mount and all DOM assertions together, waits for async 
   const f = await bootstrap(assertions)
   f.loaded()
   const latest = () => f.reports.filter(report => report.kind === 'assertions').at(-1)!
-  assert.equal(assertionEvidence(assertions, latest(), documentUrl)?.status, 'unverified')
+  assert.deepEqual(assertionEvidence(assertions, latest(), documentUrl), {
+    status: 'unverified', detail: 'Pending assertions: #1 mount-signal, #3 text-present',
+  })
   f.document.body.innerText = 'Loaded'
   f.poll()
   assert.equal(assertionEvidence(assertions, latest(), documentUrl)?.status, 'unverified')

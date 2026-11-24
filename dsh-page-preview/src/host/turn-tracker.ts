@@ -23,21 +23,31 @@ import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { SessionRegistry } from './session-registry.ts'
 import type { ImpactService } from './impact-service.ts'
 import { extractWrittenPaths } from '../core/change/agent-writes.ts'
+import { DEFAULT_TRIGGER_MODE } from './trigger.ts'
+import type { TriggerMode } from './trigger.ts'
+
+export interface TurnTrackerOptions {
+  triggerMode?: TriggerMode
+}
 
 export class TurnTracker {
   private readonly registry: SessionRegistry
   private readonly impact: ImpactService
+  private readonly triggerMode: TriggerMode
   /** exec → 调用时的有效工作目录（plugin 注入 ctx.workingDirectory.get）。 */
   private readonly workingDirectoryOf: (exec: Readonly<ToolExecution>) => string | undefined
 
   constructor(registry: SessionRegistry, impact: ImpactService,
-    workingDirectoryOf: (exec: Readonly<ToolExecution>) => string | undefined) {
+    workingDirectoryOf: (exec: Readonly<ToolExecution>) => string | undefined,
+    options: TurnTrackerOptions = {}) {
     this.registry = registry
     this.impact = impact
     this.workingDirectoryOf = workingDirectoryOf
+    this.triggerMode = options.triggerMode ?? DEFAULT_TRIGGER_MODE
   }
 
   onSessionEvent(session: Session, event: SessionEvent): void {
+    if (this.triggerMode === 'off') return
     switch (event.type) {
       case 'turn/start': {
         const cwd = session.header.cwd
@@ -57,6 +67,7 @@ export class TurnTracker {
   }
 
   onToolResult(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): void {
+    if (this.triggerMode === 'off') return
     const session = exec.agent?.session
     const cwd = session === undefined ? undefined : this.workingDirectoryOf(exec)
     if (!session?.id || typeof session.header.cwd !== 'string'

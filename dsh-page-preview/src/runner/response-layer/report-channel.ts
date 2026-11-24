@@ -28,6 +28,7 @@ export type BrowserReport =
   | { kind: 'document-loaded'; url: string; build?: string }
   | { kind: 'module-updated'; version: string }
   | { kind: 'target-mounted'; detail?: string }
+  | { kind: 'target-mount-failed'; message: string; stack?: string }
   | { kind: 'assertion'; index: number; passed: boolean; detail?: string }
   | { kind: 'assertions'; url: string; results: boolean[] }
   | { kind: 'runtime-error'; message: string; stack?: string; source?: string }
@@ -53,6 +54,8 @@ export function createReportChannel(
   /** 测试注入的挂起上限/检查间隔；未提供时用上面的默认值。 */
   buildHoldMs = BUILD_HOLD_MS,
   buildPollMs = BUILD_POLL_MS,
+  /** 提供时用订阅通知替代固定间隔轮询，避免 250ms 唤醒开销与响应延迟。 */
+  subscribeBuild?: (listener: () => void) => () => void,
 ): Middleware {
   if (!previewId || !nonce) throw new Error('Report channel requires a preview id and nonce')
   const redactor = createRedactor({ secrets, channels: [nonce] })
@@ -89,7 +92,10 @@ export function createReportChannel(
       if (!buildState) return reply(res, 404)
       if (req.method !== 'GET') return reply(res, 405)
       if (url.searchParams.get('nonce') !== nonce) return reply(res, 403)
+      let settled = false
       const send = () => {
+        if (settled) return
+        settled = true
         res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify(buildState()))
       }
@@ -97,6 +103,19 @@ export function createReportChannel(
       const seq = url.searchParams.get('seq')
       const current = buildState()
       if (since === null || seq === null || since !== current.build || seq !== String(current.seq)) { send(); return }
+      if (subscribeBuild) {
+        let stopSub = () => {}
+        const finishPoll = () => { clearTimeout(timer); stopSub(); send() }
+        const timer = setTimeout(finishPoll, buildHoldMs)
+        stopSub = subscribeBuild(() => {
+          const now = buildState()
+          if (now.build !== since || String(now.seq) !== seq) finishPoll()
+        })
+        const after = buildState()
+        if (after.build !== since || String(after.seq) !== seq) { finishPoll(); return }
+        res.on('close', () => { clearTimeout(timer); stopSub() })
+        return
+      }
       const deadline = Date.now() + buildHoldMs
       const timer = setInterval(() => {
         const now = buildState()
@@ -165,6 +184,7 @@ export function isBrowserReport(value: unknown): value is BrowserReport {
     case 'document-loaded': return text('url') && optionalText('build')
     case 'module-updated': return text('version')
     case 'target-mounted': return optionalText('detail')
+    case 'target-mount-failed': return text('message') && optionalText('stack')
     case 'assertion': return Number.isSafeInteger(value.index) && Number(value.index) >= 0 && typeof value.passed === 'boolean' && optionalText('detail')
     case 'assertions': return text('url') && Array.isArray(value.results) && value.results.every(result => typeof result === 'boolean')
     case 'runtime-error': return text('message') && optionalText('stack') && optionalText('source')
@@ -185,6 +205,9 @@ function redactReport(report: BrowserReport, redactor: Redactor): BrowserReport 
     // build/version 是 Runner 侧注入的构建印章，不是项目数据；限长透传即可。
     case 'module-updated': return { kind: report.kind, version: text(report.version) }
     case 'target-mounted': return { kind: report.kind, ...(report.detail === undefined ? {} : { detail: text(report.detail) }) }
+    case 'target-mount-failed':
+      return { kind: report.kind, message: text(report.message),
+        ...(report.stack === undefined ? {} : { stack: redactor.stack(report.stack) }) }
     case 'assertion': return { kind: report.kind, index: report.index, passed: report.passed, ...(report.detail === undefined ? {} : { detail: text(report.detail) }) }
     case 'assertions': return { kind: report.kind, url: address(report.url), results: [...report.results] }
     case 'runtime-error': return { kind: report.kind, message: text(report.message), ...(report.stack === undefined ? {} : { stack: redactor.stack(report.stack) }), ...(report.source === undefined ? {} : { source: url(report.source) }) }

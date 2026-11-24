@@ -56,7 +56,8 @@ export function createMockMiddleware(options: MockMiddlewareOptions): Middleware
   const sseFixtures = options.sse ?? []
   for (const channel of sseFixtures) validateChannelPath(channel.path)
   const handlers = options.handlers ?? []
-  const maxBytes = options.maxBodyBytes ?? 64 * 1024
+  const maxBytes = options.maxBodyBytes ?? 512 * 1024
+  const warnedStaticWrites = new Set<string>()
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('Mock body limit must be a positive integer')
   for (const fixture of fixtures) {
     matchHttpPath(fixture.path, '/') // 所有模式先校验，不等到碰巧命中该方法。
@@ -90,14 +91,21 @@ export function createMockMiddleware(options: MockMiddlewareOptions): Middleware
     try { url.pathname.split('/').forEach(part => decodeURIComponent(part)) }
     catch { unmatched(); replyError(res, 400, DiagnosticCode.unmatchedRequest); return }
     const query: Record<string, string> = Object.fromEntries(url.searchParams)
-    if ([...url.searchParams.keys()].some(key => url.searchParams.getAll(key).length > 1)) { unmatched(); replyError(res, 400, DiagnosticCode.unmatchedRequest); return }
+    const duplicateQueryKeys = new Set<string>()
+    for (const key of url.searchParams.keys()) {
+      if (url.searchParams.getAll(key).length > 1) duplicateQueryKeys.add(key)
+    }
     let body: unknown
     try { body = await requestBody(req, maxBytes) }
     catch (error) {
       if (!(error instanceof RequestBodyError)) throw error
       unmatched(); replyError(res, error.status, DiagnosticCode.unmatchedRequest); return
     }
-    const request: HttpRequestInfo = { origin: url.origin, method, path: url.pathname, query, ...(body === undefined ? {} : { body }) }
+    const request: HttpRequestInfo = {
+      origin: url.origin, method, path: url.pathname, query,
+      ...(duplicateQueryKeys.size ? { duplicateQueryKeys } : {}),
+      ...(body === undefined ? {} : { body }),
+    }
     const match = matchFixture(request, fixtures, options.previewOrigin)
     if (match.kind === 'ambiguous') {
       options.onDiagnostic({ code: DiagnosticCode.configInvalid, phase: 'scenario', message: 'Several HTTP fixtures matched; no response or handler was selected' })
@@ -105,8 +113,17 @@ export function createMockMiddleware(options: MockMiddlewareOptions): Middleware
     }
     if (match.kind === 'matched') {
       const response = match.fixture.response
-      const bytes = response.bodyFile ? Buffer.from(await options.readBodyFile!(response.bodyFile)) : responseBytes(response.body)
-      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) options.onDiagnostic({ code: DiagnosticCode.unsupportedCapability, phase: 'scenario', message: 'This fixture returns a static response; it does not update the scenario store for later reads' })
+      const bytes = response.bodyFile
+        ? Buffer.from(await options.readBodyFile!(response.bodyFile)) : responseBytes(response.body)
+      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+        const writeKey = `${method} ${reported}`
+        if (!warnedStaticWrites.has(writeKey)) {
+          warnedStaticWrites.add(writeKey)
+          options.onDiagnostic({ code: DiagnosticCode.unsupportedCapability, phase: 'scenario',
+            message: 'This fixture returns a static response; it does not update the scenario store for later reads' })
+        }
+      }
+      if (response.delay && response.delay > 0 && !(await waitResponseDelay(res, response.delay))) return
       send(res, method, response, bytes, response.bodyFile ? 'application/octet-stream' : responseType(response.body))
       return
     }
@@ -118,9 +135,23 @@ export function createMockMiddleware(options: MockMiddlewareOptions): Middleware
   }
 }
 
-type Response = HandlerResponse & { bodyFile?: string }
+type Response = HandlerResponse & { bodyFile?: string; delay?: number }
+function waitResponseDelay(res: ServerResponse, ms: number): Promise<boolean> {
+  if (res.destroyed || res.writableEnded) return Promise.resolve(false)
+  return new Promise<boolean>(resolve => {
+    const onClose = () => { clearTimeout(timer); resolve(false) }
+    const timer = setTimeout(() => {
+      res.off('close', onClose)
+      resolve(!res.destroyed && !res.writableEnded)
+    }, ms)
+    res.once('close', onClose)
+  })
+}
 function validateResponse(response: Response): void {
   if (!Number.isInteger(response.status) || response.status < 200 || response.status > 599) throw new Error('Mock responses require a final HTTP status from 200 through 599')
+  if (response.delay !== undefined && (!Number.isInteger(response.delay) || response.delay < 0 || response.delay > 30000)) {
+    throw new Error('Mock response delay must be an integer between 0 and 30000 ms')
+  }
   if (response.body !== undefined && response.bodyFile !== undefined) throw new Error('Mock response body and bodyFile cannot both be configured')
   if ([204, 205, 304].includes(response.status) && (response.body !== undefined || response.bodyFile !== undefined)) throw new Error('This HTTP status does not carry a Mock response body')
   for (const [name, value] of Object.entries(response.headers ?? {})) {
@@ -163,6 +194,15 @@ async function requestBody(req: IncomingMessage, maxBytes: number): Promise<unkn
   if (type === 'application/json' || type?.endsWith('+json')) {
     try { return JSON.parse(text) } catch { throw new RequestBodyError(400) }
   }
+  if (type === 'application/x-www-form-urlencoded') {
+    const params = new URLSearchParams(text)
+    const form: Record<string, string | string[]> = {}
+    for (const key of new Set(params.keys())) {
+      const all = params.getAll(key)
+      form[key] = all.length > 1 ? all : (all[0] ?? '')
+    }
+    return form
+  }
   if (!type || type === 'text/plain') return text
   throw new RequestBodyError(415)
 }
@@ -198,7 +238,7 @@ function serveSse(res: ServerResponse, channel: SseFixture): void {
     .catch(() => { if (!res.destroyed) res.destroy() })
 }
 
-function businessPath(pattern: string): (pathname: string) => boolean {
+export function businessPath(pattern: string): (pathname: string) => boolean {
   if (!pattern.startsWith('/') || pattern.startsWith('//') || /[?#]/.test(pattern)) throw new Error('Business path must be a local pathname glob')
   const parts = pattern.split('/').map((part, index, all) => {
     if (part === '**' && index === all.length - 1) return { wildcard: '**' }

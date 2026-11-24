@@ -35,7 +35,7 @@
  * - 结果只进 fixtureDraft，永远不作为响应体；typeHint 与 shapeHints 同级，值是示例。
  */
 
-import { relative } from 'node:path'
+import { join, relative } from 'node:path'
 import ts from 'typescript'
 import { readProjectText } from '../shared/profile.ts'
 import { scanProjectFiles } from '../shared/project-files.ts'
@@ -67,6 +67,9 @@ const HINT_MAX_FIELDS = 24
 const CHECK_MAX_ROOTS = 64
 
 export interface CallSiteOptions {
+  /** 复用调用方已扫描的文件清单，避免重复遍历目录。 */
+  scannedFiles?: readonly string[]
+  scanLimited?: boolean
   /** 片段脱敏（共享 redactor 的 text）；缺省时只截断。 */
   redact?: (text: string, limit?: number) => string
   /** 测试注入的时间源；默认 Date.now。 */
@@ -78,7 +81,7 @@ type MatchKind = 'exact' | 'template-prefix' | 'suffix'
 interface Entry { method: string; path: string }
 
 interface ParsedBlock { tree: ts.SourceFile; lineOffset: number }
-interface ParsedFile { rel: string; abs: string; raw: string; lines: string[]; blocks: ParsedBlock[] }
+interface ParsedFile { rel: string; abs: string; raw: string; lines?: string[]; blocks?: ParsedBlock[] }
 
 /** 字面量所在的最内层函数信息；匿名/顶层为 undefined name（不进消费者映射）。 */
 interface FnMeta {
@@ -108,7 +111,10 @@ export async function collectCallSiteContext(
 ): Promise<{ contexts: Map<string, CallSiteContext>; limited: boolean }> {
   const now = options.now ?? Date.now
   const deadline = now() + budget.timeMs
-  const scan = await scanProjectFiles(appRoot, budget.files)
+  const scan = options.scannedFiles !== undefined
+    ? { files: options.scannedFiles.slice(0, budget.files),
+      limited: options.scanLimited === true || options.scannedFiles.length > budget.files }
+    : await scanProjectFiles(appRoot, budget.files)
   let limited = scan.limited
 
   // 字面量索引：exact（path 全等）与 suffix（path 以字面量结尾且边界在 '/'）。
@@ -116,22 +122,28 @@ export async function collectCallSiteContext(
   const exact = new Map<string, string[]>()
   const suffix = new Map<string, string[]>()
   const wanted = new Map<string, Entry>()
+  const needleSet = new Set<string>()
   for (const entry of entries) {
     const key = entry.method.toUpperCase() + ' ' + entry.path
     wanted.set(key, entry)
     push(exact, entry.path, key)
+    const firstSlash = entry.path.indexOf('/', 1)
+    needleSet.add(firstSlash > 0 ? entry.path.slice(0, firstSlash + 1) : entry.path)
+    const segments = entry.path.split('/').filter(Boolean)
+    if (segments.length >= 2) needleSet.add('/' + segments.slice(-2).join('/'))
     for (let i = 1; i < entry.path.length - 1; i++) {
       if (entry.path[i] !== '/') continue
       const part = entry.path.slice(i)
       if (part.indexOf('/', 1) > 0) push(suffix, part, key)
     }
   }
+  const needles = [...needleSet]
 
   const consumers = new Map<string, CallSiteContext['consumers']>()
   /** 第一趟收集的全部命中：perEntry 与 suffix 压制在扫描完成后统一判定。 */
   const hits = new Map<string, SiteHit[]>()
 
-  // 唯一一遍源码读取：每文件读一次、解析一次，解析树留在内存供第二趟复用。
+  // 唯一一遍源码读取：先用低成本子串预筛，只对可能命中的文件构建 TS AST。
   const parsed: ParsedFile[] = []
   for (const abs of [...scan.files].sort()) {
     if (!SOURCE_EXT.test(abs)) continue
@@ -139,8 +151,10 @@ export async function collectCallSiteContext(
     const raw = await readProjectText(abs, appRoot).catch(() => undefined)
     if (raw === undefined || raw.length > FILE_MAX_BYTES) continue
     const rel = relative(appRoot, abs)
-    const file: ParsedFile = { rel, abs, raw, lines: raw.split('\n'), blocks: blocksOf(abs, raw) }
+    const file: ParsedFile = { rel, abs, raw }
     parsed.push(file)
+    if (!needles.some(needle => raw.includes(needle))) continue
+    file.blocks = blocksOf(abs, raw)
     for (const block of file.blocks) {
       // 字面量与模板静态前缀命中 → 记入 hits；非请求语法位置（F1 规则 b/c）整批放弃。
       // 遍历用显式栈而非递归：压缩产物的深层二元表达式会让递归栈溢出（见 shared/javascript.ts）。
@@ -201,13 +215,19 @@ export async function collectCallSiteContext(
       snippet: snippetOf(hit.file, hit.line, options.redact), match: hit.match })))
   }
 
-  // 第二趟（内存中已解析的树）：请求函数的消费者调用与字段链。
-  if (byName.size) for (const file of parsed) {
+  // 第二趟（只解析包含已发现请求函数名的文件）：请求函数的消费者调用与字段链。
+  const fnNames = [...byName.keys()]
+  if (fnNames.length) for (const file of parsed) {
     if (now() > deadline) { limited = true; break }
-    for (const block of file.blocks) {
+    if (!fnNames.some(name => file.raw.includes(name))) continue
+    const blocks = file.blocks ?? (file.blocks = blocksOf(file.abs, file.raw))
+    for (const block of blocks) {
       const visit = (node: ts.Node) => {
-        if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)) return
-        const metas = byName.get(node.expression.text)
+        if (!ts.isCallExpression(node)) return
+        const calleeName = ts.isIdentifier(node.expression) ? node.expression.text
+          : ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : undefined
+        if (calleeName === undefined) return
+        const metas = byName.get(calleeName)
         if (metas === undefined) return
         const line = lineOf(block.tree, node) + block.lineOffset
         const fields = fieldsOf(node)
@@ -240,7 +260,9 @@ export async function collectCallSiteContext(
     }
   }
 
-  const hinted = candidates.size ? expandTypeHints(candidates) : new Map<string, CallSiteContext['typeHint']>()
+  const tsPaths = candidates.size ? await declaredTsPaths(appRoot) : {}
+  const hinted = candidates.size ? expandTypeHints(candidates, tsPaths)
+    : new Map<string, CallSiteContext['typeHint']>()
   const contexts = new Map<string, CallSiteContext>()
   for (const [key, entry] of wanted) {
     const typeHint = hinted.get(key)
@@ -266,7 +288,8 @@ const push = <K, V>(map: Map<K, V[]>, key: K, value: V) => {
 
 /** 片段：按行截取后经调用方注入的 redactor 脱敏。 */
 const snippetOf = (file: ParsedFile, line: number, redact?: CallSiteOptions['redact']): string => {
-  const text = (file.lines[line - 1] ?? '').trim().slice(0, SNIPPET_LIMIT)
+  const lines = file.lines ?? (file.lines = file.raw.split('\n'))
+  const text = (lines[line - 1] ?? '').trim().slice(0, SNIPPET_LIMIT)
   return redact === undefined ? text : redact(text, SNIPPET_LIMIT)
 }
 
@@ -439,12 +462,30 @@ const ownerScope = (node: ts.Node): ts.Node | undefined => {
   return up
 }
 
+interface TsPathOptions {
+  baseUrl?: string
+  paths?: ts.MapLike<string[]>
+}
+
+async function declaredTsPaths(appRoot: string): Promise<TsPathOptions> {
+  const file = join(appRoot, 'tsconfig.json')
+  const source = await readProjectText(file, appRoot).catch(() => undefined)
+  if (source === undefined) return {}
+  const parsed = ts.parseConfigFileTextToJson(file, source)
+  if (parsed.error) return {}
+  const { options } = ts.convertCompilerOptionsFromJson(parsed.config?.compilerOptions ?? {}, appRoot, file)
+  if (!options.paths) return {}
+  return { baseUrl: options.baseUrl ?? appRoot, paths: options.paths }
+}
+
 /**
  * typeHint：只为显式类型注解建 checker；候选按 `METHOD path` 归组。
  * program 以候选文件为根（.vue 候选无法进 program，跳过），导入类型经模块解析自行拉入。
  * 解析到 any/unknown、类型名不可读或跨文件候选无法定位时，不给该条目的 hint。
  */
-function expandTypeHints(candidates: Map<string, TypeCandidate[]>): Map<string, CallSiteContext['typeHint']> {
+function expandTypeHints(
+  candidates: Map<string, TypeCandidate[]>, tsPaths: TsPathOptions = {},
+): Map<string, CallSiteContext['typeHint']> {
   const usable = new Map<string, TypeCandidate[]>()
   for (const [key, list] of candidates) {
     const list2 = list.filter(value => SOURCE_EXT.test(value.abs) && !value.abs.endsWith('.vue'))
@@ -455,9 +496,10 @@ function expandTypeHints(candidates: Map<string, TypeCandidate[]>): Map<string, 
   const program = ts.createProgram({
     rootNames: roots,
     options: {
-      strict: true, allowJs: true, checkJs: false, noEmit: true, skipLibCheck: true,
+      strict: true, allowJs: true, checkJs: false, noEmit: true, skipLibCheck: true, types: [],
       target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext,
       moduleResolution: ts.ModuleResolutionKind.Bundler, jsx: ts.JsxEmit.Preserve,
+      ...(tsPaths.paths === undefined ? {} : { baseUrl: tsPaths.baseUrl, paths: tsPaths.paths }),
     },
   })
   const checker = program.getTypeChecker()
@@ -531,7 +573,7 @@ function shapeOf(type: ts.Type, checker: ts.TypeChecker, depth: number): unknown
     const args = checker.getTypeArguments(type as ts.TypeReference)
     return [args[0] === undefined ? 'unknown' : shapeOf(args[0], checker, depth + 1)]
   }
-  if (type.flags & ts.TypeFlags.Object) {
+  if (type.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) {
     const out: Record<string, unknown> = {}
     for (const prop of type.getProperties().slice(0, HINT_MAX_FIELDS)) {
       const declared = prop.valueDeclaration ?? prop.getDeclarations()?.[0]

@@ -24,13 +24,22 @@ test('panel controller binds the session for remote calls and forwards the open 
       calls.push('remote-open:' + sessionId + ':' + request.projectId)
       return { ok: true, value: { status: 'ok', previewId: 'preview-2', diagnostics: [] } }
     },
+    async refresh(sessionId, request) {
+      calls.push('refresh:' + sessionId + ':' + request.previewId + ':' + (request.scenario ?? ''))
+      return { ok: true, value: { status: 'ok', previewId: request.previewId, diagnostics: [] } }
+    },
   }
   const controller = createPanelController(remote, 'session-A', url => calls.push('open:' + url))
   controller.follow(AbortSignal.timeout(1000))
   const reply = await controller.stop('preview-1')
   assert.equal(reply.ok, true)
+  const refreshed = await controller.refresh({ previewId: 'preview-1', scenario: 'empty' })
+  assert.equal(refreshed.ok, true)
   controller.openInBrowser('http://127.0.0.1:51234/')
-  assert.deepEqual(calls, ['follow:session-A', 'stop:session-A:preview-1', 'open:http://127.0.0.1:51234/'])
+  assert.deepEqual(calls, [
+    'follow:session-A', 'stop:session-A:preview-1',
+    'refresh:session-A:preview-1:empty', 'open:http://127.0.0.1:51234/',
+  ])
 })
 
 test('readiness labels never merge evidence into a fabricated ready; stoppable states stay honest', () => {
@@ -46,8 +55,8 @@ test('readiness labels never merge evidence into a fabricated ready; stoppable s
   assert.equal(readinessLabel(preview(base)), 'proven')
   assert.equal(readinessLabel(preview({ ...base, targetMounted: evidence('unverified') })), 'unverified')
   assert.equal(readinessLabel(preview({ ...base, serviceReachable: evidence('failed') })), 'failed')
-  for (const state of ['stopped', 'failed', 'cleanup_failed']) assert.equal(stoppable(state), false)
-  for (const state of ['serving', 'preparing', 'starting']) assert.equal(stoppable(state), true)
+  for (const state of ['stopped', 'failed']) assert.equal(stoppable(state), false)
+  for (const state of ['serving', 'preparing', 'starting', 'cleanup_failed']) assert.equal(stoppable(state), true)
 })
 
 test('badge labels use the dictionary and fall back to the raw value', () => {
